@@ -1,0 +1,92 @@
+from __future__ import annotations
+
+import logging
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+import segyio
+
+log = logging.getLogger(__name__)
+
+
+@dataclass
+class Dataset:
+    source_path: Path
+    handle: segyio.SegyFile
+    n_traces: int
+    n_samples: int
+    sample_interval_ms: float
+    byte_format: int
+    inline_range: tuple[int, int] | None = None
+    xline_range: tuple[int, int] | None = None
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    name: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            self.name = Path(self.source_path).stem
+        self._closed = False
+
+    @property
+    def is_3d(self) -> bool:
+        return self.inline_range is not None and self.xline_range is not None
+
+    def read_slice(
+        self,
+        trace_indices: slice | np.ndarray,
+        time_slice: slice,
+        pad_samples: int = 0,
+    ) -> np.ndarray:
+        """Read a (n_traces, n_samples) float32 window.
+
+        Padding is clamped to file boundaries. The caller is responsible for
+        cropping after any processing chain has consumed the pad.
+        """
+        if self._closed:
+            raise RuntimeError(f"Dataset {self.name!r} is closed")
+        if pad_samples < 0:
+            raise ValueError("pad_samples must be non-negative")
+
+        if isinstance(trace_indices, slice):
+            idx_array = np.arange(*trace_indices.indices(self.n_traces), dtype=np.int64)
+        elif isinstance(trace_indices, np.ndarray):
+            if trace_indices.ndim != 1:
+                raise ValueError("trace_indices array must be 1-D")
+            idx_array = trace_indices.astype(np.int64, copy=False)
+        else:
+            raise TypeError(
+                f"trace_indices must be slice or np.ndarray, got {type(trace_indices).__name__}"
+            )
+
+        if idx_array.size and (idx_array.min() < 0 or idx_array.max() >= self.n_traces):
+            raise IndexError("trace_indices out of range")
+
+        t_start = 0 if time_slice.start is None else int(time_slice.start)
+        t_stop = self.n_samples if time_slice.stop is None else int(time_slice.stop)
+        if t_start < 0 or t_stop > self.n_samples or t_start > t_stop:
+            raise ValueError(f"time_slice {time_slice} invalid for n_samples={self.n_samples}")
+
+        t0 = max(0, t_start - pad_samples)
+        t1 = min(self.n_samples, t_stop + pad_samples)
+
+        out = np.empty((idx_array.size, t1 - t0), dtype=np.float32)
+        for row, idx in enumerate(idx_array):
+            trace = self.handle.trace[int(idx)]
+            out[row] = np.asarray(trace[t0:t1], dtype=np.float32)
+        return out
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        try:
+            self.handle.close()
+        except Exception:
+            log.exception("error closing SEG-Y handle for %s", self.source_path)
+        finally:
+            self._closed = True
+
+    @property
+    def is_closed(self) -> bool:
+        return self._closed
