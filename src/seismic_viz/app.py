@@ -148,14 +148,6 @@ class MainWindow(QMainWindow):
         self.display_panel.close_group_requested.connect(self._on_close_group_requested)
         display_layout.addWidget(self.display_panel, stretch=1)
 
-        command_bar = _make_placeholder("Group Command Bar")
-        command_bar.setEnabled(False)
-        command_bar.setFixedHeight(40)
-        command_bar.setStyleSheet(
-            "color: #888; font-style: italic; background: #f0f0f0; border-top: 1px solid #ccc;"
-        )
-        display_layout.addWidget(command_bar)
-
         h_splitter.addWidget(display_container)
         h_splitter.setSizes([250, 1030])
 

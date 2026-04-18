@@ -5,7 +5,9 @@ from pathlib import Path
 
 import segyio
 
+from seismic_viz.io.header_scanner import scan_headers
 from seismic_viz.models.dataset import Dataset
+from seismic_viz.models.group_index import GroupIndex
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +56,14 @@ def load_segy(path: Path) -> Dataset:
         except Exception:
             log.debug("structured file but iline/xline read failed", exc_info=True)
 
+    scan = scan_headers(handle)
+    group_index = GroupIndex(
+        n_traces=n_traces,
+        field_records=scan["field_records"],
+        inlines=scan["inlines"],
+        crosslines=scan["crosslines"],
+    )
+
     ds = Dataset(
         source_path=path,
         handle=handle,
@@ -63,6 +73,7 @@ def load_segy(path: Path) -> Dataset:
         byte_format=byte_format,
         inline_range=inline_range,
         xline_range=xline_range,
+        group_index=group_index,
     )
     log.info(
         "loaded %s: traces=%d samples=%d dt=%.4f ms format=%d structured=%s",

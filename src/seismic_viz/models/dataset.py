@@ -8,6 +8,8 @@ from pathlib import Path
 import numpy as np
 import segyio
 
+from seismic_viz.models.group_index import GroupIndex
+
 log = logging.getLogger(__name__)
 
 
@@ -21,6 +23,7 @@ class Dataset:
     byte_format: int
     inline_range: tuple[int, int] | None = None
     xline_range: tuple[int, int] | None = None
+    group_index: GroupIndex | None = None
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     name: str = ""
 
