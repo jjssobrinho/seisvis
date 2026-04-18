@@ -108,22 +108,48 @@ class GroupIndex:
     def contains_group(self, group_id: int) -> bool:
         return int(group_id) in self._groups
 
-    def get_trace_indices(self, group_id: int, count: int = 1) -> np.ndarray:
-        """Return the concatenated, order-preserving trace indices for
-        ``count`` consecutive groups starting at the ordered position of
-        ``group_id``. If ``group_id`` is unknown, returns an empty array.
-        ``count`` is clamped to the number of groups remaining.
+    def get_trace_indices(self, first_group_id: int, count: int = 1, skip: int = 1) -> np.ndarray:
+        """Return concatenated, order-preserving trace indices for the
+        sequence of group ids ``[first + i*skip for i in range(count)]``.
+
+        ``first_group_id`` is the ordered-position id of the first displayed
+        group. Out-of-range entries are **silently omitted** (no clamping),
+        so partial-display scenarios return only the in-range indices.
+        If every computed id is unknown, returns an empty array.
         """
-        if count <= 0:
+        ids = self.displayed_group_ids(first_group_id, count, skip)
+        if not ids:
             return np.empty(0, dtype=np.int64)
-        if group_id not in self._groups:
-            return np.empty(0, dtype=np.int64)
-        start = self._group_ids.index(int(group_id))
-        stop = min(len(self._group_ids), start + int(count))
-        parts = [self._groups[self._group_ids[i]] for i in range(start, stop)]
+        parts = [self._groups[gid] for gid in ids if gid in self._groups]
         if not parts:
             return np.empty(0, dtype=np.int64)
-        return np.concatenate(parts).astype(np.int64, copy=False)
+        result = np.concatenate(parts).astype(np.int64, copy=False)
+        # Non-contiguous modes (e.g. crossline) may interleave across groups
+        # when count > 1; sort so downstream slice-reads are monotonic.
+        if len(parts) > 1:
+            result = np.sort(result)
+        return result
+
+    def displayed_group_ids(self, first_group_id: int, count: int = 1, skip: int = 1) -> list[int]:
+        """In-range group ids in render order for the displayed selection.
+
+        Computes ``[first + i*skip for i in range(count)]`` interpreted as
+        ordered positions (``0..n_groups-1``) and drops any out-of-range
+        entries. Returns the actual group ids (first-occurrence order).
+        """
+        if count <= 0 or skip <= 0:
+            return []
+        n = len(self._group_ids)
+        if n == 0:
+            return []
+        out: list[int] = []
+        first = int(first_group_id)
+        step = int(skip)
+        for i in range(int(count)):
+            pos = first + i * step
+            if 0 <= pos < n:
+                out.append(self._group_ids[pos])
+        return out
 
     def mode_label(self) -> str:
         singular = _MODE_LABEL_SINGULAR[self._current_mode]

@@ -18,7 +18,9 @@ reflection seismic data from SEG-Y files. Core v1 capabilities:
   single tab and switched between via number keys.
 - Compute lazy A−B difference datasets via a click-A, click-B catalog
   workflow.
-- Step through data in groups (shots / inlines / crosslines / ranges).
+- Step through data in groups (shots / inlines / crosslines / ranges)
+  with configurable count and skip, and a visual scroll bar showing
+  displayed-group positions.
 - Apply per-member display and processing (colormap, clip, gain,
   bandpass, AGC) via a global top toolbar, with an "All" option to
   edit every member at once.
@@ -32,16 +34,22 @@ its own session and committed before moving on. The **current**
 milestone's full prompt lives in `MILESTONE.md` at the repo root —
 always read it after this file.
 
-| #  | Name                                          | Tag key      |
-|----|-----------------------------------------------|--------------|
-| M1 | Skeleton                                      | `m1-done` ✅ |
-| M2 | SEG-Y Loading & Catalog                       | `m2-done` ✅ |
-| M3 | Toggle Group Model & First On-Demand Render   | `m3-done`    |
-| M4 | Group Index & Command Bar                     | `m4-done`    |
-| M5 | Toggle Groups: Multi-Member Composition       | `m5-done`    |
-| M6 | Derived Datasets (click-A, click-B diff)      | `m6-done`    |
-| M7 | Toolbar Wire-Up (N-way edit target + All)     | `m7-done`    |
-| M8 | Polish & Persistence                          | `m8-done`    |
+| #    | Name                                          | Tag key        |
+|------|-----------------------------------------------|----------------|
+| M1   | Skeleton                                      | `m1-done` ✅   |
+| M2   | SEG-Y Loading & Catalog                       | `m2-done` ✅   |
+| M3   | Toggle Group Model & First On-Demand Render   | `m3-done` ✅   |
+| M4   | Group Index & Command Bar                     | `m4-done` ✅   |
+| M4.1 | Command Bar Revision (scroll bar + skip)      | `m41-done`     |
+| M5   | Toggle Groups: Multi-Member Composition       | `m5-done`      |
+| M6   | Derived Datasets (click-A, click-B diff)      | `m6-done`      |
+| M7   | Toolbar Wire-Up (N-way edit target + All)     | `m7-done`      |
+| M8   | Polish & Persistence                          | `m8-done`      |
+
+M4.1 is a post-milestone revision that replaces M4's step-button
+command bar with a scroll-bar-based design and adds group-skip
+semantics. It lands before M5 so multi-member work builds on the
+final shape.
 
 Milestone completion is tracked via git tags and a `CHANGELOG.md`
 entry per milestone. At the start of any session, check completed
@@ -104,8 +112,11 @@ ToggleGroup
   reference_index    int in [0, N); whose coordinates define shared_state
   edit_target_index  int in [0, N); which member toolbar edits (when link_all == False)
   link_all           bool; when True, toolbar edits apply to every member
-  shared_state       trace_range, time_range_ms, grouping_mode,
-                     current_group_id, groups_per_view,
+  shared_state       trace_range, time_range_ms,
+                     grouping_mode,
+                     current_group_id,      # "first displayed group"
+                     groups_per_view,       # "count" in UI
+                     group_skip,            # stride; default 1
                      crosshair_trace, crosshair_time_ms
                      (all defined in REFERENCE member's coordinate system)
 
@@ -160,22 +171,24 @@ Member
 - The Group Command Bar (bottom of canvas) is bound to the
   reference member's `GroupIndex`. Changing reference rebuilds
   the bar's available modes and resets `current_group_id` to 0.
-- `shared_state.current_group_id` applies to all members via their
-  respective `GroupIndex` objects. If a non-reference member does
-  not contain the selected group ID, it renders empty with a
-  "group not present" label until either the selection changes or
-  the user switches away.
+- `shared_state.current_group_id`, `groups_per_view`, and
+  `group_skip` together define which group IDs are displayed (see
+  the Group Command Bar section below for the exact semantics).
+- If a non-reference member does not contain some of the displayed
+  group IDs, its `ImageItem` renders blank over those regions;
+  a "group not present" label appears when the *active* member is
+  missing all displayed groups.
 
 ### Shared state semantics
 
 - Zoom, pan, trace range, time range, grouping mode, current group,
-  groups per view, crosshair — all shared across members in the
-  reference's coordinates.
+  groups per view, group skip, crosshair — all shared across members
+  in the reference's coordinates.
 - Per-member state — colormap, clip, gain, bandpass, AGC — is
   independent unless `link_all == True`.
 - `link_all` default: **True** on group creation if every member is
   compatible with the reference; **False** when any member is
-  incompatible (links between incompatible members rarely make sense).
+  incompatible.
 
 ---
 
@@ -188,8 +201,7 @@ Member
 
 - The catalog has a persistent **Diff Selection** state with two
   slots, `diff_a` and `diff_b`, both initially empty.
-- **Left-click** on a dataset in the catalog selects it normally
-  (for viewing properties, enabling context-menu items, etc.).
+- **Left-click** on a dataset in the catalog selects it normally.
 - **Ctrl+left-click** on a dataset toggles it as the next diff slot:
   - If both slots empty: sets `diff_a`.
   - If `diff_a` set and `diff_b` empty: sets `diff_b`.
@@ -261,6 +273,83 @@ Member
 
 ---
 
+## Group Command Bar (bottom of canvas)
+
+One per toggle group. Group-level state, shared across members via
+the reference member's coordinate system.
+
+### Widgets, left to right
+
+1. **Grouping mode `QComboBox`** — modes available on the reference
+   member's `GroupIndex`.
+2. **"First" `QSpinBox`** — group ID of the first displayed group.
+   Range `[1, n_groups]` in the UI (1-indexed for display);
+   internally binds to `shared_state.current_group_id` 0-indexed.
+3. **Horizontal scroll bar** (custom `ScrollBarWithMarkers`
+   subclass) — handle position tracks "First". Track length spans
+   `[0, n_groups - 1]`. Displayed groups are painted on the track
+   with:
+   - a blue **range overlay** spanning from the first displayed
+     group to the last,
+   - blue **tick marks** at each individual displayed group
+     position (one per displayed group; on a dataset with many
+     groups these coalesce visually, which is fine — the overlay
+     conveys the range).
+4. **"Count" `QSpinBox`** — how many groups to display
+   (`groups_per_view`). Range `[1, 100]`, default 1.
+5. **"Skip" `QSpinBox`** — stride between displayed groups
+   (`group_skip`). Range `[1, 1000]`, default 1. Skip=1 means
+   consecutive; skip=N means render first, first+N, first+2N, …
+6. **Status label** — e.g. "3214 shots, showing 5 of them".
+
+### Displayed-group computation
+
+Displayed group IDs are the arithmetic sequence
+`[first + i*skip for i in range(count)]` filtered to the valid range
+`[0, n_groups)`. **Out-of-range entries are simply omitted** (partial
+display): if `first=3000, count=10, skip=50` on a 3214-group dataset,
+only the in-range IDs `3000, 3050, 3100, 3150, 3200` render;
+`3250, 3300, …` are dropped. The rendered image has fewer columns
+than `count` would suggest, leaving the right side of the visible
+area blank. The status label indicates partial display
+("5 of 10 requested").
+
+### Drag throttling
+
+When the user drags the scroll bar handle, `shared_state.current_group_id`
+updates live (so the spinbox and markers track) but slice-worker
+dispatch is throttled: a single `QTimer` (150 ms, single-shot,
+restarted on each `valueChanged` signal) fires one render after
+drag stops, or at 150 ms intervals if the user drags continuously.
+Releasing the handle immediately fires a final render with the
+committed value. The worker's existing cancellation flag (from M3)
+handles superseded requests.
+
+### Keyboard
+
+- `ArrowLeft` / `ArrowRight` (canvas focus): step "First" by
+  `count * skip` — moves a full view-window back or forward.
+  Scoped with `Qt.WidgetWithChildrenShortcut` so `QSpinBox`
+  arrow-key editing isn't hijacked. Disabled inside any spinbox.
+- `Home` / `End`: jump "First" to 0 or to
+  `max(0, n_groups - count * skip)` respectively (shows the last
+  full window when possible, else as much as fits).
+- `PageUp` / `PageDown` are deliberately **unbound** to avoid
+  conflicts with pyqtgraph and other widgets. Single-group
+  stepping is done via the "First" spinbox's up/down arrows.
+
+### Enable/disable
+
+- Disabled when the group has no members, the reference dataset is
+  still indexing, or the reference is a `DerivedDataset` with
+  missing parents.
+- Changing grouping mode resets `current_group_id` to 0 and
+  rebuilds the scroll bar's range from the new `n_groups`.
+- Changing reference member rebuilds everything — mode list,
+  ranges, and resets to defaults.
+
+---
+
 ## Toolbar Edit Routing
 
 - `GlobalToolbar` is stateless about toggle groups and members. It only
@@ -283,22 +372,6 @@ Member
 - `[All]` is `link_all == True`; exclusive with numeric selections.
 - Default on group creation: `[All]` selected if every member is
   compatible with the reference, else `[1]` (first member).
-
----
-
-## Group Command Bar (bottom of canvas)
-
-- One per toggle group. Group-level state, shared across members
-  via the reference member's coordinate system.
-- Widgets, left-to-right:
-  - Grouping mode `QComboBox` (modes available on the reference).
-  - `◀◀`, `◀`, group `QSpinBox` showing `current + 1` of `n_groups`,
-    `▶`, `▶▶`.
-  - "Per view" `QSpinBox` (1–10, default 1).
-  - Status label (e.g. "3214 shots").
-- Keyboard, when canvas has focus: `PageUp` = back, `PageDown` = forward,
-  `Home` = first, `End` = last.
-- Disabled when no reference is set.
 
 ---
 
@@ -334,6 +407,8 @@ ui/  →  controllers/  →  services/  →  models/ ← processing/, io/
 - Padding for filter edge effects is never removed.
 - Toolbar rebinds are silent (signals blocked during programmatic updates).
 - Derivatives with missing parents are kept and marked, never auto-deleted.
+- Scroll-bar drag throttles worker dispatch but not state updates.
+- Out-of-range displayed-group entries are omitted, not clamped.
 
 ---
 
@@ -360,7 +435,7 @@ ui/  →  controllers/  →  services/  →  models/ ← processing/, io/
 6. Run `ruff check`, `ruff format`, `pytest`, and the app once.
 7. Update `CHANGELOG.md` with the milestone's outcomes.
 8. Commit with a conventional-commits message.
-9. Tag the commit (e.g. `git tag m3-done`).
+9. Tag the commit (e.g. `git tag m41-done`).
 10. Stop.
 
 ---
@@ -378,6 +453,7 @@ ui/  →  controllers/  →  services/  →  models/ ← processing/, io/
 - Scale factors or weights in diff (`A − B` only).
 - Diff between members of a toggle group (v2; v1 diff is catalog-only).
 - Keyboard bindings beyond `1..9` for members 10+ (v2).
+- Non-uniform group skip (e.g. list of specific group IDs) — v2.
 
 ---
 
@@ -394,6 +470,9 @@ ui/  →  controllers/  →  services/  →  models/ ← processing/, io/
   symmetric levels.
 - Default bandpass: disabled; when enabled, 5–80 Hz, order 4.
 - Default AGC: disabled; when enabled, 500 ms window.
+- Trace Range grouping default: 100 traces per group.
 - Auto-flicker rate default: 2 Hz. Cycles through all members in order.
 - First nine members keyboard-addressable (1..9); 10+ via mouse.
-- The toggle group is initiate when a dataset is select with double click.
+- Scroll-bar drag throttle: 150 ms.
+- Scroll-bar displayed-group markers: blue (both range overlay and tick marks).
+- Default `groups_per_view`: 1. Default `group_skip`: 1.
