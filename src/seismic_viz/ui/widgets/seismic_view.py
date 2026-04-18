@@ -130,10 +130,13 @@ class SeismicView(QWidget):
         self._install_shortcuts()
 
     def _install_shortcuts(self) -> None:
+        # pyqtgraph's PlotWidget does not consume Left/Right/Home/End by
+        # default; these shortcuts fire only when a child of SeismicView
+        # has focus (not e.g. a QSpinBox inside the command bar).
         ctx = Qt.ShortcutContext.WidgetWithChildrenShortcut
         for seq, handler in (
-            (QKeySequence(Qt.Key.Key_PageUp), self.command_bar.go_prev),
-            (QKeySequence(Qt.Key.Key_PageDown), self.command_bar.go_next),
+            (QKeySequence(Qt.Key.Key_Left), self.command_bar.step_backward),
+            (QKeySequence(Qt.Key.Key_Right), self.command_bar.step_forward),
             (QKeySequence(Qt.Key.Key_Home), self.command_bar.go_first),
             (QKeySequence(Qt.Key.Key_End), self.command_bar.go_last),
         ):
@@ -215,6 +218,7 @@ class SeismicView(QWidget):
             indices = gi.get_trace_indices(
                 int(state.current_group_id),
                 int(state.groups_per_view or 1),
+                int(state.group_skip or 1),
             )
             if indices.size:
                 return int(indices.min()), int(indices.max()) + 1
@@ -242,6 +246,7 @@ class SeismicView(QWidget):
                 indices = gi.get_trace_indices(
                     int(state.current_group_id),
                     int(state.groups_per_view or 1),
+                    int(state.group_skip or 1),
                 )
                 if indices.size:
                     new_range = (int(indices.min()), int(indices.max()) + 1)
@@ -371,14 +376,13 @@ class SeismicView(QWidget):
                 return None, (0, 0)
             if gi.current_mode != state.grouping_mode:
                 gi.set_mode(state.grouping_mode)
-            ids = gi.group_ids
-            if not ids:
+            if gi.n_groups() == 0:
                 return None, (0, 0)
-            cur = int(state.current_group_id)
-            if not gi.contains_group(cur):
-                cur = ids[min(max(0, cur), len(ids) - 1)]
-            per_view = int(state.groups_per_view or 1)
-            indices = gi.get_trace_indices(cur, per_view)
+            indices = gi.get_trace_indices(
+                int(state.current_group_id),
+                int(state.groups_per_view or 1),
+                int(state.group_skip or 1),
+            )
             if indices.size == 0:
                 return None, (0, 0)
             t0 = int(indices.min())

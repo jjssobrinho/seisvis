@@ -1,5 +1,73 @@
 # Changelog
 
+## [M4.1] Command Bar Revision (scroll bar + skip)
+
+- `models/toggle_group.py`: `SharedState` grows a `group_skip: int`
+  field (default 1). `update_shared_state(group_skip=...)` clamps
+  silently at 1 for non-positive or unparseable inputs and reuses
+  the existing `shared_state_changed` signal — no new signals.
+  `_initialize_grouping_from_reference` resets `group_skip` to 1
+  alongside the existing defaults.
+- `models/group_index.py`: `get_trace_indices(first_group_id, count=1,
+  skip=1)` now interprets `first_group_id` as a **0-indexed ordered
+  position** and walks the sequence `[first + i*skip for i in
+  range(count)]`. Out-of-range entries are silently dropped
+  (partial-display semantics). When more than one group survives,
+  the concatenated trace indices are sorted so non-contiguous modes
+  (e.g. crossline) yield monotonic reads. New
+  `displayed_group_ids(first, count, skip)` returns the in-range
+  group ids in render order; the command bar uses it for the status
+  label's "N of M requested" suffix.
+- `ui/widgets/scroll_bar_with_markers.py` (new): custom
+  `QWidget`-based horizontal scroll bar with a draggable handle
+  (≥18 px), blue range overlay (`#3B82F6` ~40% alpha), and blue
+  tick marks (`#1E40AF`, ~2 px) at each displayed-group position.
+  Emits `value_changed(int)`, `drag_started()`, `drag_released()`.
+  Click-on-track, drag, and mouse-wheel step are supported. The
+  pixel-mapping logic lives in a pure `compute_marker_pixels` helper
+  so it can be tested without a `QApplication`; when markers would
+  coalesce beyond 1 per pixel the helper returns an empty list and
+  only the range overlay is drawn.
+- `ui/widgets/group_command_bar.py`: rewritten layout — `Mode` combo,
+  `First` spinbox (1-indexed UI, binds 0-indexed to
+  `current_group_id`), `ScrollBarWithMarkers` (stretched), `Count`
+  spinbox (`[1, 100]`), `Skip` spinbox (`[1, 1000]`), and status
+  label `"{mode}, showing N"` with `"(N of M requested)"` appended
+  on partial display. M4's `◀◀ ◀ ▶ ▶▶` step buttons and the
+  `Group: N/total` spinbox are removed. A single-shot 150 ms
+  `QTimer` throttles slice-worker dispatch while the scroll-bar
+  handle is dragged: markers and the spinbox track the handle in
+  real time, but shared-state-driven renders only fire on the
+  throttle tick or on `drag_released`. Mode and reference changes
+  reset `First → 0`, `Count → 1`, `Skip → 1`. Non-drag edits
+  (spinboxes, track clicks, keyboard shortcuts) dispatch immediately
+  with no throttle.
+- `ui/widgets/seismic_view.py`: keyboard shortcuts (scoped with
+  `Qt.WidgetWithChildrenShortcut` so spinbox arrow-key editing is
+  untouched) — `Left`/`Right` step `First` by `count*skip`,
+  `Home`/`End` jump to `0` / `max(0, n_groups - count*skip)`
+  (last full window when possible). `PageUp`/`PageDown` are
+  deliberately unbound to avoid conflicts with pyqtgraph. The slice
+  resolution call sites pass `state.group_skip` through to
+  `get_trace_indices`; the `contains_group` fallback used in M4
+  (which was a no-op accident for SHOT ids) is removed.
+- `tests/test_group_index.py`: adds coverage for `skip > 1` on
+  contiguous `TRACE_RANGE`, 3D `CROSSLINE` (non-contiguous), and
+  sparse shot-indexed datasets; partial-display near the end of the
+  range; all-out-of-range returns empty; and
+  `displayed_group_ids` parity with `get_trace_indices`. Existing
+  tests updated for the position-based `first_group_id` API.
+- `tests/test_scroll_bar_markers.py` (new): pure-Python tests of
+  `compute_marker_pixels` — empty inputs, endpoints, single-group
+  collapse, monotonic mapping, even spacing, coalescence threshold
+  boundary, and pixel clamping.
+- `tests/manual/scroll_bar_demo.py` (new): standalone demo
+  instantiating `ScrollBarWithMarkers` for visual verification.
+- `tests/manual/command_bar.md` (new): manual test plan covering
+  basic wiring, drag throttling, Count+Skip interactions, marker
+  rendering and coalescence, keyboard shortcuts, and mode/reference
+  resets.
+
 ## [M4] Group Index & Command Bar
 
 - `models/group_index.py`: `GroupingMode` (`SHOT`, `INLINE`, `CROSSLINE`,

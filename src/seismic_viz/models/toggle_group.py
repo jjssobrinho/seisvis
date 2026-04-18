@@ -32,6 +32,7 @@ class SharedState:
     grouping_mode: GroupingMode | None = None
     current_group_id: int | None = None
     groups_per_view: int | None = None
+    group_skip: int = 1
 
 
 @dataclass
@@ -180,6 +181,7 @@ class ToggleGroup(QObject):
         grouping_mode: GroupingMode | None | object = _UNSET,
         current_group_id: int | None | object = _UNSET,
         groups_per_view: int | None | object = _UNSET,
+        group_skip: int | object = _UNSET,
     ) -> None:
         changed = False
         if trace_range is not None and trace_range != self.shared_state.trace_range:
@@ -206,6 +208,14 @@ class ToggleGroup(QObject):
         if groups_per_view is not _UNSET and groups_per_view != self.shared_state.groups_per_view:
             self.shared_state.groups_per_view = groups_per_view  # type: ignore[assignment]
             changed = True
+        if group_skip is not _UNSET:
+            try:
+                clamped_skip = max(1, int(group_skip))  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                clamped_skip = 1
+            if clamped_skip != self.shared_state.group_skip:
+                self.shared_state.group_skip = clamped_skip
+                changed = True
         if changed:
             self.shared_state_changed.emit()
 
@@ -229,6 +239,7 @@ class ToggleGroup(QObject):
             self.shared_state.grouping_mode = gi.default_mode
             self.shared_state.current_group_id = 0
             self.shared_state.groups_per_view = 1
+            self.shared_state.group_skip = 1
             # Align the dataset's active mode with the group's default.
             if gi.current_mode != gi.default_mode:
                 gi.set_mode(gi.default_mode)
