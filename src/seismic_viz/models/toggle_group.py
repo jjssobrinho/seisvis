@@ -8,9 +8,12 @@ from PySide6.QtCore import QObject, Signal
 
 from seismic_viz.models.dataset import Dataset
 from seismic_viz.models.display_state import DisplayState
+from seismic_viz.models.group_index import GroupingMode
 from seismic_viz.models.processing_chain import ProcessingChain
 
 log = logging.getLogger(__name__)
+
+_UNSET = object()
 
 
 @dataclass
@@ -26,7 +29,7 @@ class SharedState:
     time_range_ms: tuple[float, float] | None = None
     crosshair_trace: int | None = None
     crosshair_time_ms: float | None = None
-    grouping_mode: str | None = None
+    grouping_mode: GroupingMode | None = None
     current_group_id: int | None = None
     groups_per_view: int | None = None
 
@@ -114,6 +117,7 @@ class ToggleGroup(QObject):
         insert_at = len(self._members) if at_index is None else int(at_index)
         insert_at = max(0, min(insert_at, len(self._members)))
         self._members.insert(insert_at, member)
+        self._initialize_grouping_from_reference()
         self.member_added.emit(insert_at)
         return insert_at
 
@@ -154,6 +158,7 @@ class ToggleGroup(QObject):
         if index == self._reference_index:
             return
         self._reference_index = index
+        self._initialize_grouping_from_reference(reset_group=True)
         self.reference_index_changed.emit(index)
 
     def set_edit_target(self, index: int, link_all: bool) -> None:
@@ -172,6 +177,9 @@ class ToggleGroup(QObject):
         time_range_ms: tuple[float, float] | None = None,
         crosshair_trace: int | None = None,
         crosshair_time_ms: float | None = None,
+        grouping_mode: GroupingMode | None | object = _UNSET,
+        current_group_id: int | None | object = _UNSET,
+        groups_per_view: int | None | object = _UNSET,
     ) -> None:
         changed = False
         if trace_range is not None and trace_range != self.shared_state.trace_range:
@@ -186,5 +194,41 @@ class ToggleGroup(QObject):
         if crosshair_time_ms != self.shared_state.crosshair_time_ms:
             self.shared_state.crosshair_time_ms = crosshair_time_ms
             changed = True
+        if grouping_mode is not _UNSET and grouping_mode != self.shared_state.grouping_mode:
+            self.shared_state.grouping_mode = grouping_mode  # type: ignore[assignment]
+            changed = True
+        if (
+            current_group_id is not _UNSET
+            and current_group_id != self.shared_state.current_group_id
+        ):
+            self.shared_state.current_group_id = current_group_id  # type: ignore[assignment]
+            changed = True
+        if groups_per_view is not _UNSET and groups_per_view != self.shared_state.groups_per_view:
+            self.shared_state.groups_per_view = groups_per_view  # type: ignore[assignment]
+            changed = True
         if changed:
             self.shared_state_changed.emit()
+
+    def _initialize_grouping_from_reference(self, reset_group: bool = False) -> None:
+        """Seed shared_state grouping fields from the reference dataset.
+
+        Called after the first member is added or the reference changes. Does
+        not emit shared_state_changed directly — ``member_added`` /
+        ``reference_index_changed`` already drive the relevant UI rebuilds.
+        """
+        if not self._members:
+            return
+        ref_idx = self._reference_index
+        if not 0 <= ref_idx < len(self._members):
+            return
+        ds = self._members[ref_idx].dataset
+        gi = getattr(ds, "group_index", None)
+        if gi is None:
+            return
+        if reset_group or self.shared_state.grouping_mode is None:
+            self.shared_state.grouping_mode = gi.default_mode
+            self.shared_state.current_group_id = 0
+            self.shared_state.groups_per_view = 1
+            # Align the dataset's active mode with the group's default.
+            if gi.current_mode != gi.default_mode:
+                gi.set_mode(gi.default_mode)

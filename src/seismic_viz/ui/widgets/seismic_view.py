@@ -6,11 +6,12 @@ from typing import cast
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QPointF, QRectF, Qt, QThreadPool, Signal
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QKeyEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from seismic_viz.io.slice_cache import SliceCache, SliceKey
 from seismic_viz.models.toggle_group import Member, ToggleGroup
+from seismic_viz.ui.widgets.group_command_bar import GroupCommandBar
 from seismic_viz.workers.slice_worker import SliceWorker
 
 log = logging.getLogger(__name__)
@@ -121,14 +122,24 @@ class SeismicView(QWidget):
 
         root.addWidget(self.plot_widget, stretch=1)
 
-        # Bottom placeholder for the group command bar (M4).
-        self.command_bar_slot = QWidget(self)
-        cb_layout = QHBoxLayout(self.command_bar_slot)
-        cb_layout.setContentsMargins(0, 0, 0, 0)
-        self.command_bar_slot.setFixedHeight(0)
-        root.addWidget(self.command_bar_slot)
+        # Group command bar (M4) — drives reference-member group navigation.
+        self.command_bar = GroupCommandBar(self.group, parent=self)
+        root.addWidget(self.command_bar)
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._install_shortcuts()
+
+    def _install_shortcuts(self) -> None:
+        ctx = Qt.ShortcutContext.WidgetWithChildrenShortcut
+        for seq, handler in (
+            (QKeySequence(Qt.Key.Key_PageUp), self.command_bar.go_prev),
+            (QKeySequence(Qt.Key.Key_PageDown), self.command_bar.go_next),
+            (QKeySequence(Qt.Key.Key_Home), self.command_bar.go_first),
+            (QKeySequence(Qt.Key.Key_End), self.command_bar.go_last),
+        ):
+            sc = QShortcut(seq, self)
+            sc.setContext(ctx)
+            sc.activated.connect(handler)
 
     # --- Group signal wiring ---
 
@@ -136,7 +147,7 @@ class SeismicView(QWidget):
         self.group.member_added.connect(self._on_member_added)
         self.group.member_removed.connect(self._on_member_removed)
         self.group.active_index_changed.connect(self._on_active_index_changed)
-        self.group.shared_state_changed.connect(self._apply_shared_state_to_viewbox)
+        self.group.shared_state_changed.connect(self._on_shared_state_changed)
 
     # --- Member management ---
 
@@ -177,21 +188,69 @@ class SeismicView(QWidget):
         except IndexError:
             return
         ds = member.dataset
-        if self.group.shared_state.trace_range is None:
-            trace_stop = min(ds.n_traces, SeismicView.MAX_FIT_TRACES)
-            self.group.update_shared_state(trace_range=(0, trace_stop))
-            if ds.n_traces > SeismicView.MAX_FIT_TRACES:
+        state = self.group.shared_state
+        if state.trace_range is None:
+            trace_range = self._trace_range_from_group_or_cap(ds)
+            self.group.update_shared_state(trace_range=trace_range)
+            if state.grouping_mode is None and ds.n_traces > SeismicView.MAX_FIT_TRACES:
                 self.status_message.emit(
                     f"Dataset has {ds.n_traces} traces; showing first "
                     f"{SeismicView.MAX_FIT_TRACES} (configurable cap)."
                 )
-        if self.group.shared_state.time_range_ms is None:
+        if state.time_range_ms is None:
             t_max_ms = ds.n_samples * ds.sample_interval_ms
             self.group.update_shared_state(time_range_ms=(0.0, t_max_ms))
+
+    def _trace_range_from_group_or_cap(self, ds) -> tuple[int, int]:  # noqa: ANN001
+        state = self.group.shared_state
+        gi = getattr(ds, "group_index", None)
+        if (
+            gi is not None
+            and state.grouping_mode is not None
+            and state.current_group_id is not None
+            and state.grouping_mode in gi.available_modes
+        ):
+            if gi.current_mode != state.grouping_mode:
+                gi.set_mode(state.grouping_mode)
+            indices = gi.get_trace_indices(
+                int(state.current_group_id),
+                int(state.groups_per_view or 1),
+            )
+            if indices.size:
+                return int(indices.min()), int(indices.max()) + 1
+        trace_stop = min(ds.n_traces, SeismicView.MAX_FIT_TRACES)
+        return 0, trace_stop
 
     MAX_FIT_TRACES = 5000
 
     # --- Shared-state → ViewBox ---
+
+    def _on_shared_state_changed(self) -> None:
+        state = self.group.shared_state
+        # When group-navigation fields drive the slice, realign trace_range
+        # to the reference group's indices before updating the viewbox.
+        if state.grouping_mode is not None and state.current_group_id is not None:
+            ref = self.group.reference_index
+            try:
+                ref_ds = self.group.members[ref].dataset
+            except IndexError:
+                ref_ds = None
+            gi = getattr(ref_ds, "group_index", None) if ref_ds is not None else None
+            if gi is not None and gi.n_groups() > 0:
+                if gi.current_mode != state.grouping_mode:
+                    gi.set_mode(state.grouping_mode)
+                indices = gi.get_trace_indices(
+                    int(state.current_group_id),
+                    int(state.groups_per_view or 1),
+                )
+                if indices.size:
+                    new_range = (int(indices.min()), int(indices.max()) + 1)
+                    if state.trace_range != new_range:
+                        # Avoid feedback into this same slot.
+                        state.trace_range = new_range
+        self._apply_shared_state_to_viewbox()
+        for i in range(len(self._image_items)):
+            self._request_slice(i)
 
     def _apply_shared_state_to_viewbox(self) -> None:
         state = self.group.shared_state
@@ -212,9 +271,15 @@ class SeismicView(QWidget):
         if self._updating_range:
             return
         x_range, y_range = ranges
-        trace_range = (int(round(x_range[0])), int(round(x_range[1])))
         time_range = (float(y_range[0]), float(y_range[1]))
-        self.group.update_shared_state(trace_range=trace_range, time_range_ms=time_range)
+        state = self.group.shared_state
+        kwargs: dict = {"time_range_ms": time_range}
+        # When grouping is driving the x-axis, don't let user pan/zoom
+        # overwrite the group's trace range — it would get snapped back
+        # immediately by _on_shared_state_changed and cause oscillation.
+        if state.grouping_mode is None or state.current_group_id is None:
+            kwargs["trace_range"] = (int(round(x_range[0])), int(round(x_range[1])))
+        self.group.update_shared_state(**kwargs)
         # Re-request slice for every member so visibility switches show fresh data.
         for i in range(len(self._image_items)):
             self._request_slice(i)
@@ -227,13 +292,14 @@ class SeismicView(QWidget):
         except IndexError:
             return
         state = self.group.shared_state
-        if state.trace_range is None or state.time_range_ms is None:
+        if state.time_range_ms is None:
             return
 
         ds = member.dataset
-        t0, t1 = state.trace_range
-        t0 = max(0, min(ds.n_traces, t0))
-        t1 = max(t0, min(ds.n_traces, t1))
+        trace_indices, trace_range = self._resolve_trace_indices(member_index)
+        if trace_indices is None:
+            return
+        t0, t1 = trace_range
         if t1 - t0 <= 0:
             return
 
@@ -270,7 +336,7 @@ class SeismicView(QWidget):
             group_id=self.group.id,
             member_index=member_index,
             dataset=ds,
-            trace_indices=slice(t0, t1),
+            trace_indices=trace_indices,
             time_slice=slice(s0, s1),
             processing_chain=member.processing_chain,
         )
@@ -279,6 +345,53 @@ class SeismicView(QWidget):
         self._active_workers.append(worker)
         self.loading_label.setVisible(True)
         self._pool.start(worker)
+
+    def _resolve_trace_indices(
+        self, member_index: int
+    ) -> tuple[slice | np.ndarray | None, tuple[int, int]]:
+        """Pick trace indices for the member's next slice.
+
+        When the group has an active grouping mode and the member carries a
+        ``GroupIndex``, consult it for the reference's current group selection.
+        Otherwise fall back to the shared ``trace_range`` (initial fit).
+        """
+        member = self.group.members[member_index]
+        ds = member.dataset
+        state = self.group.shared_state
+        gi = getattr(ds, "group_index", None)
+        if (
+            gi is not None
+            and state.grouping_mode is not None
+            and state.current_group_id is not None
+        ):
+            # Non-reference members whose index lacks the same mode are
+            # handled empty for M4 (M5 will render the "group not present"
+            # overlay).
+            if state.grouping_mode not in gi.available_modes:
+                return None, (0, 0)
+            if gi.current_mode != state.grouping_mode:
+                gi.set_mode(state.grouping_mode)
+            ids = gi.group_ids
+            if not ids:
+                return None, (0, 0)
+            cur = int(state.current_group_id)
+            if not gi.contains_group(cur):
+                cur = ids[min(max(0, cur), len(ids) - 1)]
+            per_view = int(state.groups_per_view or 1)
+            indices = gi.get_trace_indices(cur, per_view)
+            if indices.size == 0:
+                return None, (0, 0)
+            t0 = int(indices.min())
+            t1 = int(indices.max()) + 1
+            return indices, (t0, t1)
+
+        # Fallback: use the shared trace_range.
+        if state.trace_range is None:
+            return None, (0, 0)
+        t0, t1 = state.trace_range
+        t0 = max(0, min(ds.n_traces, t0))
+        t1 = max(t0, min(ds.n_traces, t1))
+        return slice(t0, t1), (t0, t1)
 
     def _on_slice_finished(
         self,

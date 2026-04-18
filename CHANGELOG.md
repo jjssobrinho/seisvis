@@ -1,5 +1,58 @@
 # Changelog
 
+## [M4] Group Index & Command Bar
+
+- `models/group_index.py`: `GroupingMode` (`SHOT`, `INLINE`, `CROSSLINE`,
+  `TRACE_RANGE`) and `GroupIndex` with `available_modes`, `default_mode`
+  (SHOT ▸ INLINE ▸ TRACE_RANGE), `set_mode(mode, trace_range_size=100)`,
+  `n_groups`, `get_trace_indices(group_id, count=1)`, `contains_group`,
+  and `mode_label` for the status label. Group ids preserve
+  first-occurrence order; `get_trace_indices` flattens `count`
+  consecutive groups and clamps to the remaining range.
+- `io/header_scanner.py`: `scan_headers(handle)` does a single pass
+  over `FieldRecord`, `INLINE_3D`, `CROSSLINE_3D` and reports whether
+  the file is structured. Inline/crossline arrays are `None` on
+  unstructured files.
+- `io/segy_loader.py`: loader now calls the scanner and attaches a
+  `GroupIndex` to every `Dataset`. No new worker — runs in the
+  existing M2 `LoadWorker`.
+- `models/dataset.py`: `Dataset.group_index: GroupIndex | None` field.
+- `models/toggle_group.py`: `SharedState.grouping_mode` is now a
+  `GroupingMode | None`. `update_shared_state` accepts
+  `grouping_mode` / `current_group_id` / `groups_per_view` via a
+  sentinel so `None` is distinguishable from "unchanged". New
+  `_initialize_grouping_from_reference` seeds the grouping fields
+  from the reference member's default mode on first `add_member`
+  and resets `current_group_id` to 0 on `set_reference`.
+- `ui/widgets/group_command_bar.py`: `GroupCommandBar(QWidget)` with
+  mode `QComboBox` (rebuilt from the reference's `available_modes`),
+  `◀◀ ◀ [group spin] ▶ ▶▶` navigation, `Per view` spin (1–10,
+  default 1), and a status label showing `mode_label()`. All
+  rebinds go through `blockSignals`. Member/reference changes
+  rebuild the bar; shared-state changes sync widgets without
+  feedback loops. Bar is disabled when the group has no members or
+  the reference lacks a `GroupIndex`.
+- `ui/widgets/seismic_view.py`: command bar is embedded at the bottom
+  of the canvas (replacing the M3 placeholder). `_request_slice`
+  resolves trace indices via `group_index.get_trace_indices` when a
+  grouping mode is active, falling back to `trace_range` otherwise.
+  `_on_shared_state_changed` realigns `trace_range` to the reference
+  group's indices and re-requests every member's slice. Manual x-axis
+  pan/zoom is suppressed from writing `trace_range` while group
+  navigation owns the x-axis (prevents oscillation).
+  `PageUp`/`PageDown`/`Home`/`End` wired via `QShortcut` with
+  `Qt.WidgetWithChildrenShortcut` context — they drive the command
+  bar's navigation helpers.
+- `app.py`: drops the M3 "Group Command Bar" placeholder from the
+  display container — the real bar now lives inside each
+  `SeismicView`.
+- `tests/test_group_index.py`: mode detection on 2D vs 3D synthetic
+  data, contiguous (INLINE) and non-contiguous (CROSSLINE) index
+  retrieval, `groups_per_view > 1` flattening, first/last boundary
+  behaviour with oversize counts, `contains_group`, `TRACE_RANGE`
+  partitioning, `set_mode` rejection on unavailable modes, and
+  `mode_label` formatting.
+
 ## [M3] Toggle Group Model & First On-Demand Render
 
 - `models/display_state.py`: `DisplayState` dataclass with v1 defaults
