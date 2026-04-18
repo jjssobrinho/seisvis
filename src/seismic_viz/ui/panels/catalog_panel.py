@@ -145,6 +145,8 @@ class CatalogPanel(QWidget):
 
     properties_requested = Signal(object)  # Dataset
     remove_requested = Signal(str)  # dataset id
+    open_in_new_group_requested = Signal(object)  # Dataset
+    selection_changed = Signal(list)  # list[Dataset]
 
     def __init__(self, project: Project, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -160,6 +162,8 @@ class CatalogPanel(QWidget):
         self._view.expandAll()
         self._view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._view.customContextMenuRequested.connect(self._show_context_menu)
+        self._view.doubleClicked.connect(self._on_double_clicked)
+        self._view.selectionModel().selectionChanged.connect(self._on_selection_changed)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -182,6 +186,9 @@ class CatalogPanel(QWidget):
         menu = QMenu(self._view)
         if len(datasets) == 1:
             ds = datasets[0]
+            open_group = menu.addAction("Open in new toggle group")
+            open_group.triggered.connect(lambda: self.open_in_new_group_requested.emit(ds))
+            menu.addSeparator()
             props = menu.addAction("Properties…")
             remove = menu.addAction("Remove")
             props.triggered.connect(lambda: self.properties_requested.emit(ds))
@@ -192,3 +199,11 @@ class CatalogPanel(QWidget):
         else:
             return
         menu.exec(cast(QTreeView, self._view).viewport().mapToGlobal(pos))
+
+    def _on_double_clicked(self, index) -> None:  # noqa: ANN001
+        ds = self._model.dataset_for_index(index)
+        if ds is not None:
+            self.open_in_new_group_requested.emit(ds)
+
+    def _on_selection_changed(self, _selected, _deselected) -> None:  # noqa: ANN001
+        self.selection_changed.emit(self.selected_datasets())

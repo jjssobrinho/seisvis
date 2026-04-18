@@ -14,37 +14,38 @@ reflection seismic data from SEG-Y files. Core v1 capabilities:
 
 - Load SEG-Y files on demand (no full-volume reads).
 - List loaded and derived datasets in a catalog.
-- View one or more datasets in tabbed viewports.
-- Toggle (A/B switch) two co-registered datasets in the same viewport.
-- Compute lazy A−B difference datasets via the catalog.
+- Compose **toggle groups** — ordered lists of datasets shown in a
+  single tab and switched between via number keys.
+- Compute lazy A−B difference datasets via a click-A, click-B catalog
+  workflow.
 - Step through data in groups (shots / inlines / crosslines / ranges).
-- Apply per-slot display and processing (colormap, clip, gain, bandpass, AGC)
-  via a global top toolbar.
+- Apply per-member display and processing (colormap, clip, gain,
+  bandpass, AGC) via a global top toolbar, with an "All" option to
+  edit every member at once.
 
 ---
 
 ## Milestones (v1 roadmap)
 
-The project is built in eight sequential milestones. Each is implemented
-in its own session and committed before moving on. The **current**
+The project is built in sequential milestones. Each is implemented in
+its own session and committed before moving on. The **current**
 milestone's full prompt lives in `MILESTONE.md` at the repo root —
 always read it after this file.
 
-| #  | Name                                          | Tag key    |
-|----|-----------------------------------------------|------------|
-| M1 | Skeleton                                      | `m1-done`  |
-| M2 | SEG-Y Loading & Catalog                       | `m2-done`  |
-| M3 | Viewport & First On-Demand Render             | `m3-done`  |
-| M4 | Group Index & Command Bar                     | `m4-done`  |
-| M5 | Toggle (Slot B)                               | `m5-done`  |
-| M6 | Derived Datasets (Lazy Difference)            | `m6-done`  |
-| M7 | Toolbar Wire-Up: Appearance + Filters         | `m7-done`  |
-| M8 | Polish & Persistence                          | `m8-done`  |
+| #  | Name                                          | Tag key      |
+|----|-----------------------------------------------|--------------|
+| M1 | Skeleton                                      | `m1-done` ✅ |
+| M2 | SEG-Y Loading & Catalog                       | `m2-done` ✅ |
+| M3 | Toggle Group Model & First On-Demand Render   | `m3-done`    |
+| M4 | Group Index & Command Bar                     | `m4-done`    |
+| M5 | Toggle Groups: Multi-Member Composition       | `m5-done`    |
+| M6 | Derived Datasets (click-A, click-B diff)      | `m6-done`    |
+| M7 | Toolbar Wire-Up (N-way edit target + All)     | `m7-done`    |
+| M8 | Polish & Persistence                          | `m8-done`    |
 
-Milestone completion is tracked via git tags and a `CHANGELOG.md` entry
-per milestone. At the start of any session, the agent checks completed
-milestones with `git tag -l 'm*-done'` to confirm it's picking up where
-the previous session left off.
+Milestone completion is tracked via git tags and a `CHANGELOG.md`
+entry per milestone. At the start of any session, check completed
+milestones with `git tag -l 'm*-done'`.
 
 **Hard rule:** never start the next milestone inside the current
 session. Finish, commit, tag, stop.
@@ -78,147 +79,226 @@ No additional GUI frameworks. No matplotlib in the rendering path.
 - All SEG-Y files are opened via `segyio` and kept open for the dataset's
   lifetime. **No full-volume loads in v1.**
 - `Dataset.read_slice(trace_indices, time_slice, pad_samples=0) -> np.ndarray[float32]`
-  is the single access path for trace data. It batches `segyio` reads and
-  returns a `(n_traces, n_samples)` float32 array.
-- `trace_indices` may be a slice or a numpy integer array (for non-contiguous
-  group selections like shot gathers).
-- Metadata (n_traces, n_samples, sample_interval_ms, inline/xline ranges)
-  is read from headers only — never triggers trace reads.
+  is the single access path for trace data.
+- `trace_indices` may be a slice or a numpy integer array.
+- Metadata is read from headers only — never triggers trace reads.
 - `Project.close_all()` must be called on app shutdown; wire it to
   `QApplication.aboutToQuit`.
 
 ---
 
-## Group Index (shot/inline/crossline stepping)
+## Toggle Groups (core v1 abstraction — no separate Viewport concept)
 
-- Each `Dataset` owns a `GroupIndex` built on load by a header scan
-  running on a worker thread.
-- `GroupingMode` enum: `SHOT` (by `FieldRecord` header), `INLINE`
-  (by `INLINE_3D`), `CROSSLINE` (by `CROSSLINE_3D`), `TRACE_RANGE`
-  (fixed N consecutive traces, N user-configurable, default 100).
-- `GroupIndex.get_trace_indices(group_id, count=1) -> np.ndarray[int]`
-  returns the flattened trace indices for `count` consecutive groups
-  starting at `group_id`. This feeds directly into `Dataset.read_slice`.
-- Available grouping modes depend on what headers are populated:
-  - SHOT available if `FieldRecord` varies across traces.
-  - INLINE/CROSSLINE available if the file is 3D structured
-    (segyio detects this).
-  - TRACE_RANGE always available (fallback).
-- While indexing runs, the viewport shows an "Indexing..." overlay and
-  the group command bar is disabled.
+A `ToggleGroup` is an ordered list of dataset members displayed in a
+single tab of the Display Canvas. It is the unit of display; there is
+no separate "viewport" concept.
+
+### Structure
+
+```
+ToggleGroup
+  id                 uuid
+  name               user-editable, default "Group {N}"
+  members            ordered list of Member, length N >= 1, no upper limit
+  active_index       int in [0, N); which member's image is currently shown
+  reference_index    int in [0, N); whose coordinates define shared_state
+  edit_target_index  int in [0, N); which member toolbar edits (when link_all == False)
+  link_all           bool; when True, toolbar edits apply to every member
+  shared_state       trace_range, time_range_ms, grouping_mode,
+                     current_group_id, groups_per_view,
+                     crosshair_trace, crosshair_time_ms
+                     (all defined in REFERENCE member's coordinate system)
+
+Member
+  dataset            Dataset | DerivedDataset
+  display_state      per-member: colormap, clip_low_pct, clip_high_pct, gain_db
+  processing_chain   per-member: Bandpass, AGC, ConstantGain
+```
+
+### Creation and composition
+
+- A toggle group is created from the Viewport Manager panel with
+  "New Toggle Group" (opens empty) or from the catalog context menu
+  with "Open in new toggle group" (starts with one member).
+- Members are added by dragging a dataset from the catalog onto a
+  group in the Viewport Manager, or via "Add to active toggle group"
+  in the catalog context menu.
+- Members can be reordered in the Viewport Manager via drag-and-drop.
+- Members can be removed from a group without affecting the dataset
+  in the catalog. Removing the last member closes the group.
+
+### Compatibility — allowed but tracked
+
+- Members are **not required** to be mutually toggle-compatible.
+- The `reference_index` (default 0, user-changeable) designates the
+  member whose coordinates define the group's `shared_state`.
+- For each non-reference member, compute a compatibility result
+  against the reference using `are_toggle_compatible`.
+- **Compatible members** render in the reference's axes exactly —
+  switching to them is instant and visually aligned.
+- **Incompatible members** render in their own axes when active.
+  The plot's axis bounds switch with the member. A small badge
+  "Independent axes" appears in the toggle bar while such a member
+  is active. Switching away restores the reference's axes.
+- Compatible switching remains `setVisible()` only; incompatible
+  switching reconfigures axes, never re-uploads image data.
+
+### Switching (the toggle action)
+
+- Mouse: click a numbered button in the toggle bar (one per member).
+- Keyboard: number keys `1`..`9` select members 1..9 (0-indexed 0..8)
+  when the canvas has focus. Members beyond 9 are reachable only
+  via mouse click. The toggle bar always shows every member.
+- Auto-flicker: a `QTimer` cycles `active_index` through `0..N-1`
+  at a configurable rate.
+- Switching **never changes the active tab** in the Display Canvas's
+  `QTabWidget`. Number keys are intercepted at the `SeismicView`
+  level so they cannot cascade to `QTabWidget` behavior.
+
+### Group command bar binding
+
+- The Group Command Bar (bottom of canvas) is bound to the
+  reference member's `GroupIndex`. Changing reference rebuilds
+  the bar's available modes and resets `current_group_id` to 0.
+- `shared_state.current_group_id` applies to all members via their
+  respective `GroupIndex` objects. If a non-reference member does
+  not contain the selected group ID, it renders empty with a
+  "group not present" label until either the selection changes or
+  the user switches away.
+
+### Shared state semantics
+
+- Zoom, pan, trace range, time range, grouping mode, current group,
+  groups per view, crosshair — all shared across members in the
+  reference's coordinates.
+- Per-member state — colormap, clip, gain, bandpass, AGC — is
+  independent unless `link_all == True`.
+- `link_all` default: **True** on group creation if every member is
+  compatible with the reference; **False** when any member is
+  incompatible (links between incompatible members rarely make sense).
 
 ---
 
-## Derived Datasets (Difference)
+## Derived Datasets (click-A, click-B Difference)
 
-- `DerivedDataset` is **lazy**: it stores references to its two parents
-  and computes its `read_slice` by subtracting the parents' `read_slice`
-  results. No pre-materialized array.
-- Construction is instantaneous — no worker needed.
-- Subtraction uses **raw parent traces**, before any processing chain.
-  UI labels must make this explicit ("Compute Difference (raw traces)").
-- A derived dataset with a removed parent is non-renderable. Viewports
-  showing it must display a clear "parent missing" state. Never
-  auto-delete derivatives.
-- `DerivedDataset` proxies its parents' `GroupIndex` (they are identical
-  by compatibility). No separate indexing.
+- Diff is a **catalog-level** operation that produces a new
+  `DerivedDataset`, independent of any toggle group.
+
+### Selection flow
+
+- The catalog has a persistent **Diff Selection** state with two
+  slots, `diff_a` and `diff_b`, both initially empty.
+- **Left-click** on a dataset in the catalog selects it normally
+  (for viewing properties, enabling context-menu items, etc.).
+- **Ctrl+left-click** on a dataset toggles it as the next diff slot:
+  - If both slots empty: sets `diff_a`.
+  - If `diff_a` set and `diff_b` empty: sets `diff_b`.
+  - If both set: resets and sets `diff_a`.
+- Datasets selected as `diff_a` or `diff_b` display a small **A** or
+  **B** badge in the catalog.
+- A small **Diff Selection bar** above or below the catalog tree shows
+  "A: {name}  B: {name}" with **Swap** and **Clear** buttons.
+- A **Compute A − B** button on the Diff Selection bar is enabled
+  when both slots are filled. Clicking it:
+  1. Validates compatibility (`are_toggle_compatible`).
+  2. On success, creates a `DerivedDataset` named `"{A.name} − {B.name}"`
+     and registers it in the project's "Derived" group. Clears the
+     diff selection.
+  3. On failure, displays the reason in the status bar. Selection persists.
+
+### Alternate path
+
+- The old right-click "Compute Difference..." menu item (on two
+  multi-selected datasets) is preserved for users who want to set
+  a custom name before creation. It opens the diff dialog with
+  name and direction fields.
+
+### DerivedDataset behavior
+
+- **Lazy**: stores references to its two parents, computes
+  `read_slice` by subtracting the parents' `read_slice` results.
+  No pre-materialized array.
+- Uses raw parent traces, before any processing chain.
+- If a parent is removed from the project, `parents_missing == True`
+  and rendering shows a "parent missing" message. Derivatives are
+  never auto-deleted.
+- `group_index` proxies `parent_a.group_index`.
 
 ---
 
 ## Processing & Edge Effects
 
 - Processing runs on the visible slice, not the whole volume.
-- The `ProcessingChain` is an ordered list of operations: `ConstantGain`,
-  `AGC`, `Bandpass`. Each declares a `pad_samples` requirement.
-- `read_slice` honors the chain's total padding budget by reading extra
-  samples above/below the requested time range and cropping after the
-  chain runs. **Do NOT remove this padding** — it is intentional to
-  suppress filter transients at slice edges.
+- The `ProcessingChain` is an ordered list: `ConstantGain`, `AGC`,
+  `Bandpass`. Each declares a `pad_samples` requirement.
+- `read_slice` honors the chain's total padding budget by reading
+  extra samples above/below the requested time range and cropping
+  after the chain runs. **Do NOT remove this padding.**
 - AGC with a fixed window on a padded slice approximates whole-trace
   AGC. Exact whole-trace AGC is v2.
 - Any processing step estimated to exceed ~50 ms runs on a worker.
 
 ---
 
-## Viewport & Toggle Semantics
-
-- A `Viewport` holds up to two dataset slots (A, B) and an `active_slot`
-  indicator (A | B). **Diff is not a viewport mode**; it's a derived
-  dataset that can occupy any slot.
-- Shared within a viewport (live on `Viewport.shared_state`):
-  zoom, pan, trace range, time range, crosshair position,
-  current group id, groups per view, grouping mode.
-- Per-slot (live on `Viewport.slots[A|B].display_state` and `.processing_chain`):
-  gain, colormap, clip, AGC, bandpass.
-- Toggle-compatibility requires exact match on `n_traces`, `n_samples`,
-  inline range, crossline range, and near-equal `sample_interval_ms`
-  (`np.isclose(rtol=1e-6)`). Group-structure compatibility additionally
-  required when slot B is assigned: same grouping modes available, same
-  group IDs present.
-- Toggle rendering uses **two pyqtgraph `ImageItem`s** in the same
-  `PlotItem`; switching is `setVisible()` only — never re-upload. This
-  is a hard performance invariant.
-
----
-
 ## Layout Regions
 
 - **Top toolbar (global)**: colormap, clip %, gain, bandpass, AGC, and
-  the edit-target selector `[A] [B] [Link]`. Edits the active slot(s)
-  of the active viewport. Pinned; always visible.
-- **Top-left (Catalog)**: loaded and derived datasets, multi-select,
-  right-click "Compute Difference...".
-- **Bottom-left (Viewport Manager)**: list of open viewports, creation,
-  closing, switching, slot assignment, compatibility status.
-  **No processing or appearance controls here.**
-- **Right (Display Canvas)**: `QTabWidget` of viewports. Each viewport has:
-  - a canvas-local `View: [A] [B]` toggle bar **above** the plot
-    (viewing, not editing),
+  the edit-target selector `[1] [2] [3] … [All]` whose button count
+  matches the active toggle group's N. Pinned; always visible.
+- **Top-left (Catalog)**: loaded and derived datasets, plus the Diff
+  Selection bar (A/B indicators, Swap, Clear, Compute A − B). Normal
+  selection is left-click; diff-slot selection is Ctrl+left-click.
+- **Bottom-left (Viewport Manager)**: list of toggle groups, creation,
+  closing, renaming, member ordering (drag-and-drop), reference-member
+  selection, per-member compatibility indicators. **No processing or
+  appearance controls here.**
+- **Right (Display Canvas)**: `QTabWidget` — one tab per toggle group.
+  Each tab:
+  - a canvas-local **Toggle Bar** above the plot with numbered buttons
+    for every member plus an auto-flicker control,
   - the pyqtgraph plot itself (center),
-  - the **Group Command Bar** **below** the plot.
+  - the **Group Command Bar** below the plot.
 
 ---
 
 ## Toolbar Edit Routing
 
-- `GlobalToolbar` is stateless about viewports and slots. It only emits
-  signals describing the intended edit (e.g. `gain_changed(12.0)`).
-- `ActiveViewportController` (in `controllers/`) is the single mediator:
-  it subscribes to toolbar signals, reads the current active viewport +
-  `[A]/[B]/Link` state, and applies edits to the correct slot(s).
-- When the active viewport or slot target changes, toolbar widgets
-  rebind to the new target's values using a **silent-update path** that
-  does NOT re-emit change signals. Use `blockSignals()` or equivalent.
-  This is non-negotiable — a naive rebind creates feedback loops.
+- `GlobalToolbar` is stateless about toggle groups and members. It only
+  emits signals describing the intended edit (e.g. `gain_changed(12.0)`).
+- `ActiveGroupController` (in `controllers/`) is the single mediator:
+  it subscribes to toolbar signals, reads the current active group +
+  `edit_target_index`/`link_all` state, and applies edits to the
+  correct member(s).
+- When the active group, edit target, or link_all changes, toolbar
+  widgets rebind to the target's values using `blockSignals()` to
+  prevent feedback loops. **Non-negotiable.**
 
 ---
 
-## Slot Targeting
+## Edit Target Selector
 
-- `[A] [B]` selects which slot the toolbar edits. **Independent** of
-  which slot is currently visible on the canvas.
-- `[Link]` applies edits to both slots simultaneously. Default: on when
-  both slots hold compatible datasets, off otherwise.
-- The canvas-local `View: [A] [B]` toggle is a **separate control** and
-  must be visually distinct from the toolbar's `Edit: [A] [B] [Link]`
-  (different label prefix, different position).
+- `[1] [2] [3] … [All]` as an exclusive row of checkable buttons,
+  rebuilt whenever the active group changes or its member count
+  changes.
+- `[All]` is `link_all == True`; exclusive with numeric selections.
+- Default on group creation: `[All]` selected if every member is
+  compatible with the reference, else `[1]` (first member).
 
 ---
 
 ## Group Command Bar (bottom of canvas)
 
-- One per viewport. Viewport-level state, shared across slots.
+- One per toggle group. Group-level state, shared across members
+  via the reference member's coordinate system.
 - Widgets, left-to-right:
-  - Grouping mode dropdown (Shot / Inline / Crossline / Trace Range).
-  - Step-first `◀◀`, step-back `◀`, group spinner `[ n / total ]`,
-    step-forward `▶`, step-last `▶▶`.
-  - "Per view" spinbox (1–10, default 1).
-  - Optional status text (e.g. "3214 shots indexed").
+  - Grouping mode `QComboBox` (modes available on the reference).
+  - `◀◀`, `◀`, group `QSpinBox` showing `current + 1` of `n_groups`,
+    `▶`, `▶▶`.
+  - "Per view" `QSpinBox` (1–10, default 1).
+  - Status label (e.g. "3214 shots").
 - Keyboard, when canvas has focus: `PageUp` = back, `PageDown` = forward,
   `Home` = first, `End` = last.
-- Changing grouping mode re-derives the group index from headers (cheap —
-  the scan already recorded all header fields) and resets current group to 0.
-- Disabled while indexing is in progress. Disabled if no dataset in slot A.
+- Disabled when no reference is set.
 
 ---
 
@@ -247,7 +327,10 @@ ui/  →  controllers/  →  services/  →  models/ ← processing/, io/
 - All file I/O and any processing >50 ms runs on `QThreadPool`.
 - Time axis is always milliseconds, time-down.
 - `read_slice` is the only trace-data access path.
-- Toggle switching is `setVisible()` only, never a re-upload.
+- Switching among **compatible** members is `setVisible()` only.
+  Switching to an **incompatible** member may reconfigure axes but
+  never re-uploads the other members' images.
+- Member switching must never change the active `QTabWidget` tab.
 - Padding for filter edge effects is never removed.
 - Toolbar rebinds are silent (signals blocked during programmatic updates).
 - Derivatives with missing parents are kept and marked, never auto-deleted.
@@ -268,19 +351,17 @@ ui/  →  controllers/  →  services/  →  models/ ← processing/, io/
 
 ## Workflow for Each Milestone
 
-1. Read this file (`CLAUDE.md`) in full.
+1. Read `CLAUDE.md` in full.
 2. Read `MILESTONE.md` for the current milestone's prompt.
-3. Check completed milestones with `git tag -l 'm*-done'` to confirm
-   you're picking up where the previous session left off.
+3. Check completed milestones with `git tag -l 'm*-done'`.
 4. **Before writing code**, produce a short plan: which classes to add,
    which Qt signals/slots, which tests. Wait for user confirmation.
 5. Implement.
 6. Run `ruff check`, `ruff format`, `pytest`, and the app once.
 7. Update `CHANGELOG.md` with the milestone's outcomes.
 8. Commit with a conventional-commits message.
-9. Tag the commit `m<N>-done` (e.g. `git tag m3-done`).
-10. Stop. Do not start the next milestone — a new session will do that
-    after the user updates `MILESTONE.md`.
+9. Tag the commit (e.g. `git tag m3-done`).
+10. Stop.
 
 ---
 
@@ -292,9 +373,11 @@ ui/  →  controllers/  →  services/  →  models/ ← processing/, io/
 - CSV/image export.
 - MiniSEED / SAC / other formats beyond SEG-Y.
 - Project save/load (`.svp` files).
-- Resampling mismatched datasets for toggle.
+- Auto-resampling mismatched datasets.
 - Whole-trace AGC (padded-slice AGC is the v1 approximation).
-- Scale factors or weights in diff (`A − B` only, no `A − k·B`).
+- Scale factors or weights in diff (`A − B` only).
+- Diff between members of a toggle group (v2; v1 diff is catalog-only).
+- Keyboard bindings beyond `1..9` for members 10+ (v2).
 
 ---
 
@@ -302,14 +385,15 @@ ui/  →  controllers/  →  services/  →  models/ ← processing/, io/
 
 - Rapid pan/zoom: show the previous cached image until the new slice
   arrives, with a subtle "loading" indicator in the corner.
-- Crosshair amplitude reads from the cached visible slice (not a fresh
-  per-cursor trace fetch).
-- Zoom-on-open: fit-to-window, capped at a configurable maximum (default
-  5000 traces). Warn if the full volume exceeds the cap.
-- No active viewport → toolbar is visible but disabled.
+- Crosshair amplitude reads from the cached visible slice.
+- Zoom-on-open: fit-to-window, capped at a configurable maximum
+  (default 5000 traces). Warn if the full volume exceeds the cap.
+- No active toggle group → toolbar is visible but disabled.
 - Clip percentile default: 1–99.
-- Default colormap: "seismic" (RdBu-equivalent). Diff datasets also use
-  "seismic" with symmetric levels.
+- Default colormap: "seismic". Diff datasets use "seismic" with
+  symmetric levels.
 - Default bandpass: disabled; when enabled, 5–80 Hz, order 4.
 - Default AGC: disabled; when enabled, 500 ms window.
-- Trace Range grouping default: 100 traces per group.
+- Auto-flicker rate default: 2 Hz. Cycles through all members in order.
+- First nine members keyboard-addressable (1..9); 10+ via mouse.
+- The toggle group is initiate when a dataset is select with double click.

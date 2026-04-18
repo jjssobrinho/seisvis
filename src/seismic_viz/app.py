@@ -20,10 +20,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from seismic_viz.io.slice_cache import SliceCache
 from seismic_viz.models.dataset import Dataset
 from seismic_viz.models.project import Project
+from seismic_viz.models.toggle_group import ToggleGroup
 from seismic_viz.ui.dialogs.dataset_properties_dialog import DatasetPropertiesDialog
 from seismic_viz.ui.panels.catalog_panel import CatalogPanel
+from seismic_viz.ui.panels.display_panel import DisplayPanel
+from seismic_viz.ui.panels.viewport_manager_panel import ViewportManagerPanel
 from seismic_viz.workers.load_worker import LoadWorker
 
 _LOG_PATH = Path("logs/seismic_viz.log")
@@ -77,31 +81,12 @@ def _make_toolbar() -> QWidget:
     return toolbar
 
 
-def _make_display_canvas() -> QWidget:
-    container = QWidget()
-    layout = QVBoxLayout(container)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(0)
-
-    canvas_label = _make_placeholder("Display Canvas")
-    layout.addWidget(canvas_label, stretch=1)
-
-    command_bar = _make_placeholder("Group Command Bar")
-    command_bar.setEnabled(False)
-    command_bar.setFixedHeight(40)
-    command_bar.setStyleSheet(
-        "color: #888; font-style: italic; background: #f0f0f0; border-top: 1px solid #ccc;"
-    )
-    layout.addWidget(command_bar)
-
-    return container
-
-
 class MainWindow(QMainWindow):
     def __init__(self, project: Project) -> None:
         super().__init__()
         self.project = project
         self._pool = QThreadPool.globalInstance()
+        self._slice_cache = SliceCache(max_entries=32)
         self._pending_loads = 0
 
         self.setWindowTitle("Seismic View")
@@ -117,7 +102,7 @@ class MainWindow(QMainWindow):
         menu = self.menuBar()
         file_menu = menu.addMenu("&File")
 
-        open_action = file_menu.addAction("&Open…")
+        open_action = file_menu.addAction("&Load data…")
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self._on_open_files)
 
@@ -141,12 +126,38 @@ class MainWindow(QMainWindow):
         self.catalog_panel = CatalogPanel(self.project)
         self.catalog_panel.properties_requested.connect(self._on_properties_requested)
         self.catalog_panel.remove_requested.connect(self._on_remove_requested)
+        self.catalog_panel.open_in_new_group_requested.connect(self._on_open_in_new_group)
+        self.catalog_panel.selection_changed.connect(self._on_catalog_selection_changed)
         left_splitter.addWidget(self.catalog_panel)
-        left_splitter.addWidget(_make_placeholder("Viewport Manager"))
+
+        self.viewport_manager = ViewportManagerPanel(self.project)
+        self.viewport_manager.new_group_requested.connect(self._on_new_group_requested)
+        self.viewport_manager.close_group_requested.connect(self._on_close_group_requested)
+        self.viewport_manager.group_selected.connect(self.project.set_active_toggle_group)
+        left_splitter.addWidget(self.viewport_manager)
         left_splitter.setSizes([300, 200])
 
         h_splitter.addWidget(left_splitter)
-        h_splitter.addWidget(_make_display_canvas())
+
+        display_container = QWidget()
+        display_layout = QVBoxLayout(display_container)
+        display_layout.setContentsMargins(0, 0, 0, 0)
+        display_layout.setSpacing(0)
+
+        self.display_panel = DisplayPanel(self.project, self._pool, self._slice_cache)
+        self.display_panel.status_message.connect(self._on_status_message)
+        self.display_panel.cursor_readout.connect(self._on_cursor_readout)
+        display_layout.addWidget(self.display_panel, stretch=1)
+
+        command_bar = _make_placeholder("Group Command Bar")
+        command_bar.setEnabled(False)
+        command_bar.setFixedHeight(40)
+        command_bar.setStyleSheet(
+            "color: #888; font-style: italic; background: #f0f0f0; border-top: 1px solid #ccc;"
+        )
+        display_layout.addWidget(command_bar)
+
+        h_splitter.addWidget(display_container)
         h_splitter.setSizes([250, 1030])
 
         root_layout.addWidget(h_splitter, stretch=1)
@@ -157,7 +168,7 @@ class MainWindow(QMainWindow):
     def _on_open_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "Open SEG-Y files",
+            "Load data",
             "",
             "SEG-Y files (*.segy *.sgy);;All files (*)",
         )
@@ -200,6 +211,43 @@ class MainWindow(QMainWindow):
 
     def _on_remove_requested(self, dataset_id: str) -> None:
         self.project.remove(dataset_id)
+
+    def _on_catalog_selection_changed(self, datasets: list[Dataset]) -> None:
+        self.viewport_manager.set_new_button_enabled(len(datasets) == 1)
+
+    def _on_open_in_new_group(self, dataset: Dataset) -> None:
+        self._create_group_for(dataset)
+
+    def _on_new_group_requested(self) -> None:
+        selected = self.catalog_panel.selected_datasets()
+        if len(selected) != 1:
+            return
+        self._create_group_for(selected[0])
+
+    def _create_group_for(self, dataset: Dataset) -> ToggleGroup:
+        name = f"Group {self.project.next_toggle_group_number()}"
+        group = ToggleGroup(name=name)
+        group.add_member(dataset)
+        self.project.add_toggle_group(group)
+        return group
+
+    def _on_close_group_requested(self, group_id: str) -> None:
+        self.project.remove_toggle_group(group_id)
+
+    # --- Display bridging ---
+
+    def _on_status_message(self, message: str) -> None:
+        self.statusBar().showMessage(message, 5000)
+
+    def _on_cursor_readout(self, trace, t_ms, amp) -> None:  # noqa: ANN001
+        if trace is None:
+            self.statusBar().clearMessage()
+            return
+        if amp is None:
+            amp_str = "—"
+        else:
+            amp_str = f"{amp:.4g}"
+        self.statusBar().showMessage(f"Trace {trace} | t = {t_ms:.1f} ms | amp = {amp_str}")
 
     # --- Drag and drop ---
 
