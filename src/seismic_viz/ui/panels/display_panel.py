@@ -33,6 +33,7 @@ class DisplayPanel(QTabWidget):
 
     status_message = Signal(str)
     cursor_readout = Signal(object, object, object)  # trace, t_ms, amp
+    close_group_requested = Signal(str)  # group id
 
     def __init__(
         self,
@@ -51,8 +52,9 @@ class DisplayPanel(QTabWidget):
         tab_bar.rename_requested.connect(self._prompt_rename)
         self.setTabBar(tab_bar)
         self.setMovable(False)
-        self.setTabsClosable(False)
+        self.setTabsClosable(True)
         self.currentChanged.connect(self._on_current_changed)
+        self.tabCloseRequested.connect(self._on_tab_close_requested)
 
         project.toggle_group_added.connect(self._on_group_added)
         project.toggle_group_removed.connect(self._on_group_removed)
@@ -108,6 +110,12 @@ class DisplayPanel(QTabWidget):
                 self._project.set_active_toggle_group(gid)
                 view.setFocus(Qt.FocusReason.TabFocusReason)
                 return
+
+    def _on_tab_close_requested(self, tab_index: int) -> None:
+        widget = self.widget(tab_index)
+        group_id = next((gid for gid, v in self._views.items() if v is widget), None)
+        if group_id is not None:
+            self.close_group_requested.emit(group_id)
 
     def _prompt_rename(self, tab_index: int) -> None:
         widget = self.widget(tab_index)

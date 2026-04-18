@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
-    QHBoxLayout,
     QListWidget,
     QListWidgetItem,
-    QPushButton,
+    QMenu,
     QVBoxLayout,
     QWidget,
 )
@@ -18,14 +18,27 @@ from seismic_viz.models.toggle_group import ToggleGroup
 log = logging.getLogger(__name__)
 
 
-class ViewportManagerPanel(QWidget):
-    """Skeleton listing of open toggle groups with create/close controls.
+class _GroupListWidget(QListWidget):
+    """QListWidget that emits on Delete key instead of consuming it."""
 
-    Full member-management UI (add/remove/reorder, reference picker,
-    compatibility indicators) arrives in M5.
+    delete_pressed = Signal()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: D401 - Qt override
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self.delete_pressed.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+class ViewportManagerPanel(QWidget):
+    """Listing of open toggle groups.
+
+    Groups are created elsewhere (double-click a catalog dataset). Closing a
+    group happens via this panel's right-click context menu or the Delete
+    key; the display tabs also expose a close button.
     """
 
-    new_group_requested = Signal()  # MainWindow resolves the selected dataset
     close_group_requested = Signal(str)  # group id
     group_selected = Signal(str)
 
@@ -36,30 +49,16 @@ class ViewportManagerPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        self._list = QListWidget(self)
+        self._list = _GroupListWidget(self)
         self._list.currentItemChanged.connect(self._on_current_item_changed)
+        self._list.delete_pressed.connect(self._close_current)
+        self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._list.customContextMenuRequested.connect(self._show_context_menu)
         layout.addWidget(self._list, stretch=1)
-
-        buttons = QHBoxLayout()
-        self._new_button = QPushButton("New Toggle Group", self)
-        self._new_button.setEnabled(False)
-        self._new_button.clicked.connect(self.new_group_requested)
-        buttons.addWidget(self._new_button)
-
-        self._close_button = QPushButton("Close Toggle Group", self)
-        self._close_button.setEnabled(False)
-        self._close_button.clicked.connect(self._on_close_clicked)
-        buttons.addWidget(self._close_button)
-        layout.addLayout(buttons)
 
         project.toggle_group_added.connect(self._on_group_added)
         project.toggle_group_removed.connect(self._on_group_removed)
         project.active_toggle_group_changed.connect(self._on_active_group_changed)
-
-    # --- Public controls ---
-
-    def set_new_button_enabled(self, enabled: bool) -> None:
-        self._new_button.setEnabled(enabled)
 
     # --- Project events ---
 
@@ -77,12 +76,10 @@ class ViewportManagerPanel(QWidget):
             if item.data(Qt.ItemDataRole.UserRole) == group_id:
                 self._list.takeItem(row)
                 break
-        self._update_close_button()
 
     def _on_active_group_changed(self, group_id: object) -> None:
         if group_id is None:
             self._list.clearSelection()
-            self._update_close_button()
             return
         for row in range(self._list.count()):
             item = self._list.item(row)
@@ -90,19 +87,30 @@ class ViewportManagerPanel(QWidget):
                 if self._list.currentRow() != row:
                     self._list.setCurrentRow(row)
                 break
-        self._update_close_button()
 
     # --- Widget interactions ---
 
     def _on_current_item_changed(self, current: QListWidgetItem | None, _prev) -> None:
-        self._update_close_button()
         if current is None:
             return
         gid = current.data(Qt.ItemDataRole.UserRole)
         if gid:
             self.group_selected.emit(gid)
 
-    def _on_close_clicked(self) -> None:
+    def _show_context_menu(self, pos: QPoint) -> None:
+        item = self._list.itemAt(pos)
+        if item is None:
+            return
+        self._list.setCurrentItem(item)
+        gid = item.data(Qt.ItemDataRole.UserRole)
+        if not gid:
+            return
+        menu = QMenu(self._list)
+        close = menu.addAction("Close Toggle Group")
+        close.triggered.connect(lambda _checked=False, g=gid: self.close_group_requested.emit(g))
+        menu.exec(self._list.viewport().mapToGlobal(pos))
+
+    def _close_current(self) -> None:
         item = self._list.currentItem()
         if item is None:
             return
@@ -123,6 +131,3 @@ class ViewportManagerPanel(QWidget):
         n = group.n_members
         member_word = "member" if n == 1 else "members"
         return f"{group.name} ({n} {member_word})"
-
-    def _update_close_button(self) -> None:
-        self._close_button.setEnabled(self._list.currentItem() is not None)
