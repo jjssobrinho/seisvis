@@ -127,11 +127,9 @@ class MainWindow(QMainWindow):
         self.catalog_panel.properties_requested.connect(self._on_properties_requested)
         self.catalog_panel.remove_requested.connect(self._on_remove_requested)
         self.catalog_panel.open_in_new_group_requested.connect(self._on_open_in_new_group)
-        self.catalog_panel.selection_changed.connect(self._on_catalog_selection_changed)
         left_splitter.addWidget(self.catalog_panel)
 
         self.viewport_manager = ViewportManagerPanel(self.project)
-        self.viewport_manager.new_group_requested.connect(self._on_new_group_requested)
         self.viewport_manager.close_group_requested.connect(self._on_close_group_requested)
         self.viewport_manager.group_selected.connect(self.project.set_active_toggle_group)
         left_splitter.addWidget(self.viewport_manager)
@@ -147,6 +145,7 @@ class MainWindow(QMainWindow):
         self.display_panel = DisplayPanel(self.project, self._pool, self._slice_cache)
         self.display_panel.status_message.connect(self._on_status_message)
         self.display_panel.cursor_readout.connect(self._on_cursor_readout)
+        self.display_panel.close_group_requested.connect(self._on_close_group_requested)
         display_layout.addWidget(self.display_panel, stretch=1)
 
         command_bar = _make_placeholder("Group Command Bar")
@@ -212,17 +211,8 @@ class MainWindow(QMainWindow):
     def _on_remove_requested(self, dataset_id: str) -> None:
         self.project.remove(dataset_id)
 
-    def _on_catalog_selection_changed(self, datasets: list[Dataset]) -> None:
-        self.viewport_manager.set_new_button_enabled(len(datasets) == 1)
-
     def _on_open_in_new_group(self, dataset: Dataset) -> None:
         self._create_group_for(dataset)
-
-    def _on_new_group_requested(self) -> None:
-        selected = self.catalog_panel.selected_datasets()
-        if len(selected) != 1:
-            return
-        self._create_group_for(selected[0])
 
     def _create_group_for(self, dataset: Dataset) -> ToggleGroup:
         name = f"Group {self.project.next_toggle_group_number()}"
