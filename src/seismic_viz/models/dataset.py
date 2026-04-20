@@ -8,7 +8,7 @@ import numpy as np
 import segyio
 from PySide6.QtCore import QObject, Signal
 
-from seismic_viz.models.group_index import GroupIndex
+from seismic_viz.models.group_index import GroupIndex, GroupingMode, ModeState
 
 log = logging.getLogger(__name__)
 
@@ -104,6 +104,31 @@ class Dataset(QObject):
             trace = self.handle.trace[int(idx)]
             out[row] = np.asarray(trace[t0:t1], dtype=np.float32)
         return out
+
+    def inline_at(self, trace_index: int) -> int | None:
+        """Return the inline number at ``trace_index``, or ``None``.
+
+        Reads from the scanned array produced by the background header
+        scan. Returns ``None`` when the scan hasn't completed, the file
+        isn't structured, or ``trace_index`` is out of range.
+        """
+        return self._header_value_at(GroupingMode.INLINE, trace_index)
+
+    def crossline_at(self, trace_index: int) -> int | None:
+        """Return the crossline number at ``trace_index``, or ``None``."""
+        return self._header_value_at(GroupingMode.CROSSLINE, trace_index)
+
+    def _header_value_at(self, mode: GroupingMode, trace_index: int) -> int | None:
+        gi = self.group_index
+        if gi is None or gi.mode_state(mode) is not ModeState.READY:
+            return None
+        arr = gi._field_array_for(mode)
+        if arr is None:
+            return None
+        t = int(trace_index)
+        if t < 0 or t >= arr.size:
+            return None
+        return int(arr[t])
 
     def close(self) -> None:
         if self._closed:

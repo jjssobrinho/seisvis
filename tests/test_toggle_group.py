@@ -100,10 +100,16 @@ def test_update_shared_state_signal_once_per_change(group: ToggleGroup, segy_3d:
         group.add_member(ds)
         hits = []
         group.shared_state_changed.connect(lambda: hits.append(1))
-        group.update_shared_state(trace_range=(0, 10), time_range_ms=(0.0, 100.0))
+        group.update_shared_state(
+            commanded_trace_range=(0, 10),
+            commanded_time_range_ms=(0.0, 100.0),
+        )
         assert hits == [1]
         # No-op update emits nothing.
-        group.update_shared_state(trace_range=(0, 10), time_range_ms=(0.0, 100.0))
+        group.update_shared_state(
+            commanded_trace_range=(0, 10),
+            commanded_time_range_ms=(0.0, 100.0),
+        )
         assert hits == [1]
     finally:
         ds.close()

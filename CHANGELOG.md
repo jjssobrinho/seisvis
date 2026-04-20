@@ -1,5 +1,54 @@
 # Changelog
 
+## [M4.3] Canvas Info & Zoom
+
+Zoom becomes a pure view operation over the already-fetched working set;
+a new info track draws shot / inline / crossline / trace labels above the
+plot; the crosshair readout becomes mode-aware.
+
+- `models/toggle_group.py`: `SharedState.trace_range` →
+  `commanded_trace_range`, `time_range_ms` → `commanded_time_range_ms`.
+  Adds `zoomed_trace_range` / `zoomed_time_range_ms`, `is_zoomed`,
+  `update_zoomed_ranges(...)` with clamping into commanded bounds,
+  `reset_zoom()`, and a new `zoom_changed` signal. Any command-bar
+  edit that changes a commanded range implicitly resets zoom to match
+  — the "refit on command-bar edit" rule.
+- `models/group_index.py`: adds `group_trace_range(mode, group_id)`
+  and `group_for_trace(mode, trace_index)`. Both tolerate
+  TRACE_RANGE (arithmetic, no scan needed) and UNSCANNED modes
+  (return `None`).
+- `models/dataset.py`: adds `inline_at(trace_index)` and
+  `crossline_at(trace_index)` that read from the scanned arrays
+  inside `GroupIndex`. Return `None` when the scan hasn't completed.
+- `ui/widgets/info_track.py` (new): fixed-height 20 px `QWidget`
+  that draws one tick + label per group whose start trace falls
+  inside the plot's current x-range. Labels are mode-aware and
+  thinned via `QFontMetrics` so rendered labels sit at least
+  80 px apart. The M4.3 version uses hardcoded display names
+  (`Shot`, `IL`, `XL`, `T`); M6 will route through the `.sv`
+  mapping's user-renamed names.
+- `ui/widgets/seismic_view.py`: inserts the `InfoTrack` into the
+  vertical layout above the plot. Rewires the pyqtgraph
+  `sigRangeChanged` handler to update `zoomed_*` via the clamping
+  setter only — no slice-worker runs on pan or zoom. Binds the
+  `F` key (with `WidgetWithChildrenShortcut` context) to reset
+  zoom. Drives the plot's viewbox from `zoomed_*` (falling back
+  to commanded when zoom equals commanded). Extends the crosshair
+  hover handler to emit a mode-aware status line:
+  `Shot {ffid}, Channel {ch} | …`,
+  `IL {il}, XL {xl} | …`, etc.
+- `tests/test_group_index_queries.py` (new): covers
+  `group_trace_range` / `group_for_trace` for all four modes,
+  edge traces of the first and last group, non-contiguous
+  crossline groups, and UNSCANNED / empty paths.
+- `tests/test_zoom_clamping.py` (new): clamping into commanded
+  bounds; `zoom_changed` signal semantics; implicit zoom reset
+  when commanded range changes; `reset_zoom` idempotency; noop
+  when commanded is `None`.
+- `tests/manual/zoom_and_fit.md` and
+  `tests/manual/info_track.md` (new): manual verification
+  checklists.
+
 ## [M4.2] Lazy Header Scan
 
 M4 eagerly scanned all trace headers in `load_segy`, which made

@@ -10,8 +10,10 @@ from PySide6.QtGui import QKeyEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from seismic_viz.io.slice_cache import SliceCache, SliceKey
+from seismic_viz.models.group_index import GroupingMode
 from seismic_viz.models.toggle_group import Member, ToggleGroup
 from seismic_viz.ui.widgets.group_command_bar import GroupCommandBar
+from seismic_viz.ui.widgets.info_track import InfoTrack, default_display_names
 from seismic_viz.workers.slice_worker import SliceWorker
 
 log = logging.getLogger(__name__)
@@ -91,6 +93,10 @@ class SeismicView(QWidget):
         self.toggle_bar_slot.setFixedHeight(0)
         root.addWidget(self.toggle_bar_slot)
 
+        # Info track: group-number labels above the plot, aligned to x-axis.
+        self.info_track = InfoTrack(parent=self)
+        root.addWidget(self.info_track)
+
         # Central plot with our custom ViewBox so left-click always rubber-bands.
         self.plot_widget = pg.PlotWidget(parent=self, viewBox=_SeismicViewBox())
         self.plot_item = self.plot_widget.getPlotItem()
@@ -100,6 +106,7 @@ class SeismicView(QWidget):
         view_box = self.plot_item.getViewBox()
         view_box.invertY(True)
         view_box.sigRangeChanged.connect(self._on_view_range_changed)
+        view_box.sigXRangeChanged.connect(self._on_view_x_range_changed)
 
         crosshair_pen = pg.mkPen((180, 180, 180), width=1)
         self._v_line = pg.InfiniteLine(angle=90, movable=False, pen=crosshair_pen)
@@ -139,6 +146,7 @@ class SeismicView(QWidget):
             (QKeySequence(Qt.Key.Key_Right), self.command_bar.step_forward),
             (QKeySequence(Qt.Key.Key_Home), self.command_bar.go_first),
             (QKeySequence(Qt.Key.Key_End), self.command_bar.go_last),
+            (QKeySequence(Qt.Key.Key_F), self._reset_zoom_to_commanded),
         ):
             sc = QShortcut(seq, self)
             sc.setContext(ctx)
@@ -151,6 +159,7 @@ class SeismicView(QWidget):
         self.group.member_removed.connect(self._on_member_removed)
         self.group.active_index_changed.connect(self._on_active_index_changed)
         self.group.shared_state_changed.connect(self._on_shared_state_changed)
+        self.group.zoom_changed.connect(self._on_zoom_changed)
 
     # --- Member management ---
 
@@ -175,6 +184,7 @@ class SeismicView(QWidget):
 
     def _on_active_index_changed(self, _index: int) -> None:
         self._apply_active_visibility()
+        self._refresh_info_track()
 
     def _apply_active_visibility(self) -> None:
         active = self.group.active_index
@@ -192,17 +202,17 @@ class SeismicView(QWidget):
             return
         ds = member.dataset
         state = self.group.shared_state
-        if state.trace_range is None:
+        if state.commanded_trace_range is None:
             trace_range = self._trace_range_from_group_or_cap(ds)
-            self.group.update_shared_state(trace_range=trace_range)
+            self.group.update_shared_state(commanded_trace_range=trace_range)
             if state.grouping_mode is None and ds.n_traces > SeismicView.MAX_FIT_TRACES:
                 self.status_message.emit(
                     f"Dataset has {ds.n_traces} traces; showing first "
                     f"{SeismicView.MAX_FIT_TRACES} (configurable cap)."
                 )
-        if state.time_range_ms is None:
+        if state.commanded_time_range_ms is None:
             t_max_ms = ds.n_samples * ds.sample_interval_ms
-            self.group.update_shared_state(time_range_ms=(0.0, t_max_ms))
+            self.group.update_shared_state(commanded_time_range_ms=(0.0, t_max_ms))
 
     def _trace_range_from_group_or_cap(self, ds) -> tuple[int, int]:  # noqa: ANN001
         state = self.group.shared_state
@@ -231,8 +241,9 @@ class SeismicView(QWidget):
 
     def _on_shared_state_changed(self) -> None:
         state = self.group.shared_state
-        # When group-navigation fields drive the slice, realign trace_range
-        # to the reference group's indices before updating the viewbox.
+        # When group-navigation fields drive the slice, realign the commanded
+        # trace_range to the reference group's indices before updating the
+        # viewbox. Resetting zoom keeps zoomed ⊆ commanded intact.
         if state.grouping_mode is not None and state.current_group_id is not None:
             ref = self.group.reference_index
             try:
@@ -250,44 +261,90 @@ class SeismicView(QWidget):
                 )
                 if indices.size:
                     new_range = (int(indices.min()), int(indices.max()) + 1)
-                    if state.trace_range != new_range:
-                        # Avoid feedback into this same slot.
-                        state.trace_range = new_range
+                    if state.commanded_trace_range != new_range:
+                        # Avoid feedback into this same slot; reset zoom.
+                        state.commanded_trace_range = new_range
+                        state.zoomed_trace_range = new_range
         self._apply_shared_state_to_viewbox()
+        self._refresh_info_track()
         for i in range(len(self._image_items)):
             self._request_slice(i)
 
+    def _on_zoom_changed(self) -> None:
+        # Zoom is a pure view operation — update the viewbox and the info
+        # track, but never refetch.
+        self._apply_shared_state_to_viewbox()
+        self._refresh_info_track()
+
     def _apply_shared_state_to_viewbox(self) -> None:
         state = self.group.shared_state
-        if state.trace_range is None or state.time_range_ms is None:
+        x_range = state.zoomed_trace_range or state.commanded_trace_range
+        y_range = state.zoomed_time_range_ms or state.commanded_time_range_ms
+        if x_range is None or y_range is None:
             return
         view_box = self.plot_item.getViewBox()
         self._updating_range = True
         try:
-            view_box.setRange(
-                xRange=state.trace_range,
-                yRange=state.time_range_ms,
-                padding=0,
-            )
+            view_box.setRange(xRange=x_range, yRange=y_range, padding=0)
         finally:
             self._updating_range = False
 
     def _on_view_range_changed(self, _view_box, ranges) -> None:
+        # User-driven pan/zoom updates the zoomed ranges only. The clamping
+        # setter pins the view to the commanded working window — no refetch.
         if self._updating_range:
             return
-        x_range, y_range = ranges
-        time_range = (float(y_range[0]), float(y_range[1]))
         state = self.group.shared_state
-        kwargs: dict = {"time_range_ms": time_range}
-        # When grouping is driving the x-axis, don't let user pan/zoom
-        # overwrite the group's trace range — it would get snapped back
-        # immediately by _on_shared_state_changed and cause oscillation.
-        if state.grouping_mode is None or state.current_group_id is None:
-            kwargs["trace_range"] = (int(round(x_range[0])), int(round(x_range[1])))
-        self.group.update_shared_state(**kwargs)
-        # Re-request slice for every member so visibility switches show fresh data.
-        for i in range(len(self._image_items)):
-            self._request_slice(i)
+        if state.commanded_trace_range is None or state.commanded_time_range_ms is None:
+            return
+        x_range, y_range = ranges
+        self.group.update_zoomed_ranges(
+            zoomed_trace_range=(int(round(x_range[0])), int(round(x_range[1]))),
+            zoomed_time_range_ms=(float(y_range[0]), float(y_range[1])),
+        )
+        # If the clamping setter rejected the request (e.g. user panned past
+        # the commanded edge), re-apply the authoritative state so the view
+        # snaps back to the allowed sub-range.
+        self._apply_shared_state_to_viewbox()
+
+    def _on_view_x_range_changed(self, _view_box, x_range) -> None:
+        # Info track stays aligned with the plot during any x-axis change
+        # (zoom, pan, programmatic setRange).
+        self._refresh_info_track_with_x_range((float(x_range[0]), float(x_range[1])))
+
+    def _reset_zoom_to_commanded(self) -> None:
+        self.group.reset_zoom()
+
+    # --- Info track refresh ---
+
+    def _current_x_range(self) -> tuple[float, float] | None:
+        vb = self.plot_item.getViewBox()
+        x_range = vb.viewRange()[0]
+        if x_range is None:
+            return None
+        return float(x_range[0]), float(x_range[1])
+
+    def _refresh_info_track(self) -> None:
+        x_range = self._current_x_range()
+        if x_range is None:
+            self.info_track.clear()
+            return
+        self._refresh_info_track_with_x_range(x_range)
+
+    def _refresh_info_track_with_x_range(self, x_range: tuple[float, float]) -> None:
+        ds = self._active_dataset()
+        mode = self.group.shared_state.grouping_mode
+        gi = getattr(ds, "group_index", None) if ds is not None else None
+        if mode is None or gi is None:
+            self.info_track.clear()
+            return
+        if gi.current_mode != mode:
+            try:
+                gi.set_mode(mode)
+            except ValueError:
+                self.info_track.clear()
+                return
+        self.info_track.refresh(mode, gi, default_display_names, x_range)
 
     # --- Slice requests ---
 
@@ -297,7 +354,7 @@ class SeismicView(QWidget):
         except IndexError:
             return
         state = self.group.shared_state
-        if state.time_range_ms is None:
+        if state.commanded_time_range_ms is None:
             return
 
         ds = member.dataset
@@ -309,8 +366,8 @@ class SeismicView(QWidget):
             return
 
         dt_ms = ds.sample_interval_ms or 1.0
-        s0 = max(0, int(state.time_range_ms[0] / dt_ms))
-        s1 = min(ds.n_samples, int(np.ceil(state.time_range_ms[1] / dt_ms)))
+        s0 = max(0, int(state.commanded_time_range_ms[0] / dt_ms))
+        s1 = min(ds.n_samples, int(np.ceil(state.commanded_time_range_ms[1] / dt_ms)))
         if s1 - s0 <= 0:
             return
 
@@ -389,10 +446,10 @@ class SeismicView(QWidget):
             t1 = int(indices.max()) + 1
             return indices, (t0, t1)
 
-        # Fallback: use the shared trace_range.
-        if state.trace_range is None:
+        # Fallback: use the shared commanded trace range.
+        if state.commanded_trace_range is None:
             return None, (0, 0)
-        t0, t1 = state.trace_range
+        t0, t1 = state.commanded_trace_range
         t0 = max(0, min(ds.n_traces, t0))
         t1 = max(t0, min(ds.n_traces, t1))
         return slice(t0, t1), (t0, t1)
@@ -487,6 +544,62 @@ class SeismicView(QWidget):
 
         amp = self._amplitude_at(trace, t_ms)
         self.cursor_readout.emit(trace, t_ms, amp)
+        self._emit_status_for_cursor(trace, t_ms, amp)
+
+    def _emit_status_for_cursor(self, trace: int, t_ms: float, amp: float | None) -> None:
+        ds = self._active_dataset()
+        mode = self.group.shared_state.grouping_mode
+        amp_str = f"{amp:.4g}" if amp is not None else "—"
+        t_str = f"{t_ms:.2f}"
+        readout = f"Trace {trace} | t = {t_str} ms | amp = {amp_str}"
+        if ds is not None and mode is not None:
+            gi = getattr(ds, "group_index", None)
+            if gi is not None:
+                g = gi.group_for_trace(mode, trace)
+                if g is not None:
+                    group_id, ch = g
+                    readout = self._format_mode_readout(
+                        ds, mode, group_id, ch, trace, t_str, amp_str
+                    )
+        self.status_message.emit(readout)
+
+    def _format_mode_readout(
+        self,
+        ds,  # noqa: ANN001 - dataset is a QObject with dynamic attrs
+        mode: GroupingMode,
+        group_id: int,
+        ch: int,
+        trace: int,
+        t_str: str,
+        amp_str: str,
+    ) -> str:
+        if mode is GroupingMode.SHOT:
+            name = default_display_names(GroupingMode.SHOT)
+            return f"{name} {group_id}, Channel {ch} | t = {t_str} ms | amp = {amp_str}"
+        if mode is GroupingMode.INLINE:
+            xl = ds.crossline_at(trace)
+            xl_name = default_display_names(GroupingMode.CROSSLINE)
+            il_name = default_display_names(GroupingMode.INLINE)
+            if xl is not None:
+                return f"{il_name} {group_id}, {xl_name} {xl} | t = {t_str} ms | amp = {amp_str}"
+            return f"{il_name} {group_id} | t = {t_str} ms | amp = {amp_str}"
+        if mode is GroupingMode.CROSSLINE:
+            il = ds.inline_at(trace)
+            il_name = default_display_names(GroupingMode.INLINE)
+            xl_name = default_display_names(GroupingMode.CROSSLINE)
+            if il is not None:
+                return f"{xl_name} {group_id}, {il_name} {il} | t = {t_str} ms | amp = {amp_str}"
+            return f"{xl_name} {group_id} | t = {t_str} ms | amp = {amp_str}"
+        return f"Trace {trace} | t = {t_str} ms | amp = {amp_str}"
+
+    def _active_dataset(self):  # noqa: ANN202
+        i = self.group.active_index
+        if not 0 <= i < self.group.n_members:
+            return None
+        try:
+            return self.group.members[i].dataset
+        except IndexError:
+            return None
 
     def _amplitude_at(self, trace: int, t_ms: float) -> float | None:
         i = self.group.active_index
