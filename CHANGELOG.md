@@ -1,5 +1,111 @@
 # Changelog
 
+## [M4.2] Lazy Header Scan
+
+M4 eagerly scanned all trace headers in `load_segy`, which made
+multi-GB file loads stall for minutes. The scan traversed the
+file stride-by-stride three times (once per target field), which
+on a file that doesn't fit in OS page cache becomes millions of
+disk seeks. M4.2 defers this work to a background worker and
+makes `load_segy` O(1); opening a 39 GB SEG-Y now registers the
+dataset in the catalog within ~1 second with TRACE_RANGE
+rendering immediately available.
+
+- `models/group_index.py`: adds `ModeState` (`UNSCANNED`,
+  `SCANNING`, `READY`, `FAILED`) and tracks a per-mode state dict.
+  New `GroupIndex.from_metadata(n_traces, is_structured)` returns
+  an index with `TRACE_RANGE` `READY` and SHOT / INLINE /
+  CROSSLINE `UNSCANNED` (INLINE / CROSSLINE skipped on 2D files).
+  `mark_scanning()` flips the unscanned modes to `SCANNING` when
+  a worker starts. `update_from_scan(field_records, inlines,
+  crosslines)` ingests the scan results, derives mode availability
+  (SHOT if FieldRecord varies, INLINE / CROSSLINE if the arrays
+  are present and multi-valued), builds the per-mode group-to-trace
+  maps, and flips the relevant modes to `READY` (or `FAILED` on
+  empty / single-value input). `available_modes` now filters on
+  state == READY. `get_trace_indices` and `displayed_group_ids`
+  are unchanged — they operate on `READY` modes only.
+- `models/dataset.py`: `Dataset` now inherits `QObject` and emits
+  a new `group_index_ready` signal when a pending scan completes.
+  The old dataclass init is replaced with an explicit constructor
+  so the QObject base can take the `parent` kwarg.
+- `io/segy_loader.py`: removes the `scan_headers` call. Builds the
+  `Dataset` from `bin`, `tracecount`, and the existing
+  structured-vs-unstructured detection, then attaches
+  `GroupIndex.from_metadata(n_traces, is_structured=not unstructured)`.
+  No per-trace header reads on the load path.
+- `io/header_scanner.py`: **removed**. The single-pass logic
+  moves into `workers/header_scan_worker.py`.
+- `workers/header_scan_worker.py` (new): `HeaderScanWorker(QRunnable)`
+  + `HeaderScanWorkerSignals(QObject)` with `progress(float)`,
+  `finished(fr, il, xl)`, and `failed(str)`. Runs a single pass
+  over `handle.header`, reading `FieldRecord`, `INLINE_3D`, and
+  `CROSSLINE_3D` per iteration so each 240-byte header block is
+  fetched from disk once. Empirically cheaper than three
+  `handle.attributes(field)[:]` calls on cold multi-GB files (the
+  three-call form walks the file stride-by-stride three times).
+  Accepts an `is_cancelled` callable, checked every iteration;
+  cancelled runs emit neither `finished` nor `failed`.
+- `workers/load_worker.py`: after `load_segy` returns, moves the
+  new `Dataset` (a `QObject`) back to the main thread before
+  emitting `loaded`. Without this, the dataset retains thread
+  affinity to the pool thread, and subsequent `group_index_ready`
+  emissions queue to a thread with no event loop and are dropped.
+- `app.py` (MainWindow): after `project.add(dataset)`, dispatches
+  a `HeaderScanWorker` on the global `QThreadPool`. Wires
+  `progress` to a status-bar label (`Indexing headers for {name}…
+  NN%`), `finished` to a slot that calls
+  `dataset.group_index.mark_scanning()` +
+  `update_from_scan(...)` and emits `dataset.group_index_ready`,
+  and `failed` to a status-bar error with state flipped to
+  `FAILED`. Keeps Python-side references to workers in a
+  `_scan_workers` dict so their signals `QObject` isn't GC'd
+  mid-flight. Tracks a per-dataset cancellation flag dict;
+  `_on_remove_requested` flips it before `project.remove`, and
+  `_cancel_all_scans` is wired to `QApplication.aboutToQuit`
+  ahead of `project.close_all` for clean shutdown.
+- `ui/panels/catalog_panel.py`: tracks a `_scanning: set[str]` of
+  dataset IDs currently indexing. `data()` returns a trailing
+  `"  (indexing…)"` suffix and an italic `QFont` for scanning
+  rows. `_on_dataset_added` connects to `dataset.group_index_ready`
+  and `_on_scan_ready(dataset_id)` discards from the set and
+  emits `dataChanged` for the affected row. Removal clears the
+  flag alongside the row.
+- `ui/widgets/group_command_bar.py`: subscribes to the reference
+  member's `dataset.group_index_ready` signal at `_rebuild` time
+  (disconnecting from any prior reference). On fire, calls
+  `_rebuild()` so the mode combo expands to reflect the new
+  `available_modes`. The user's current mode selection is
+  preserved when still available — no auto-switch.
+- `tests/test_group_index_lazy.py` (new): covers `from_metadata`
+  output (`available_modes == {TRACE_RANGE}`, per-mode state),
+  `mark_scanning` transitions, `update_from_scan` with varied
+  FieldRecord / INLINE / CROSSLINE inputs, and the FAILED branch
+  on empty / constant arrays.
+- `tests/test_header_scan_worker.py` (new): runs the worker
+  synchronously on the 3D fixture, verifies output arrays match
+  the fixture's known FieldRecord / INLINE_3D / CROSSLINE_3D
+  layout, and that progress emissions terminate at 100.0. Feeds
+  the results back into a fresh `GroupIndex` and asserts
+  SHOT / INLINE / CROSSLINE / TRACE_RANGE all unlock.
+- `tests/test_header_scan_cancel.py` (new): runs the worker with
+  an `is_cancelled` callable that returns True after the first
+  (and midway-through) iteration; verifies neither `finished` nor
+  `failed` fires and the dataset's `GroupIndex` is not mutated.
+- `tests/test_group_index.py`: `_load` now kicks the header scan
+  synchronously (via an internal helper) and feeds the result
+  into `update_from_scan`, since `load_segy` is no longer
+  eager. Existing coverage of `get_trace_indices` / skip /
+  partial-display behavior is preserved unchanged.
+- `tests/conftest.py`: promotes the `qapp` fixture to
+  `autouse=True, scope="session"` so `Dataset` (now a `QObject`)
+  can be instantiated in tests without each test requesting the
+  fixture explicitly.
+- `tests/manual/large_file_load.md` (new): 5-step manual test
+  plan covering immediate catalog row, gradual mode unlock,
+  concurrent loads, mid-scan cancel on remove, and clean
+  shutdown during a scan.
+
 ## [M4.1] Command Bar Revision (scroll bar + skip)
 
 - `models/toggle_group.py`: `SharedState` grows a `group_skip: int`

@@ -50,6 +50,11 @@ class GroupCommandBar(QWidget):
         self.group = group
         self._rebuilding = False
         self._dragging = False
+        # The dataset whose ``group_index_ready`` signal we're currently
+        # subscribed to. Tracked so we can disconnect when the reference
+        # changes or the member is removed — without this, a second group
+        # swap would leave a dangling connection firing redundant rebuilds.
+        self._subscribed_dataset = None
 
         self._mode_combo = QComboBox(self)
         self._first_spin = QSpinBox(self)
@@ -108,6 +113,36 @@ class GroupCommandBar(QWidget):
         ref = self.group.members[self.group.reference_index]
         return getattr(ref.dataset, "group_index", None)
 
+    def _reference_dataset(self):  # noqa: ANN202
+        if self.group.is_empty:
+            return None
+        return self.group.members[self.group.reference_index].dataset
+
+    def _subscribe_to_reference(self) -> None:
+        """Connect to the reference dataset's ``group_index_ready`` signal.
+
+        Idempotent: disconnects the previous subscription first so a
+        reference swap doesn't leave multiple handlers wired up.
+        """
+        ds = self._reference_dataset()
+        if ds is self._subscribed_dataset:
+            return
+        if self._subscribed_dataset is not None:
+            try:
+                self._subscribed_dataset.group_index_ready.disconnect(self._on_index_ready)
+            except (RuntimeError, TypeError):
+                # Already disconnected (e.g. dataset destroyed) — safe to ignore.
+                pass
+        self._subscribed_dataset = ds
+        if ds is not None and hasattr(ds, "group_index_ready"):
+            ds.group_index_ready.connect(self._on_index_ready)
+
+    def _on_index_ready(self) -> None:
+        # The reference's GroupIndex just gained SHOT/INLINE/CROSSLINE modes.
+        # Rebuild the combo but preserve the user's current selection if it
+        # remains valid — don't auto-promote away from TRACE_RANGE.
+        self._rebuild()
+
     def _available_modes_ordered(self, gi: GroupIndex) -> list[GroupingMode]:
         available = gi.available_modes
         return [m for m in _MODE_ORDER if m in available]
@@ -115,6 +150,7 @@ class GroupCommandBar(QWidget):
     # --- rebuild + sync ---
 
     def _rebuild(self, *_args) -> None:
+        self._subscribe_to_reference()
         self._rebuilding = True
         try:
             self._mode_combo.blockSignals(True)

@@ -2,34 +2,59 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import segyio
+from PySide6.QtCore import QObject, Signal
 
 from seismic_viz.models.group_index import GroupIndex
 
 log = logging.getLogger(__name__)
 
 
-@dataclass
-class Dataset:
-    source_path: Path
-    handle: segyio.SegyFile
-    n_traces: int
-    n_samples: int
-    sample_interval_ms: float
-    byte_format: int
-    inline_range: tuple[int, int] | None = None
-    xline_range: tuple[int, int] | None = None
-    group_index: GroupIndex | None = None
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    name: str = ""
+class Dataset(QObject):
+    """Open SEG-Y handle + cached metadata + group index.
 
-    def __post_init__(self) -> None:
-        if not self.name:
-            self.name = Path(self.source_path).stem
+    Subclasses ``QObject`` so that the background header scanner can emit
+    ``group_index_ready`` once per dataset without threading a separate
+    signal carrier. Models-layer Qt use is allowed by CLAUDE.md (only
+    ``io``/``processing`` are forbidden from importing Qt).
+    """
+
+    # Fired once the background header scan finishes (or fails) and
+    # ``group_index`` has been updated. UI widgets bound to the dataset
+    # rebuild their mode-dependent state in response.
+    group_index_ready = Signal()
+
+    def __init__(
+        self,
+        *,
+        source_path: Path,
+        handle: segyio.SegyFile,
+        n_traces: int,
+        n_samples: int,
+        sample_interval_ms: float,
+        byte_format: int,
+        inline_range: tuple[int, int] | None = None,
+        xline_range: tuple[int, int] | None = None,
+        group_index: GroupIndex | None = None,
+        id: str | None = None,
+        name: str = "",
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.source_path = source_path
+        self.handle = handle
+        self.n_traces = n_traces
+        self.n_samples = n_samples
+        self.sample_interval_ms = sample_interval_ms
+        self.byte_format = byte_format
+        self.inline_range = inline_range
+        self.xline_range = xline_range
+        self.group_index = group_index
+        self.id = id if id is not None else str(uuid.uuid4())
+        self.name = name if name else Path(source_path).stem
         self._closed = False
 
     @property

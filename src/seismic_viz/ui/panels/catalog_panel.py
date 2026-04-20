@@ -10,6 +10,7 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QMenu,
@@ -39,6 +40,9 @@ class CatalogModel(QAbstractItemModel):
         self._project = project
         self._loaded: list[Dataset] = []
         self._derived: list[Dataset] = []
+        # Dataset ids whose header scan is still in flight. Rows in this set
+        # render with an "(indexing…)" suffix and italic font.
+        self._scanning: set[str] = set()
         project.dataset_added.connect(self._on_dataset_added)
         project.dataset_removed.connect(self._on_dataset_removed)
 
@@ -53,8 +57,14 @@ class CatalogModel(QAbstractItemModel):
         self.beginInsertRows(group_index, row, row)
         bucket.append(dataset)
         self.endInsertRows()
+        # Track indexing badge state based on the dataset's current GroupIndex.
+        gi = dataset.group_index
+        if gi is not None and gi.has_pending_scan:
+            self._scanning.add(dataset.id)
+        dataset.group_index_ready.connect(lambda ds_id=dataset.id: self._on_scan_ready(ds_id))
 
     def _on_dataset_removed(self, dataset_id: str) -> None:
+        self._scanning.discard(dataset_id)
         for group in (GROUP_LOADED, GROUP_DERIVED):
             bucket = self._bucket(group)
             for row, ds in enumerate(bucket):
@@ -63,6 +73,20 @@ class CatalogModel(QAbstractItemModel):
                     self.beginRemoveRows(group_index, row, row)
                     bucket.pop(row)
                     self.endRemoveRows()
+                    return
+
+    def _on_scan_ready(self, dataset_id: str) -> None:
+        if dataset_id not in self._scanning:
+            return
+        self._scanning.discard(dataset_id)
+        # Emit dataChanged on the affected row so its label repaints.
+        for group in (GROUP_LOADED, GROUP_DERIVED):
+            bucket = self._bucket(group)
+            for row, ds in enumerate(bucket):
+                if ds.id == dataset_id:
+                    parent = self.index(group, 0, QModelIndex())
+                    idx = self.index(row, 0, parent)
+                    self.dataChanged.emit(idx, idx)
                     return
 
     # --- QAbstractItemModel API ---
@@ -107,15 +131,24 @@ class CatalogModel(QAbstractItemModel):
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):  # noqa: ANN201
         if not index.isValid():
             return None
-        if role != Qt.ItemDataRole.DisplayRole:
-            return None
         if index.internalId() == 0:
-            return _GROUP_LABELS[index.row()]
+            if role == Qt.ItemDataRole.DisplayRole:
+                return _GROUP_LABELS[index.row()]
+            return None
         group = index.internalId() - 1
         bucket = self._bucket(group)
         if index.row() >= len(bucket):
             return None
-        return bucket[index.row()].name
+        ds = bucket[index.row()]
+        if role == Qt.ItemDataRole.DisplayRole:
+            if ds.id in self._scanning:
+                return f"{ds.name}  (indexing…)"
+            return ds.name
+        if role == Qt.ItemDataRole.FontRole and ds.id in self._scanning:
+            font = QFont()
+            font.setItalic(True)
+            return font
+        return None
 
     def headerData(
         self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole

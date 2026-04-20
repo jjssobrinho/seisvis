@@ -28,6 +28,7 @@ from seismic_viz.ui.dialogs.dataset_properties_dialog import DatasetPropertiesDi
 from seismic_viz.ui.panels.catalog_panel import CatalogPanel
 from seismic_viz.ui.panels.display_panel import DisplayPanel
 from seismic_viz.ui.panels.viewport_manager_panel import ViewportManagerPanel
+from seismic_viz.workers.header_scan_worker import HeaderScanWorker
 from seismic_viz.workers.load_worker import LoadWorker
 
 _LOG_PATH = Path("logs/seismic_viz.log")
@@ -88,6 +89,16 @@ class MainWindow(QMainWindow):
         self._pool = QThreadPool.globalInstance()
         self._slice_cache = SliceCache(max_entries=32)
         self._pending_loads = 0
+        # Per-dataset cancellation flags for in-flight header scans. The worker
+        # reads the flag on every iteration; setting it True is the only way
+        # to stop a scan short of letting it finish.
+        self._scan_cancel_flags: dict[str, dict[str, bool]] = {}
+        # Keep a Python-side reference to every in-flight scan worker.
+        # QThreadPool owns the C++ QRunnable, but once the Python wrapper is
+        # garbage-collected its ``signals`` QObject can be freed too — which
+        # silently drops the progress/finished/failed callbacks. Holding the
+        # worker here guarantees the signals survive until the scan completes.
+        self._scan_workers: dict[str, HeaderScanWorker] = {}
 
         self.setWindowTitle("Seismic View")
         self.resize(1280, 800)
@@ -184,6 +195,63 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Loaded {dataset.name}", 3000)
         else:
             self.statusBar().showMessage(f"Loaded {dataset.name} ({self._pending_loads} pending)")
+        # Kick off the deferred header scan that unlocks
+        # SHOT/INLINE/CROSSLINE modes once it completes.
+        self._start_header_scan(dataset)
+
+    def _start_header_scan(self, dataset: Dataset) -> None:
+        gi = dataset.group_index
+        if gi is None or not gi.has_pending_scan:
+            return
+        gi.mark_scanning()
+        flag: dict[str, bool] = {"cancelled": False}
+        self._scan_cancel_flags[dataset.id] = flag
+        worker = HeaderScanWorker(dataset, is_cancelled=lambda f=flag: f["cancelled"])
+        self._scan_workers[dataset.id] = worker
+        # Use default-argument binding so each closure captures the specific
+        # dataset it was started for — otherwise late binding would make
+        # every signal refer to the last-loaded dataset.
+        worker.signals.progress.connect(
+            lambda pct, name=dataset.name: self.statusBar().showMessage(
+                f"Indexing headers for {name}… {pct:.0f}%"
+            )
+        )
+        worker.signals.finished.connect(
+            lambda fr, il, xl, ds=dataset: self._on_scan_finished(ds, fr, il, xl)
+        )
+        worker.signals.failed.connect(lambda msg, ds=dataset: self._on_scan_failed(ds, msg))
+        log.info("dispatching header scan for %s (%d traces)", dataset.name, dataset.n_traces)
+        self._pool.start(worker)
+
+    def _on_scan_finished(self, dataset: Dataset, fr, il, xl) -> None:  # noqa: ANN001
+        self._scan_cancel_flags.pop(dataset.id, None)
+        self._scan_workers.pop(dataset.id, None)
+        if dataset.is_closed or dataset.group_index is None:
+            return
+        dataset.group_index.update_from_scan(fr, il, xl)
+        dataset.group_index_ready.emit()
+        self.statusBar().showMessage(f"Indexed {dataset.name}", 3000)
+
+    def _on_scan_failed(self, dataset: Dataset, message: str) -> None:
+        self._scan_cancel_flags.pop(dataset.id, None)
+        self._scan_workers.pop(dataset.id, None)
+        if dataset.is_closed or dataset.group_index is None:
+            return
+        dataset.group_index.update_from_scan(None, None, None)
+        dataset.group_index_ready.emit()
+        self.statusBar().showMessage(f"Header scan failed for {dataset.name}: {message}", 5000)
+
+    def _cancel_scan(self, dataset_id: str) -> None:
+        flag = self._scan_cancel_flags.pop(dataset_id, None)
+        self._scan_workers.pop(dataset_id, None)
+        if flag is not None:
+            flag["cancelled"] = True
+
+    def _cancel_all_scans(self) -> None:
+        for flag in self._scan_cancel_flags.values():
+            flag["cancelled"] = True
+        self._scan_cancel_flags.clear()
+        self._scan_workers.clear()
 
     def _on_load_failed(self, source: str, error: str) -> None:
         self._pending_loads = max(0, self._pending_loads - 1)
@@ -201,6 +269,9 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _on_remove_requested(self, dataset_id: str) -> None:
+        # Cancel any in-flight header scan before the handle closes so the
+        # worker's next iteration exits instead of raising on a dead handle.
+        self._cancel_scan(dataset_id)
         self.project.remove(dataset_id)
 
     def _on_open_in_new_group(self, dataset: Dataset) -> None:
@@ -253,7 +324,10 @@ def main() -> int:
     _configure_logging()
     app = QApplication.instance() or QApplication(sys.argv)
     project = Project()
-    app.aboutToQuit.connect(project.close_all)
     window = MainWindow(project)
+    # Cancel any in-flight scans before tearing the project down so their
+    # next iteration returns cleanly instead of touching closed handles.
+    app.aboutToQuit.connect(window._cancel_all_scans)
+    app.aboutToQuit.connect(project.close_all)
     window.show()
     return app.exec()

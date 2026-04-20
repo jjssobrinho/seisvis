@@ -40,7 +40,8 @@ always read it after this file.
 | M2   | SEG-Y Loading & Catalog                       | `m2-done` ✅   |
 | M3   | Toggle Group Model & First On-Demand Render   | `m3-done` ✅   |
 | M4   | Group Index & Command Bar                     | `m4-done` ✅   |
-| M4.1 | Command Bar Revision (scroll bar + skip)      | `m41-done`     |
+| M4.1 | Command Bar Revision (scroll bar + skip)      | `m41-done` ✅  |
+| M4.2 | Lazy Header Scan (fix large-file load)        | `m42-done`     |
 | M5   | Toggle Groups: Multi-Member Composition       | `m5-done`      |
 | M6   | Derived Datasets (click-A, click-B diff)      | `m6-done`      |
 | M7   | Toolbar Wire-Up (N-way edit target + All)     | `m7-done`      |
@@ -50,6 +51,13 @@ M4.1 is a post-milestone revision that replaces M4's step-button
 command bar with a scroll-bar-based design and adds group-skip
 semantics. It lands before M5 so multi-member work builds on the
 final shape.
+
+M4.2 is a performance fix: M4 made `load_segy` scan every trace
+header, which works on test files but stalls for minutes on
+real multi-GB datasets because the scan traverses the full file
+stride-by-stride. M4.2 makes load O(1) and moves per-mode
+indexing to a background task that runs after the dataset is
+already visible.
 
 Milestone completion is tracked via git tags and a `CHANGELOG.md`
 entry per milestone. At the start of any session, check completed
@@ -89,9 +97,78 @@ No additional GUI frameworks. No matplotlib in the rendering path.
 - `Dataset.read_slice(trace_indices, time_slice, pad_samples=0) -> np.ndarray[float32]`
   is the single access path for trace data.
 - `trace_indices` may be a slice or a numpy integer array.
-- Metadata is read from headers only — never triggers trace reads.
+- Metadata is read from the binary header and a small number of
+  header probes only — never triggers trace reads or full-file
+  header scans. **Opening a SEG-Y file registers the dataset in
+  milliseconds regardless of file size.**
+- Per-mode group indexing (building the map from group ID to trace
+  indices for SHOT / INLINE / CROSSLINE) is a **separate background
+  task** that runs after the dataset is visible. See the Group Index
+  section.
 - `Project.close_all()` must be called on app shutdown; wire it to
   `QApplication.aboutToQuit`.
+
+---
+
+## Group Index (lazy, background-built)
+
+Per-mode group indexing — mapping group IDs (FFID / inline /
+crossline) to lists of trace indices — is expensive for large
+files because it requires reading one 4-byte field from every
+trace header, which on non-cached files means millions of
+stride-separated disk seeks. M4.2 defers this work.
+
+### States
+
+A `GroupIndex` tracks scan state per mode:
+- **TRACE_RANGE**: always available immediately. Computable from
+  `n_traces` alone; no scan required.
+- **SHOT / INLINE / CROSSLINE**: each starts in `UNSCANNED` state.
+  Transitions to `SCANNING` when a background `HeaderScanWorker`
+  starts, then `READY` on completion, or `FAILED` on error.
+- `available_modes` returns the set of modes in `READY` state
+  (plus `TRACE_RANGE`).
+
+### Scan policy
+
+- On dataset load: no scan is performed. `load_segy` returns a
+  `Dataset` with a `GroupIndex` that knows `n_traces`, has
+  `TRACE_RANGE` available, and has all other modes `UNSCANNED`.
+- Immediately after the dataset is registered in the project, a
+  single `HeaderScanWorker` is dispatched to scan all three fields
+  (`FieldRecord`, `INLINE_3D`, `CROSSLINE_3D`) in one pass over
+  the file. While it runs, the user can already view the dataset
+  in `TRACE_RANGE` mode.
+- On completion, the worker emits `(field_records, inlines,
+  crosslines)` and the `GroupIndex` transitions the relevant
+  modes to `READY`. A `group_index_ready` signal fires so the
+  UI can refresh mode-dependent widgets.
+- On dataset removal or app shutdown during a scan, the worker
+  is cancelled via a checked `is_cancelled` flag.
+
+### Scan implementation
+
+- A **single pass** over the file, reading all three target
+  fields per trace in one loop iteration. Empirically this is
+  cheaper than three `handle.attributes(field)[:]` calls because
+  each header's 240 bytes are fetched once rather than three
+  times.
+- Progress reported every ~1% so the UI can show "Indexing
+  headers… 42%".
+- No sidecar caching in v1. (Cache of scan results across app
+  restarts is a v2 item.)
+
+### UI gating
+
+- Catalog row shows a small "indexing…" badge until the scan
+  completes for a dataset.
+- Group Command Bar's grouping-mode combo starts with only
+  `TRACE_RANGE` visible; SHOT / INLINE / CROSSLINE appear as
+  they become `READY`.
+- Switching the reference member of a toggle group while that
+  member's index is still `UNSCANNED` for modes other than
+  `TRACE_RANGE` keeps the combo restricted; it expands on
+  `group_index_ready`.
 
 ---
 
@@ -409,6 +486,9 @@ ui/  →  controllers/  →  services/  →  models/ ← processing/, io/
 - Derivatives with missing parents are kept and marked, never auto-deleted.
 - Scroll-bar drag throttles worker dispatch but not state updates.
 - Out-of-range displayed-group entries are omitted, not clamped.
+- Opening a SEG-Y file registers the dataset in the catalog in
+  milliseconds regardless of file size. `handle.attributes(field)[:]`
+  and full `handle.header` iteration are **background-only** operations.
 
 ---
 

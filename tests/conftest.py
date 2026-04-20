@@ -9,8 +9,10 @@ import segyio
 from PySide6.QtCore import QCoreApplication
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="session", autouse=True)
 def qapp() -> QCoreApplication:
+    # Autouse so Dataset (QObject) and any other Qt-backed models can be
+    # instantiated safely in tests that don't explicitly request the fixture.
     app = QCoreApplication.instance()
     if app is None:
         app = QCoreApplication(sys.argv)
