@@ -4,15 +4,37 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import segyio
 
 from seismic_viz.io.segy_loader import load_segy
 from seismic_viz.models.group_index import GroupIndex, GroupingMode
 
 
+def _scan_headers_sync(ds) -> tuple[np.ndarray, np.ndarray, np.ndarray]:  # noqa: ANN001
+    """Test-only synchronous header scan matching HeaderScanWorker's loop."""
+    n = ds.n_traces
+    fr = np.empty(n, dtype=np.int32)
+    il = np.empty(n, dtype=np.int32)
+    xl = np.empty(n, dtype=np.int32)
+    for i, h in enumerate(ds.handle.header):
+        fr[i] = h[segyio.TraceField.FieldRecord]
+        il[i] = h[segyio.TraceField.INLINE_3D]
+        xl[i] = h[segyio.TraceField.CROSSLINE_3D]
+    return fr, il, xl
+
+
 def _load(path: Path) -> GroupIndex:
+    """Load a SEG-Y file *and* run the header scan synchronously.
+
+    M4.2 made ``load_segy`` lazy — only ``TRACE_RANGE`` is immediately
+    available. These legacy tests exercise SHOT/INLINE/CROSSLINE so they
+    need the scan completed before detaching the index.
+    """
     ds = load_segy(path)
-    # Detach the index so callers don't have to juggle file handles.
     assert ds.group_index is not None
+    ds.group_index.mark_scanning()
+    fr, il, xl = _scan_headers_sync(ds)
+    ds.group_index.update_from_scan(fr, il, xl)
     gi = ds.group_index
     ds.close()
     return gi

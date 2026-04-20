@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRunnable, Signal, Slot
+from PySide6.QtCore import QCoreApplication, QObject, QRunnable, Signal, Slot
 
 from seismic_viz.io.segy_loader import load_segy
 
@@ -31,4 +31,12 @@ class LoadWorker(QRunnable):
             log.exception("load failed for %s", self.path)
             self.signals.failed.emit(str(self.path), str(exc))
             return
+        # Dataset inherits QObject; it was constructed here on the pool
+        # thread, which means its Qt thread affinity is this worker. Handing
+        # it to the UI thread without re-homing would cause any subsequent
+        # cross-thread signal emission (e.g. group_index_ready) to be queued
+        # to a thread that has no event loop, dropping the event silently.
+        app = QCoreApplication.instance()
+        if app is not None:
+            dataset.moveToThread(app.thread())
         self.signals.loaded.emit(dataset)

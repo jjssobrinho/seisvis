@@ -1,229 +1,193 @@
-Milestone M4.1 — Command Bar Revision
-Prerequisite: m4-done tag present.
-This milestone replaces the M4 group command bar (step buttons and
-a single group spinbox) with a new layout built around a horizontal
-scroll bar, and introduces group_skip semantics so users can view
-non-consecutive groups. The M4 GroupIndex implementation is kept
-and extended; only the UI widget and the get_trace_indices API
-change behaviorally.
-Scope is strictly the command bar and its wiring. Do not modify
-the toggle group model beyond adding the group_skip field and its
-signal. Do not touch M5-scope features (multi-member toggle bar,
-incompatible-member rendering, etc.).
+Milestone M4.2 — Lazy Header Scan
+Prerequisite: m41-done tag present.
+M4 implemented header scanning eagerly inside load_segy, which
+works on small test files but stalls for minutes on real
+multi-GB SEG-Y datasets. Root cause: handle.attributes(field)[:]
+reads one 4-byte integer per trace header, which on a file that
+doesn't fit in OS page cache becomes millions of stride-separated
+disk seeks. For a 3D file, this runs three times (FieldRecord +
+INLINE_3D + CROSSLINE_3D), tripling the cost.
+The fix has two parts:
+
+Make load_segy truly O(1): build the Dataset from the
+binary header and a handful of header probes only, with
+TRACE_RANGE as the sole initially-available grouping mode.
+Dispatch a new HeaderScanWorker after the dataset is
+registered in the catalog. The worker does a single-pass scan
+of all three target fields, emits progress, and on completion
+updates the GroupIndex to unlock SHOT/INLINE/CROSSLINE modes.
+
+Non-negotiable acceptance criterion: opening a 39 GB SEG-Y
+must register the dataset in the catalog within ~1 second on
+typical hardware, with TRACE_RANGE rendering immediately
+available. SHOT/INLINE/CROSSLINE may arrive later as the
+background scan completes. This is a hard functional requirement,
+not a performance target.
 
 Model changes.
-In src/seismic_viz/models/toggle_group.py:
-
-Add group_skip: int (default 1) to shared_state, alongside the
-existing current_group_id and groups_per_view.
-Extend the existing shared_state_changed signal emission to
-cover group_skip edits. No new signal needed.
-Ensure group_skip >= 1 is enforced in any setter helper; clamp
-silently at 1 for invalid inputs.
-
 In src/seismic_viz/models/group_index.py:
 
-Extend get_trace_indices(first_group_id, count=1, skip=1) -> np.ndarray[int] with the new skip parameter. Default skip=1
-preserves M4 behavior.
-Semantics: compute the sequence
-[first_group_id + i*skip for i in range(count)], drop entries
-outside [0, n_groups), and return the flattened, sorted trace
-indices for the surviving group IDs. If all entries are
-out-of-range, return an empty array.
-Add a helper displayed_group_ids(first_group_id, count, skip) -> list[int] returning the in-range group IDs in the order they
-will be rendered. The scroll bar widget uses this for markers.
+Add a per-mode state: UNSCANNED | SCANNING | READY |
+FAILED. TRACE_RANGE is always READY with no scan needed.
+available_modes returns {mode for mode in MODES if state == READY}. Always includes TRACE_RANGE.
+New constructor path GroupIndex.from_metadata(n_traces: int, is_structured: bool) -> GroupIndex that produces an index with
+only TRACE_RANGE ready. is_structured hints whether to set
+INLINE/CROSSLINE to UNSCANNED (3D, will be scanned) or skip
+them entirely (2D, no inline/crossline ever).
+New method update_from_scan(field_records, inlines, crosslines)
+that ingests scanned arrays, derives mode availability (SHOT
+if FieldRecord varies; INLINE/CROSSLINE if passed arrays and
+file is structured), builds the per-mode group-to-trace maps,
+and marks the corresponding modes READY. Also called when a
+scan fails with empty arrays to mark modes FAILED.
+No changes to get_trace_indices or displayed_group_ids —
+they operate on READY modes only.
+
+In src/seismic_viz/models/dataset.py:
+
+Inherit QObject (permitted under CLAUDE.md's layer rules —
+models may use Qt signals; only UI / controllers / services
+are forbidden imports).
+Add a signal group_index_ready emitted when a pending scan
+completes and group_index has been updated.
+Existing close() behavior unchanged.
+
+In src/seismic_viz/io/segy_loader.py:
+
+Remove the call to scan_headers.
+Build the Dataset from bin_header, tracecount, and the
+structured-vs-unstructured detection that already exists.
+Construct GroupIndex.from_metadata(n_traces, is_structured).
+Return the dataset immediately. load_segy must not block on
+any per-trace header reads.
 
 
-New widget: ScrollBarWithMarkers.
-In src/seismic_viz/ui/widgets/scroll_bar_with_markers.py,
-implement a QWidget (not a QScrollBar subclass — custom painting
-is easier with a plain widget):
+New file: src/seismic_viz/workers/header_scan_worker.py.
+A QRunnable that:
 
-Presents as a horizontal scroll bar with a draggable handle.
-API:
-
-set_range(n_groups: int) — set the track's logical range
-[0, n_groups - 1].
-set_value(group_id: int) — move the handle to a group ID.
-set_markers(group_ids: list[int]) — the currently displayed
-groups; triggers repaint.
-Signals: value_changed(int) while dragging or after click,
-drag_started(), drag_released().
-
-
-Painting:
-
-Track: a thin horizontal rectangle in the widget's palette
-mid-gray.
-Range overlay: blue rectangle spanning from the first to the
-last marker group ID (inclusive) on the track. Use
-QColor("#3B82F6") with ~40% alpha so the handle remains
-visible on top.
-Tick marks: solid blue vertical lines (QColor("#1E40AF"),
-full alpha) at each marker position, ~2px wide. When markers
-are denser than ~1 per pixel (can happen on big datasets with
-small widgets), skip rendering individual ticks — the range
-overlay alone conveys the information. Document the threshold
-in a comment.
-Handle: standard scroll-bar style, painted over track and
-markers. Larger and more draggable than a typical scroll bar
-slider (target ~18px wide minimum).
-
-
-Interaction:
-
-Click on the track: move handle to the clicked position;
-emit value_changed.
-Drag handle: emit drag_started on press, value_changed on
-each position change, drag_released on release.
-Mouse wheel over the widget: step value by ±1.
+Takes a Dataset, a progress callback
+(percent: float) -> None, and an is_cancelled: Callable[[], bool] flag.
+Runs a single pass over the trace headers reading
+FieldRecord, INLINE_3D, and CROSSLINE_3D in one loop:
+pythonn = len(handle.header)
+fr = np.empty(n, dtype=np.int32)
+il = np.empty(n, dtype=np.int32)
+xl = np.empty(n, dtype=np.int32)
+report_every = max(1, n // 100)
+for i, h in enumerate(handle.header):
+    if is_cancelled():
+        return None
+    fr[i] = h[segyio.TraceField.FieldRecord]
+    il[i] = h[segyio.TraceField.INLINE_3D]
+    xl[i] = h[segyio.TraceField.CROSSLINE_3D]
+    if i % report_every == 0:
+        on_progress(100.0 * i / n)
+Before committing this implementation, benchmark it against
+the three-call handle.attributes(field)[:] alternative on a
+file that doesn't fit in RAM (borrow the 39 GB test file).
+The winning approach depends on segyio's internal caching; the
+expectation is the single-pass handle.header iterator wins
+for large files because each 240-byte header is fetched once
+instead of three times, but this must be confirmed. Document
+the benchmark result in a code comment.
+Emits a Signal(np.ndarray, np.ndarray, np.ndarray) on success
+with the three arrays, or a Signal(str) on failure with an
+error message.
+Checks is_cancelled() every iteration and in the progress
+callback. On cancel, emits nothing and returns cleanly.
 
 
-Write a small ad-hoc demo in tests/manual/scroll_bar_demo.py
-that instantiates the widget alone with fake markers, to verify
-painting without the full app. This is not a pytest test.
+Wiring in LoadWorker completion path.
+When LoadWorker signals loaded(dataset):
+
+Add the dataset to the project (catalog row appears).
+Immediately construct a HeaderScanWorker for that dataset.
+Connect the worker's progress signal to the status bar
+("Indexing headers for {name}… 42%") and its completion signal
+to a slot that:
+a. Calls dataset.group_index.update_from_scan(fr, il, xl).
+b. Emits dataset.group_index_ready.
+Register the worker in a project-level registry keyed by
+dataset.id so cancellation can find it on dataset removal
+or app shutdown.
 
 
-Rewrite the Group Command Bar.
-Fully replace src/seismic_viz/ui/widgets/group_command_bar.py with
-the new layout per CLAUDE.md's Group Command Bar section:
+UI changes.
+In src/seismic_viz/ui/panels/catalog_panel.py:
 
-Grouping mode QComboBox (reuses M4 logic).
-"First" QSpinBox, 1-indexed in UI, [1, n_groups]. Internally
-maps to shared_state.current_group_id (0-indexed). Label "First:".
-ScrollBarWithMarkers widget (occupying the largest horizontal
-share of the bar — apply a stretch factor).
-"Count" QSpinBox, [1, 100], default 1. Label "Count:".
-"Skip" QSpinBox, [1, 1000], default 1. Label "Skip:".
-Status QLabel on the right, e.g. "3214 shots, showing 5".
-When partial display is in effect, append "(N of M requested)".
+Show a small "indexing…" badge (or just italicize the row name)
+on dataset rows whose index is still scanning. Remove on
+group_index_ready.
+Removing a dataset from the catalog must also cancel its
+in-flight scan worker (set the cancellation flag).
 
-Wiring. The bar subscribes to shared_state signals for rebinds
-and emits intent through the active-group controller (same mediator
-pattern M4 uses).
+In src/seismic_viz/ui/widgets/group_command_bar.py:
 
-Any change to first_spinbox, count_spinbox, skip_spinbox, or
-the scroll bar's committed value updates shared_state fields.
-shared_state_changed triggers:
-
-displayed_group_ids = group_index.displayed_group_ids(   current_group_id, groups_per_view, group_skip).
-scroll_bar.set_markers(displayed_group_ids).
-Slice-worker dispatch (throttled per below).
-Status label update.
+On bind to a toggle group, populate the mode combo from
+reference.group_index.available_modes at bind time.
+Initially that may be just {TRACE_RANGE}.
+Subscribe to the reference member's dataset's
+group_index_ready signal. On fire, rebuild the combo to
+reflect the now-richer available_modes. Preserve the user's
+current mode selection if it's still available.
+If the user is viewing TRACE_RANGE when the scan completes
+and a richer mode becomes available, do not auto-switch.
+The user chose the current mode; leave it.
 
 
-Rebuilding on grouping-mode change and reference-member change
-follows M4's patterns — add the new spinbox resets: count→1,
-skip→1, first→0.
+Test plan.
+Unit tests:
 
-Throttling (scroll-bar drag).
+tests/test_group_index_lazy.py: construct via
+from_metadata; verify available_modes == {TRACE_RANGE} and
+get_trace_indices works in TRACE_RANGE mode. Call
+update_from_scan with synthetic arrays; verify mode
+availability and group-to-trace mapping.
+tests/test_header_scan_worker.py: build a small fake SEG-Y
+(or use the existing tests/fixtures/tiny.segy), run the
+worker synchronously, verify output arrays match expected
+FieldRecord/INLINE_3D/CROSSLINE_3D values.
+tests/test_header_scan_cancel.py: run the worker with an
+is_cancelled flag that flips True after 10 iterations;
+verify it returns without emitting completion and does not
+mutate the dataset.
 
-On drag_started: mark the bar as dragging, start a 150 ms
-single-shot QTimer tied to the SeismicView.
-On scroll-bar value_changed while dragging: update
-shared_state.current_group_id and the spinbox (so markers and
-numbers track), but do NOT dispatch a slice worker — restart the
-timer.
-On timer timeout (still dragging): dispatch one slice worker run
-with current values. Leave the timer stopped until the next
-value_changed restarts it.
-On drag_released: stop the timer, dispatch one final slice
-worker run immediately to ensure the final value is rendered.
-Non-drag edits (spinbox changes, clicks on the track) dispatch
-immediately with no throttle.
+Manual test (documented in tests/manual/large_file_load.md):
 
-Out-of-range displayed groups.
-Per CLAUDE.md: omit the out-of-range entries silently.
-displayed_group_ids returns only the in-range subset.
-get_trace_indices returns only those in-range trace indices.
-The rendered image therefore has fewer columns than
-count * (traces-per-group) when some entries are dropped — this
-is expected. The status label reflects the discrepancy.
-
-Keyboard shortcuts.
-Register on the SeismicView with Qt.WidgetWithChildrenShortcut
-context so they fire only when the canvas area (not a spinbox) has
-focus. pyqtgraph's PlotWidget default behavior does not consume
-arrow keys unconditionally; verify this manually during the
-milestone and document in a code comment.
-
-Left / Right: step current_group_id by -count*skip /
-+count*skip respectively. Clamp to [0, n_groups - 1].
-Home: current_group_id = 0.
-End: current_group_id = max(0, n_groups - count*skip).
-PageUp / PageDown are deliberately unbound to avoid
-conflicts. Single-group stepping is done via the "First"
-spinbox's up/down arrow buttons.
-
-If, during manual testing, Left/Right turn out to be consumed
-by pyqtgraph or any child widget, fall back to Ctrl+Left /
-Ctrl+Right and note the change in CHANGELOG.md. Do not silently
-accept a non-functional binding.
-Any keyboard-shortcut-driven change dispatches a slice worker
-immediately (no throttle — keys are discrete events).
-
-Slice worker integration.
-The SliceWorker API from M3/M4 already accepts trace_indices
-directly. The only change is the call site in SeismicView: after
-shared_state updates, compute trace_indices via the new
-get_trace_indices(first, count, skip) signature. No worker
-code changes.
-
-Removed UI elements.
-The M4 widgets ◀◀, ◀, ▶, ▶▶ step buttons and the "Group:
-N / total" spinbox-with-label pattern are removed entirely. There
-is no carry-over — the new widgets replace them. The group-mode
-combo box and status label carry over unchanged.
-
-Tests.
-
-Extend tests/test_group_index.py:
-
-get_trace_indices with skip > 1 on contiguous, 3D, and
-sparse shot-indexed datasets.
-Partial-display case: first near the end of the range so
-that some entries are out-of-range; verify only in-range
-indices are returned.
-Boundary: all entries out-of-range returns an empty array.
-displayed_group_ids returns the same in-range IDs used by
-get_trace_indices.
+Open a small SEG-Y. Verify catalog row appears immediately,
+"indexing…" badge appears briefly, then clears. Verify the
+mode combo lists SHOT (and INLINE/CROSSLINE for 3D) after the
+badge clears.
+Open the 39 GB test file. Verify catalog row appears within
+seconds. Verify TRACE_RANGE rendering works immediately
+(open in toggle group, scroll bar and rendering operational).
+Verify the indexing progress reaches 100% in reasonable time
+(minutes, not hours) without freezing the UI.
+While scan is in progress on the large file, load a small
+second file. Verify the second file loads and indexes
+independently, no blocking.
+During scan, remove the large file from the catalog. Verify
+the scan cancels (check logs) and resources are freed.
+Close the app during a scan. Verify clean shutdown, no hangs.
 
 
-New tests/test_scroll_bar_markers.py — pure-model test of a
-helper function compute_marker_pixels(group_ids, range_max, widget_width) -> list[int]. Extract the pixel-mapping logic
-into a pure function so it can be tested without a QApplication.
-The widget itself calls this helper in paintEvent. Test
-monotonic mapping, endpoints, and the coalescence threshold.
-Update any existing tests/test_group_command_bar.py (likely
-doesn't exist since M4 opted for manual tests — if absent, skip).
-Add a manual test plan at tests/manual/command_bar.md covering:
-keyboard shortcuts, drag throttling (visually verify the render
-pauses during drag), partial-display status label, skip > 1
-rendering.
+Out of scope for M4.2:
+
+Sidecar caching of scan results (v2).
+Heuristics for skipping 3D geometry probe on likely-2D files
+(unsafe; v2 research).
+Partial-scan rendering (showing shots as they're discovered).
+The scan is atomic — modes flip from UNSCANNED to READY only
+when the full scan completes.
+Progress UI richer than a status-bar text (dedicated progress
+widget is v2).
 
 
-Verification steps at end of milestone.
-
-Run ruff check, ruff format, pytest.
-Launch the app, load a multi-shot SEG-Y, and manually verify:
-
-First-shot spinbox increments/decrements work.
-Scroll-bar handle drags and snaps to positions.
-Drag-throttling visibly defers rendering until 150 ms idle
-or release.
-Setting count=5, skip=3 displays five non-consecutive shots
-with correct spacing.
-Blue range overlay and tick marks appear correctly.
-Setting first near the end (partial display) shows fewer
-shots than requested, status label reflects it.
-Left/Right keys step by full windows; Home/End
-jump correctly. Spinbox arrows step first by one group
-as expected.
-
-
-
-
-On completion: update CHANGELOG.md with an M4.1 section describing
-the new command bar and the group_skip addition. Commit with
-feat: M4.1 command bar revision with scroll bar and skip. Tag
-m41-done. Stop.
+CHANGELOG.md entry must explicitly call out the M4 regression
+this fixes, so the history is truthful: "M4 eagerly scanned all
+trace headers in load_segy, which made multi-GB file loads stall
+for minutes. M4.2 defers the scan to a background worker and makes
+load O(1)."
+On completion: update CHANGELOG.md, commit with
+perf: M4.2 lazy header scan for large-file load, tag m42-done,
+stop.

@@ -5,7 +5,6 @@ from pathlib import Path
 
 import segyio
 
-from seismic_viz.io.header_scanner import scan_headers
 from seismic_viz.models.dataset import Dataset
 from seismic_viz.models.group_index import GroupIndex
 
@@ -16,8 +15,13 @@ def load_segy(path: Path) -> Dataset:
     """Open a SEG-Y file and read only the metadata needed to build a Dataset.
 
     The file handle is kept open for the lifetime of the returned Dataset;
-    the caller owns closing it via ``Dataset.close()`` or ``Project.close_all()``.
-    No trace samples are read.
+    the caller owns closing it via ``Dataset.close()`` or
+    ``Project.close_all()``.
+
+    M4.2: this function is O(1) — it consults the binary header and a
+    handful of structural probes only. No per-trace header scanning
+    happens here; that work is deferred to ``HeaderScanWorker`` so a
+    multi-GB file still registers in the catalog within ~1 second.
     """
     path = Path(path)
     if not path.exists():
@@ -56,13 +60,7 @@ def load_segy(path: Path) -> Dataset:
         except Exception:
             log.debug("structured file but iline/xline read failed", exc_info=True)
 
-    scan = scan_headers(handle)
-    group_index = GroupIndex(
-        n_traces=n_traces,
-        field_records=scan["field_records"],
-        inlines=scan["inlines"],
-        crosslines=scan["crosslines"],
-    )
+    group_index = GroupIndex.from_metadata(n_traces=n_traces, is_structured=not unstructured)
 
     ds = Dataset(
         source_path=path,

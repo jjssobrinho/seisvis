@@ -15,6 +15,13 @@ class GroupingMode(StrEnum):
     TRACE_RANGE = "trace_range"
 
 
+class ModeState(StrEnum):
+    UNSCANNED = "unscanned"
+    SCANNING = "scanning"
+    READY = "ready"
+    FAILED = "failed"
+
+
 _MODE_LABEL_SINGULAR: dict[GroupingMode, str] = {
     GroupingMode.SHOT: "shot",
     GroupingMode.INLINE: "inline",
@@ -26,9 +33,12 @@ _MODE_LABEL_SINGULAR: dict[GroupingMode, str] = {
 class GroupIndex:
     """Maps a grouping mode to ordered group ids and their member trace indices.
 
-    Built once from the header-scanner output and kept alongside the
-    ``Dataset``. The active mode is mutable via ``set_mode``; each call
-    rebuilds the per-group index lookup.
+    M4.2: modes other than ``TRACE_RANGE`` are scanned lazily by a background
+    worker. ``TRACE_RANGE`` is always ``READY`` since it needs only ``n_traces``.
+    The remaining modes start ``UNSCANNED`` (or are omitted entirely when the
+    file is unstructured, for ``INLINE`` / ``CROSSLINE``) and transition
+    ``UNSCANNED → SCANNING → READY | FAILED`` via ``mark_scanning`` /
+    ``update_from_scan``.
     """
 
     def __init__(
@@ -46,19 +56,44 @@ class GroupIndex:
         self._inlines = self._as_int_array(inlines)
         self._crosslines = self._as_int_array(crosslines)
 
-        self._available_modes: set[GroupingMode] = {GroupingMode.TRACE_RANGE}
-        if self._field_records is not None and np.unique(self._field_records).size > 1:
-            self._available_modes.add(GroupingMode.SHOT)
-        if self._inlines is not None and np.unique(self._inlines).size > 1:
-            self._available_modes.add(GroupingMode.INLINE)
-        if self._crosslines is not None and np.unique(self._crosslines).size > 1:
-            self._available_modes.add(GroupingMode.CROSSLINE)
+        # Modes the index knows how to produce (READY or transitional).
+        # Missing from this dict ≡ "not applicable to this dataset" (e.g.
+        # INLINE / CROSSLINE on an unstructured file).
+        self._mode_state: dict[GroupingMode, ModeState] = {
+            GroupingMode.TRACE_RANGE: ModeState.READY,
+        }
+        if self._field_records is not None:
+            if np.unique(self._field_records).size > 1:
+                self._mode_state[GroupingMode.SHOT] = ModeState.READY
+        if self._inlines is not None:
+            if np.unique(self._inlines).size > 1:
+                self._mode_state[GroupingMode.INLINE] = ModeState.READY
+        if self._crosslines is not None:
+            if np.unique(self._crosslines).size > 1:
+                self._mode_state[GroupingMode.CROSSLINE] = ModeState.READY
 
         self._current_mode: GroupingMode = self.default_mode
         self._trace_range_size: int = 100
         self._group_ids: list[int] = []
         self._groups: dict[int, np.ndarray] = {}
         self._rebuild()
+
+    # --- construction ---
+
+    @classmethod
+    def from_metadata(cls, n_traces: int, is_structured: bool) -> GroupIndex:
+        """Build an index with only ``TRACE_RANGE`` immediately available.
+
+        ``SHOT`` is always marked ``UNSCANNED`` (a header scan may promote it).
+        ``INLINE`` / ``CROSSLINE`` are marked ``UNSCANNED`` iff the file is
+        structured; otherwise they are omitted entirely.
+        """
+        gi = cls(n_traces=n_traces)
+        gi._mode_state[GroupingMode.SHOT] = ModeState.UNSCANNED
+        if is_structured:
+            gi._mode_state[GroupingMode.INLINE] = ModeState.UNSCANNED
+            gi._mode_state[GroupingMode.CROSSLINE] = ModeState.UNSCANNED
+        return gi
 
     @staticmethod
     def _as_int_array(arr: np.ndarray | None) -> np.ndarray | None:
@@ -69,15 +104,105 @@ class GroupIndex:
             raise ValueError("header arrays must be 1-D")
         return a.astype(np.int64, copy=False)
 
+    # --- state transitions ---
+
+    def mark_scanning(self) -> None:
+        """Flip any ``UNSCANNED`` modes to ``SCANNING``. Idempotent."""
+        for mode, state in list(self._mode_state.items()):
+            if state is ModeState.UNSCANNED:
+                self._mode_state[mode] = ModeState.SCANNING
+
+    def update_from_scan(
+        self,
+        field_records: np.ndarray | None,
+        inlines: np.ndarray | None,
+        crosslines: np.ndarray | None,
+    ) -> None:
+        """Ingest scan output, populate per-mode maps, flip state flags.
+
+        ``None`` (or empty) arrays mark the corresponding mode ``FAILED``
+        (unless it's a mode that was never applicable — in which case we
+        leave the dict untouched).
+        """
+        self._apply_scan_field(
+            GroupingMode.SHOT, field_records, self._n_traces, allow_single_value=False
+        )
+        self._apply_scan_field(
+            GroupingMode.INLINE, inlines, self._n_traces, allow_single_value=False
+        )
+        self._apply_scan_field(
+            GroupingMode.CROSSLINE, crosslines, self._n_traces, allow_single_value=False
+        )
+        # A scan result might shrink what's available for the currently-
+        # selected mode; keep TRACE_RANGE as a safe fallback.
+        if self._current_mode not in self.available_modes:
+            self._current_mode = self.default_mode
+        self._rebuild()
+
+    def _apply_scan_field(
+        self,
+        mode: GroupingMode,
+        arr: np.ndarray | None,
+        expected_len: int,
+        *,
+        allow_single_value: bool,
+    ) -> None:
+        # Mode wasn't applicable for this dataset (e.g. INLINE on 2D).
+        if mode not in self._mode_state:
+            return
+        if arr is None:
+            self._mode_state[mode] = ModeState.FAILED
+            self._store_field(mode, None)
+            return
+        a = np.asarray(arr)
+        if a.ndim != 1 or a.size != expected_len:
+            log.warning(
+                "scan array for %s has wrong shape %s (expected 1-D length %d)",
+                mode,
+                a.shape,
+                expected_len,
+            )
+            self._mode_state[mode] = ModeState.FAILED
+            self._store_field(mode, None)
+            return
+        a64 = a.astype(np.int64, copy=False)
+        self._store_field(mode, a64)
+        if not allow_single_value and np.unique(a64).size <= 1:
+            # Only a single unique value → mode carries no grouping info.
+            self._mode_state[mode] = ModeState.FAILED
+            return
+        self._mode_state[mode] = ModeState.READY
+
+    def _store_field(self, mode: GroupingMode, arr: np.ndarray | None) -> None:
+        if mode is GroupingMode.SHOT:
+            self._field_records = arr
+        elif mode is GroupingMode.INLINE:
+            self._inlines = arr
+        elif mode is GroupingMode.CROSSLINE:
+            self._crosslines = arr
+
+    # --- queries ---
+
     @property
     def available_modes(self) -> set[GroupingMode]:
-        return set(self._available_modes)
+        return {m for m, s in self._mode_state.items() if s is ModeState.READY}
+
+    def mode_state(self, mode: GroupingMode) -> ModeState | None:
+        """Return the state of a mode, or ``None`` if it isn't applicable."""
+        return self._mode_state.get(mode)
+
+    @property
+    def has_pending_scan(self) -> bool:
+        return any(
+            s in (ModeState.UNSCANNED, ModeState.SCANNING) for s in self._mode_state.values()
+        )
 
     @property
     def default_mode(self) -> GroupingMode:
-        if GroupingMode.SHOT in self._available_modes:
+        available = self.available_modes
+        if GroupingMode.SHOT in available:
             return GroupingMode.SHOT
-        if GroupingMode.INLINE in self._available_modes:
+        if GroupingMode.INLINE in available:
             return GroupingMode.INLINE
         return GroupingMode.TRACE_RANGE
 
@@ -90,7 +215,7 @@ class GroupIndex:
         return self._trace_range_size
 
     def set_mode(self, mode: GroupingMode, trace_range_size: int = 100) -> None:
-        if mode not in self._available_modes:
+        if mode not in self.available_modes:
             raise ValueError(f"mode {mode} not available on this dataset")
         if trace_range_size <= 0:
             raise ValueError("trace_range_size must be positive")
