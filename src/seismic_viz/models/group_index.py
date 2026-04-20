@@ -276,6 +276,68 @@ class GroupIndex:
                 out.append(self._group_ids[pos])
         return out
 
+    def group_trace_range(self, mode: GroupingMode, group_id: int) -> tuple[int, int] | None:
+        """Return ``(first_trace, last_trace)`` for ``group_id`` in ``mode``.
+
+        ``last_trace`` is inclusive. For ``TRACE_RANGE`` this is computed
+        arithmetically and does not require a scan. For the other modes the
+        mode must be ``READY``; returns ``None`` if the mode is unavailable
+        or the group id is unknown.
+        """
+        if mode is GroupingMode.TRACE_RANGE:
+            gid = int(group_id)
+            if gid < 0 or self._n_traces == 0:
+                return None
+            size = self._trace_range_size
+            start = gid * size
+            if start >= self._n_traces:
+                return None
+            stop_exclusive = min(self._n_traces, start + size)
+            return start, stop_exclusive - 1
+        arr = self._field_array_for(mode)
+        state = self._mode_state.get(mode)
+        if arr is None or state is not ModeState.READY:
+            return None
+        matches = np.flatnonzero(arr == int(group_id))
+        if matches.size == 0:
+            return None
+        return int(matches.min()), int(matches.max())
+
+    def group_for_trace(self, mode: GroupingMode, trace_index: int) -> tuple[int, int] | None:
+        """Return ``(group_id, index_within_group)`` for the trace.
+
+        ``index_within_group`` counts the trace's position among traces
+        sharing the same group id, in ascending trace-index order. Returns
+        ``None`` if the trace isn't in any group for the given mode.
+        """
+        t = int(trace_index)
+        if t < 0 or t >= self._n_traces:
+            return None
+        if mode is GroupingMode.TRACE_RANGE:
+            size = self._trace_range_size
+            if size <= 0:
+                return None
+            gid = t // size
+            ch = t - gid * size
+            return int(gid), int(ch)
+        arr = self._field_array_for(mode)
+        state = self._mode_state.get(mode)
+        if arr is None or state is not ModeState.READY:
+            return None
+        gid = int(arr[t])
+        # Position among same-group traces: count matching entries < t.
+        ch = int(np.count_nonzero(arr[:t] == gid))
+        return gid, ch
+
+    def _field_array_for(self, mode: GroupingMode) -> np.ndarray | None:
+        if mode is GroupingMode.SHOT:
+            return self._field_records
+        if mode is GroupingMode.INLINE:
+            return self._inlines
+        if mode is GroupingMode.CROSSLINE:
+            return self._crosslines
+        return None
+
     def mode_label(self) -> str:
         singular = _MODE_LABEL_SINGULAR[self._current_mode]
         n = self.n_groups()

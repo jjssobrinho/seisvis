@@ -20,13 +20,17 @@ _UNSET = object()
 class SharedState:
     """State that every member of a toggle group shares.
 
-    Coordinates live in the *reference* member's axes. M3 only fills
-    ``trace_range``/``time_range_ms``; the group-command-bar fields are
-    wired up in M4 but declared here so M4 doesn't reshape the dataclass.
+    Coordinates live in the *reference* member's axes. ``commanded_*`` is
+    the "working set" defined by the command bar; ``zoomed_*`` is the
+    currently visible sub-range and must satisfy
+    ``zoomed ⊆ commanded``. Zoom is a lens over already-fetched data —
+    changing it does not trigger new slice reads.
     """
 
-    trace_range: tuple[int, int] | None = None
-    time_range_ms: tuple[float, float] | None = None
+    commanded_trace_range: tuple[int, int] | None = None
+    commanded_time_range_ms: tuple[float, float] | None = None
+    zoomed_trace_range: tuple[int, int] | None = None
+    zoomed_time_range_ms: tuple[float, float] | None = None
     crosshair_trace: int | None = None
     crosshair_time_ms: float | None = None
     grouping_mode: GroupingMode | None = None
@@ -56,6 +60,7 @@ class ToggleGroup(QObject):
     reference_index_changed = Signal(int)
     edit_target_changed = Signal(int, bool)  # index, link_all
     shared_state_changed = Signal()
+    zoom_changed = Signal()
     name_changed = Signal(str)
 
     def __init__(self, name: str, parent: QObject | None = None) -> None:
@@ -171,11 +176,24 @@ class ToggleGroup(QObject):
         self._link_all = link_all
         self.edit_target_changed.emit(index, link_all)
 
+    @property
+    def is_zoomed(self) -> bool:
+        """True when either zoomed range differs from its commanded counterpart."""
+        ss = self.shared_state
+        trace_zoomed = (
+            ss.zoomed_trace_range is not None and ss.zoomed_trace_range != ss.commanded_trace_range
+        )
+        time_zoomed = (
+            ss.zoomed_time_range_ms is not None
+            and ss.zoomed_time_range_ms != ss.commanded_time_range_ms
+        )
+        return trace_zoomed or time_zoomed
+
     def update_shared_state(
         self,
         *,
-        trace_range: tuple[int, int] | None = None,
-        time_range_ms: tuple[float, float] | None = None,
+        commanded_trace_range: tuple[int, int] | None = None,
+        commanded_time_range_ms: tuple[float, float] | None = None,
         crosshair_trace: int | None = None,
         crosshair_time_ms: float | None = None,
         grouping_mode: GroupingMode | None | object = _UNSET,
@@ -184,11 +202,24 @@ class ToggleGroup(QObject):
         group_skip: int | object = _UNSET,
     ) -> None:
         changed = False
-        if trace_range is not None and trace_range != self.shared_state.trace_range:
-            self.shared_state.trace_range = trace_range
+        zoom_reset = False
+        if (
+            commanded_trace_range is not None
+            and commanded_trace_range != self.shared_state.commanded_trace_range
+        ):
+            self.shared_state.commanded_trace_range = commanded_trace_range
+            # Any command-bar edit implicitly refits: reset zoom to the new
+            # commanded range so the view fills the fresh working window.
+            self.shared_state.zoomed_trace_range = commanded_trace_range
+            zoom_reset = True
             changed = True
-        if time_range_ms is not None and time_range_ms != self.shared_state.time_range_ms:
-            self.shared_state.time_range_ms = time_range_ms
+        if (
+            commanded_time_range_ms is not None
+            and commanded_time_range_ms != self.shared_state.commanded_time_range_ms
+        ):
+            self.shared_state.commanded_time_range_ms = commanded_time_range_ms
+            self.shared_state.zoomed_time_range_ms = commanded_time_range_ms
+            zoom_reset = True
             changed = True
         if crosshair_trace != self.shared_state.crosshair_trace:
             self.shared_state.crosshair_trace = crosshair_trace
@@ -218,6 +249,73 @@ class ToggleGroup(QObject):
                 changed = True
         if changed:
             self.shared_state_changed.emit()
+        if zoom_reset:
+            self.zoom_changed.emit()
+
+    def update_zoomed_ranges(
+        self,
+        *,
+        zoomed_trace_range: tuple[int, int] | None = None,
+        zoomed_time_range_ms: tuple[float, float] | None = None,
+    ) -> None:
+        """Set the visible sub-range, clamped into the commanded bounds.
+
+        Both arguments are optional; ``None`` leaves the corresponding
+        axis unchanged. Attempts to zoom outside the commanded range are
+        silently clamped — the view stops at the edge rather than fetching
+        new traces.
+        """
+        ss = self.shared_state
+        changed = False
+        if zoomed_trace_range is not None and ss.commanded_trace_range is not None:
+            clamped = self._clamp_int_range(zoomed_trace_range, ss.commanded_trace_range)
+            if clamped != ss.zoomed_trace_range:
+                ss.zoomed_trace_range = clamped
+                changed = True
+        if zoomed_time_range_ms is not None and ss.commanded_time_range_ms is not None:
+            clamped_t = self._clamp_float_range(zoomed_time_range_ms, ss.commanded_time_range_ms)
+            if clamped_t != ss.zoomed_time_range_ms:
+                ss.zoomed_time_range_ms = clamped_t
+                changed = True
+        if changed:
+            self.zoom_changed.emit()
+
+    def reset_zoom(self) -> None:
+        """Reset zoomed ranges to the commanded ranges (F-key semantics)."""
+        ss = self.shared_state
+        changed = False
+        if ss.zoomed_trace_range != ss.commanded_trace_range:
+            ss.zoomed_trace_range = ss.commanded_trace_range
+            changed = True
+        if ss.zoomed_time_range_ms != ss.commanded_time_range_ms:
+            ss.zoomed_time_range_ms = ss.commanded_time_range_ms
+            changed = True
+        if changed:
+            self.zoom_changed.emit()
+
+    @staticmethod
+    def _clamp_int_range(requested: tuple[int, int], bounds: tuple[int, int]) -> tuple[int, int]:
+        lo, hi = sorted((int(requested[0]), int(requested[1])))
+        b_lo, b_hi = int(bounds[0]), int(bounds[1])
+        lo = max(b_lo, min(b_hi, lo))
+        hi = max(b_lo, min(b_hi, hi))
+        if hi <= lo:
+            hi = min(b_hi, lo + 1) if lo < b_hi else b_hi
+            lo = max(b_lo, hi - 1) if hi > b_lo else b_lo
+        return lo, hi
+
+    @staticmethod
+    def _clamp_float_range(
+        requested: tuple[float, float], bounds: tuple[float, float]
+    ) -> tuple[float, float]:
+        lo, hi = sorted((float(requested[0]), float(requested[1])))
+        b_lo, b_hi = float(bounds[0]), float(bounds[1])
+        lo = max(b_lo, min(b_hi, lo))
+        hi = max(b_lo, min(b_hi, hi))
+        if hi <= lo:
+            hi = b_hi
+            lo = max(b_lo, min(lo, hi))
+        return lo, hi
 
     def _initialize_grouping_from_reference(self, reset_group: bool = False) -> None:
         """Seed shared_state grouping fields from the reference dataset.
