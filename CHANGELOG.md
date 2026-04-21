@@ -1,5 +1,41 @@
 # Changelog
 
+## [M6] Derived Datasets (A − B diff)
+
+M6 adds lazy dataset differencing driven from the Viewport Manager.
+
+- `models/derived_dataset.py` (new): `DerivedDataset(QObject)` — implements
+  the Dataset interface without owning a file handle. `read_slice` subtracts
+  parent_b from parent_a (or vice-versa, controlled by `direction`).
+  `group_index` proxies parent A. `mark_parents_missing()` puts the dataset
+  into an inert state that shows a red overlay and raises `ParentMissingError`
+  on `read_slice`.
+- `models/diff_selection.py` (new): `DiffSelection(QObject)` — holds two
+  toggle-group IDs. Rotation rule: empty→A; A→B; both filled→reset+A.
+  `swap()`, `clear()`, `resolve_datasets(project)`. Auto-invalidates via
+  `on_group_removed` wired to `Project.toggle_group_removed`.
+- `services/derivation.py` (new): `compute_difference(project, a, b, direction,
+  name)` — validates geometry via `are_toggle_compatible`, raises
+  `IncompatibleDatasetsError` on mismatch, registers the derived dataset
+  in the project immediately (no worker).
+- `ui/dialogs/diff_dialog.py` (new): `DiffDialog` — name field + A−B/B−A
+  radio; launched from the two-dataset right-click path in the catalog.
+- `models/project.py`: added `diff_selection = DiffSelection(self)` and wired
+  `toggle_group_removed` → `diff_selection.on_group_removed`.
+- `ui/panels/catalog_panel.py`: routes `DerivedDataset` to the "Derived" tree
+  group; renders derived names in `#1E40AF` (blue); tooltip shows provenance;
+  wires the previously-disabled "Compute Difference…" catalog menu item.
+- `ui/panels/viewport_manager_panel.py`: restructured from `QScrollArea` to
+  `QWidget` with an inner scroll area + `_DiffSelectionBar` pinned at the
+  bottom. Ctrl+left-click on a card calls `toggle_diff_slot`. A/B badges on
+  cards, updated live via `DiffSelection.changed`.
+- `ui/widgets/seismic_view.py`: added "Parent dataset missing" red overlay;
+  disables the command bar when parents are missing.
+- `app.py`: wires `diff_selection_invalidated` to the status bar; calls
+  `_mark_derived_parents_missing` before removing a dataset.
+- Tests: 28 new tests across `test_derived_dataset.py`, `test_derivation.py`,
+  `test_diff_selection.py`.
+
 ## [M5] Toggle Groups: Multi-Member Composition
 
 M5 turns single-member toggle groups into full N-member entities.

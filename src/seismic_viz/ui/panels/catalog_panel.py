@@ -10,7 +10,7 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QMenu,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from seismic_viz.models.dataset import Dataset
+from seismic_viz.models.derived_dataset import DerivedDataset
 from seismic_viz.models.project import Project
 
 log = logging.getLogger(__name__)
@@ -50,9 +51,13 @@ class CatalogModel(QAbstractItemModel):
         return self._loaded if group == GROUP_LOADED else self._derived
 
     def _on_dataset_added(self, dataset: Dataset) -> None:
-        # M2: all datasets are "Loaded". Derived handled in M6.
-        bucket = self._loaded
-        group_index = self.index(GROUP_LOADED, 0, QModelIndex())
+        if isinstance(dataset, DerivedDataset):
+            bucket = self._derived
+            group_row = GROUP_DERIVED
+        else:
+            bucket = self._loaded
+            group_row = GROUP_LOADED
+        group_index = self.index(group_row, 0, QModelIndex())
         row = len(bucket)
         self.beginInsertRows(group_index, row, row)
         bucket.append(dataset)
@@ -148,6 +153,11 @@ class CatalogModel(QAbstractItemModel):
             font = QFont()
             font.setItalic(True)
             return font
+        if role == Qt.ItemDataRole.ForegroundRole and isinstance(ds, DerivedDataset):
+            return QColor("#1E40AF")
+        if role == Qt.ItemDataRole.ToolTipRole and isinstance(ds, DerivedDataset):
+            direction = "A \u2212 B" if ds.direction == "a_minus_b" else "B \u2212 A"
+            return f"{direction} where A = {ds.parent_a.source_path}, B = {ds.parent_b.source_path}"
         return None
 
     def headerData(
@@ -229,11 +239,32 @@ class CatalogPanel(QWidget):
             props.triggered.connect(lambda: self.properties_requested.emit(ds))
             remove.triggered.connect(lambda: self.remove_requested.emit(ds.id))
         elif len(datasets) == 2:
-            diff = menu.addAction("Compute Difference… (raw traces)")
-            diff.setEnabled(False)  # wired in M6
+            from seismic_viz.models.compatibility import are_toggle_compatible
+
+            a, b = datasets[0], datasets[1]
+            compat = are_toggle_compatible(a, b)
+            diff = menu.addAction("Compute Difference…")
+            diff.setEnabled(compat.ok)
+            if not compat.ok:
+                diff.setToolTip(f"Incompatible: {compat.reason}")
+            if compat.ok:
+                diff.triggered.connect(lambda: self._open_diff_dialog(a, b))
         else:
             return
         menu.exec(cast(QTreeView, self._view).viewport().mapToGlobal(pos))
+
+    def _open_diff_dialog(self, a: Dataset, b: Dataset) -> None:
+        from seismic_viz.services.derivation import IncompatibleDatasetsError, compute_difference
+        from seismic_viz.ui.dialogs.diff_dialog import DiffDialog
+
+        dlg = DiffDialog(a, b, parent=self)
+        if dlg.exec():
+            try:
+                compute_difference(self._project, a, b, dlg.direction(), dlg.result_name())
+            except IncompatibleDatasetsError as exc:
+                from PySide6.QtWidgets import QMessageBox
+
+                QMessageBox.warning(self, "Incompatible datasets", str(exc))
 
     def _on_double_clicked(self, index) -> None:  # noqa: ANN001
         ds = self._model.dataset_for_index(index)
