@@ -119,8 +119,7 @@ class GroupCommandBar(QWidget):
         return self.group.members[self.group.reference_index].dataset
 
     def _subscribe_to_reference(self) -> None:
-        """Connect to the reference dataset's ``group_index_ready`` and
-        ``mapping_changed`` signals.
+        """Connect to the reference dataset's ``group_index_ready`` signal.
 
         Idempotent: disconnects the previous subscription first so a
         reference swap doesn't leave multiple handlers wired up.
@@ -132,17 +131,11 @@ class GroupCommandBar(QWidget):
             try:
                 self._subscribed_dataset.group_index_ready.disconnect(self._on_index_ready)
             except (RuntimeError, TypeError):
-                pass
-            try:
-                self._subscribed_dataset.mapping_changed.disconnect(self._on_index_ready)
-            except (RuntimeError, TypeError):
+                # Already disconnected (e.g. dataset destroyed) — safe to ignore.
                 pass
         self._subscribed_dataset = ds
-        if ds is not None:
-            if hasattr(ds, "group_index_ready"):
-                ds.group_index_ready.connect(self._on_index_ready)
-            if hasattr(ds, "mapping_changed"):
-                ds.mapping_changed.connect(self._on_index_ready)
+        if ds is not None and hasattr(ds, "group_index_ready"):
+            ds.group_index_ready.connect(self._on_index_ready)
 
     def _on_index_ready(self) -> None:
         # The reference's GroupIndex just gained SHOT/INLINE/CROSSLINE modes.
@@ -175,14 +168,8 @@ class GroupCommandBar(QWidget):
 
             self.setEnabled(True)
             modes = self._available_modes_ordered(gi)
-            ds = self._reference_dataset()
             for mode in modes:
-                label = _MODE_DISPLAY[mode]
-                if ds is not None and hasattr(ds, "display_name_for_mode"):
-                    custom = ds.display_name_for_mode(mode)
-                    if custom and custom not in ("Shot", "IL", "XL", "T"):
-                        label = custom
-                self._mode_combo.addItem(label, userData=mode)
+                self._mode_combo.addItem(_MODE_DISPLAY[mode], userData=mode)
             self._mode_combo.blockSignals(False)
 
             active_mode = self.group.shared_state.grouping_mode or gi.default_mode

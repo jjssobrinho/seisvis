@@ -10,7 +10,7 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QBrush, QColor, QFont
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QMenu,
@@ -62,7 +62,6 @@ class CatalogModel(QAbstractItemModel):
         if gi is not None and gi.has_pending_scan:
             self._scanning.add(dataset.id)
         dataset.group_index_ready.connect(lambda ds_id=dataset.id: self._on_scan_ready(ds_id))
-        dataset.mapping_changed.connect(lambda ds_id=dataset.id: self._on_mapping_changed(ds_id))
 
     def _on_dataset_removed(self, dataset_id: str) -> None:
         self._scanning.discard(dataset_id)
@@ -80,12 +79,6 @@ class CatalogModel(QAbstractItemModel):
         if dataset_id not in self._scanning:
             return
         self._scanning.discard(dataset_id)
-        self._emit_row_changed(dataset_id)
-
-    def _on_mapping_changed(self, dataset_id: str) -> None:
-        self._emit_row_changed(dataset_id)
-
-    def _emit_row_changed(self, dataset_id: str) -> None:
         # Emit dataChanged on the affected row so its label repaints.
         for group in (GROUP_LOADED, GROUP_DERIVED):
             bucket = self._bucket(group)
@@ -150,29 +143,11 @@ class CatalogModel(QAbstractItemModel):
         if role == Qt.ItemDataRole.DisplayRole:
             if ds.id in self._scanning:
                 return f"{ds.name}  (indexing…)"
-            if getattr(ds, "has_stale_mapping", False):
-                return f"{ds.name}  ⚠ stale .sv"
-            if getattr(ds, "needs_sv_prompt", False):
-                return f"{ds.name}  (configure headers?)"
             return ds.name
         if role == Qt.ItemDataRole.FontRole and ds.id in self._scanning:
             font = QFont()
             font.setItalic(True)
             return font
-        if role == Qt.ItemDataRole.ForegroundRole:
-            if getattr(ds, "has_stale_mapping", False):
-                return QBrush(QColor(180, 110, 0))
-            if getattr(ds, "needs_sv_prompt", False):
-                return QBrush(QColor(90, 110, 160))
-        if role == Qt.ItemDataRole.ToolTipRole:
-            if getattr(ds, "has_stale_mapping", False):
-                return (
-                    "The .sv for this file was generated against an older "
-                    "version of the SEG-Y. Use 'Configure Headers…' to "
-                    "re-validate or ignore."
-                )
-            if getattr(ds, "needs_sv_prompt", False):
-                return "No .sv mapping found. Right-click to Configure Headers."
         return None
 
     def headerData(
@@ -205,7 +180,6 @@ class CatalogPanel(QWidget):
     remove_requested = Signal(str)  # dataset id
     open_in_new_group_requested = Signal(object)  # Dataset
     add_to_active_group_requested = Signal(object)  # Dataset
-    configure_headers_requested = Signal(object)  # Dataset
 
     def __init__(self, project: Project, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -249,9 +223,6 @@ class CatalogPanel(QWidget):
             add_to_active = menu.addAction("Add to active toggle group")
             add_to_active.triggered.connect(lambda: self.add_to_active_group_requested.emit(ds))
             add_to_active.setEnabled(self._project.active_toggle_group() is not None)
-            menu.addSeparator()
-            configure = menu.addAction("Configure Headers…")
-            configure.triggered.connect(lambda: self.configure_headers_requested.emit(ds))
             menu.addSeparator()
             props = menu.addAction("Properties…")
             remove = menu.addAction("Remove")

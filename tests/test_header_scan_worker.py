@@ -17,7 +17,7 @@ class _Collector:
 
     def wire(self, worker: HeaderScanWorker) -> None:
         worker.signals.progress.connect(self.progress.append)
-        worker.signals.legacy_finished.connect(
+        worker.signals.finished.connect(
             lambda fr, il, xl: self.finished.append(
                 (np.asarray(fr), np.asarray(il), np.asarray(xl))
             )
