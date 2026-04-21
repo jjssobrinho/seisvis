@@ -1,5 +1,101 @@
 # Changelog
 
+## [M6] `.sv` Sidecar with Full Header Attributes
+
+M6 introduces user-controlled header mapping and a richer sidecar
+format. The `.sv` JSON describes which trace-header attributes are
+scanned (byte offset, type, optional valid range, display name) and
+which fill the field-record / inline / crossline group roles. The
+companion `.svh` NumPy archive stores one 1-D array per attribute —
+written once at scan completion, memory-mapped on subsequent loads.
+
+- `models/header_mapping.py` (new): `AttributeSpec` (internal/display
+  name, 1-indexed byte, type, optional `valid_range`), `HeaderMapping`
+  (segy_path, n_traces, `group_roles`, attributes, `sha1_prefix`,
+  `mtime`, `schema_version=1`) with `to_json` / `from_json`,
+  `attribute_by_name` / `display_name_for` / `role_attribute`, and
+  `is_stale` (mtime first, then sha1 of first 3600 bytes).
+  `default_mapping_for(path, n_traces)` returns the M4.2-equivalent
+  FieldRecord / INLINE_3D / CROSSLINE_3D mapping so pre-M6 call sites
+  keep working. `STANDARD_HEADER_FIELDS` enumerates
+  `segyio.TraceField` with default types per byte and
+  `RECOMMENDED_INTERNAL_NAMES` matches the CLAUDE.md preset.
+- `io/svh_store.py` (new): `dtype_for(attr_type)`,
+  `write_svh(path, arrays)` (atomic rename via `.tmp` sibling),
+  `open_svh_mmap(path)` (returns `{name: ndarray}` with `write=False`),
+  `is_svh_stale(svh_path, sv_mtime)`.
+- `models/dataset.py`: adds `mapping_changed` signal, `header_mapping`
+  / `attribute_arrays` / `has_stale_mapping` / `needs_sv_prompt`
+  fields, `attribute_at`, `display_name_for`, `display_name_for_mode`,
+  and `attach_header_mapping(mapping, arrays, *, has_stale_mapping)`.
+  `_header_value_at` now prefers the mapped attribute array over
+  `GroupIndex` when available.
+- `models/group_index.py`: `update_from_attribute_arrays(mapping,
+  arrays)` resolves role attributes and delegates to
+  `update_from_scan`; `reset_scannable_modes()` flips SHOT / INLINE /
+  CROSSLINE back to `UNSCANNED` so the worker can restart after a
+  mapping change.
+- `workers/header_scan_worker.py`: reworked to accept `mapping` and
+  `svh_path`. Single-pass iteration reads every checked attribute by
+  byte via `h[int(spec.byte)]`, writes `.svh` via `write_svh` on
+  completion, and emits `finished(mapping, arrays_dict)`. A
+  `legacy_finished(fr, il, xl)` signal preserves the pre-M6 shape
+  for existing call sites. `_apply_valid_range` maps out-of-range
+  values to the dtype's `iinfo.min` sentinel.
+- `io/segy_loader.py`: `load_segy` probes for `<path>.sv` /
+  `<path>.svh`. A fresh `.sv` + `.svh` pair is loaded and primes
+  `GroupIndex` without a scan. A stale or missing `.sv` surfaces via
+  `dataset.has_stale_mapping` / `dataset.needs_sv_prompt` for the
+  UI to react to.
+- `app.py` (MainWindow): routes `configure_headers_requested` to
+  `HeaderMappingDialog`; `_on_load_finished` skips the scan when the
+  fresh mmap'd arrays are already attached; `_on_scan_finished` now
+  takes `(mapping, arrays)` and calls
+  `dataset.attach_header_mapping` plus
+  `group_index.update_from_attribute_arrays`. On apply the scan is
+  cancelled, the mapping reattached, scannable modes reset, and the
+  worker restarted.
+- `ui/dialogs/header_mapping_dialog.py` (new): modal 4-pane dialog —
+  role combos (field_record / inline / crossline → attribute), a
+  table of standard header fields (checkbox / byte / type /
+  internal / display / sample values read from traces 0, N/2, N−1),
+  preset buttons (None / Recommended / All standard), and Apply /
+  Cancel. Apply refreshes the fingerprint, writes `.sv`, and emits
+  `mapping_applied(mapping)`.
+- `ui/panels/catalog_panel.py`: adds `configure_headers_requested`
+  signal, a "Configure Headers…" context-menu entry, and row badges
+  for `needs_sv_prompt` (muted "(configure headers?)") and
+  `has_stale_mapping` (amber "⚠ stale .sv"). Subscribes to
+  `dataset.mapping_changed` to repaint the affected row.
+- `ui/widgets/seismic_view.py`: info track and crosshair readout
+  route through `dataset.display_name_for_mode` so user-renamed
+  labels propagate. `_on_mapping_changed` refreshes the info track
+  when a member's mapping updates.
+- `ui/widgets/group_command_bar.py`: subscribes to the reference's
+  `mapping_changed`; mode combo labels use
+  `dataset.display_name_for_mode(mode)` when non-default.
+- `tests/test_header_mapping_io.py` (new): JSON round-trip, `is_stale`
+  on mtime / sha1 / missing file, schema-version mismatch rejection,
+  sha1 reads only the first 3600 bytes, `default_mapping_for`
+  covers FFID / IL / XL, `display_name_for` falls back to internal.
+- `tests/test_svh_persistence.py` (new): round-trip arrays, mmap
+  arrays are read-only, `is_svh_stale` for missing / older / newer,
+  `dtype_for` mapping, atomic write leaves no `.tmp` sibling.
+- `tests/test_header_scan_with_mapping.py` (new): custom mapping
+  reads configured bytes, writes `.svh` next to SEG-Y, default
+  mapping path still emits the legacy 3-arg signal.
+- `tests/test_display_names.py` (new): `display_name_for_mode` uses
+  the mapping, `attribute_at` reads from the mapped array, falls
+  back without a mapping, `mapping_changed` fires on attach, and
+  `inline_at` prefers the mapped array over `group_index`.
+- `tests/test_header_scan_worker.py`: switched to the
+  `legacy_finished` signal so the M4.2 3-arg semantics stay covered.
+- `tests/manual/sv_dialog.md` (new): 7-step interactive test plan
+  covering first-open prompt, preset buttons, role reassignment,
+  display-name propagation to info track / crosshair, stale-sidecar
+  warning, sample-value lookup for unknown byte offsets, and the
+  cancel path.
+
 ## [M5] Toggle Groups: Multi-Member Composition
 
 M5 turns single-member toggle groups into full N-member entities.

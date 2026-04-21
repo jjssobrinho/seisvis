@@ -188,6 +188,28 @@ class SeismicView(QWidget):
         if 0 <= index < self.group.n_members:
             self.group.set_active(index)
 
+    def _on_member_dataset_rebind(self, *_args) -> None:
+        """Subscribe to ``mapping_changed`` for every current member's dataset.
+
+        Called after members are added. Safe to call repeatedly; Qt
+        deduplicates identical connections when ``UniqueConnection`` is
+        requested (we use default here — a re-connection is cheap and the
+        refresh is idempotent).
+        """
+        for m in self.group.members:
+            ds = m.dataset
+            sig = getattr(ds, "mapping_changed", None)
+            if sig is None:
+                continue
+            try:
+                sig.connect(self._on_mapping_changed, Qt.ConnectionType.UniqueConnection)
+            except (RuntimeError, TypeError):
+                # Already connected or not supported — fine either way.
+                pass
+
+    def _on_mapping_changed(self) -> None:
+        self._refresh_info_track()
+
     # --- Group signal wiring ---
 
     def _wire_group_signals(self) -> None:
@@ -197,6 +219,11 @@ class SeismicView(QWidget):
         self.group.reference_index_changed.connect(self._on_reference_index_changed)
         self.group.shared_state_changed.connect(self._on_shared_state_changed)
         self.group.zoom_changed.connect(self._on_zoom_changed)
+        # When a member's dataset gets a new header mapping (user edited
+        # the .sv), refresh the info track so renamed display names and
+        # any newly-available modes are reflected immediately.
+        self.group.member_added.connect(self._on_member_dataset_rebind)
+        self._on_member_dataset_rebind(0)
 
     # --- Member management ---
 
@@ -484,7 +511,11 @@ class SeismicView(QWidget):
             except ValueError:
                 self.info_track.clear()
                 return
-        self.info_track.refresh(mode, gi, default_display_names, x_range)
+        if ds is not None and hasattr(ds, "display_name_for_mode"):
+            names_fn = ds.display_name_for_mode
+        else:
+            names_fn = default_display_names
+        self.info_track.refresh(mode, gi, names_fn, x_range)
 
     # --- Slice requests ---
 
@@ -713,20 +744,25 @@ class SeismicView(QWidget):
         t_str: str,
         amp_str: str,
     ) -> str:
+        name_for = (
+            ds.display_name_for_mode
+            if hasattr(ds, "display_name_for_mode")
+            else default_display_names
+        )
         if mode is GroupingMode.SHOT:
-            name = default_display_names(GroupingMode.SHOT)
+            name = name_for(GroupingMode.SHOT)
             return f"{name} {group_id}, Channel {ch} | t = {t_str} ms | amp = {amp_str}"
         if mode is GroupingMode.INLINE:
             xl = ds.crossline_at(trace)
-            xl_name = default_display_names(GroupingMode.CROSSLINE)
-            il_name = default_display_names(GroupingMode.INLINE)
+            xl_name = name_for(GroupingMode.CROSSLINE)
+            il_name = name_for(GroupingMode.INLINE)
             if xl is not None:
                 return f"{il_name} {group_id}, {xl_name} {xl} | t = {t_str} ms | amp = {amp_str}"
             return f"{il_name} {group_id} | t = {t_str} ms | amp = {amp_str}"
         if mode is GroupingMode.CROSSLINE:
             il = ds.inline_at(trace)
-            il_name = default_display_names(GroupingMode.INLINE)
-            xl_name = default_display_names(GroupingMode.CROSSLINE)
+            il_name = name_for(GroupingMode.INLINE)
+            xl_name = name_for(GroupingMode.CROSSLINE)
             if il is not None:
                 return f"{xl_name} {group_id}, {il_name} {il} | t = {t_str} ms | amp = {amp_str}"
             return f"{xl_name} {group_id} | t = {t_str} ms | amp = {amp_str}"

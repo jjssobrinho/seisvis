@@ -25,6 +25,7 @@ from seismic_viz.models.dataset import Dataset
 from seismic_viz.models.project import Project
 from seismic_viz.models.toggle_group import ToggleGroup
 from seismic_viz.ui.dialogs.dataset_properties_dialog import DatasetPropertiesDialog
+from seismic_viz.ui.dialogs.header_mapping_dialog import HeaderMappingDialog
 from seismic_viz.ui.panels.catalog_panel import CatalogPanel
 from seismic_viz.ui.panels.display_panel import DisplayPanel
 from seismic_viz.ui.panels.viewport_manager_panel import ViewportManagerPanel
@@ -139,6 +140,7 @@ class MainWindow(QMainWindow):
         self.catalog_panel.remove_requested.connect(self._on_remove_requested)
         self.catalog_panel.open_in_new_group_requested.connect(self._on_open_in_new_group)
         self.catalog_panel.add_to_active_group_requested.connect(self._on_add_to_active_group)
+        self.catalog_panel.configure_headers_requested.connect(self._on_configure_headers)
         left_splitter.addWidget(self.catalog_panel)
 
         self.viewport_manager = ViewportManagerPanel(self.project)
@@ -196,6 +198,12 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Loaded {dataset.name}", 3000)
         else:
             self.statusBar().showMessage(f"Loaded {dataset.name} ({self._pending_loads} pending)")
+        # If the load flow already mmapped a fresh .svh, no scan is needed —
+        # the Dataset was instantiated with attribute_arrays populated and
+        # GroupIndex primed.
+        if dataset.attribute_arrays is not None and not dataset.has_stale_mapping:
+            dataset.group_index_ready.emit()
+            return
         # Kick off the deferred header scan that unlocks
         # SHOT/INLINE/CROSSLINE modes once it completes.
         self._start_header_scan(dataset)
@@ -207,7 +215,11 @@ class MainWindow(QMainWindow):
         gi.mark_scanning()
         flag: dict[str, bool] = {"cancelled": False}
         self._scan_cancel_flags[dataset.id] = flag
-        worker = HeaderScanWorker(dataset, is_cancelled=lambda f=flag: f["cancelled"])
+        worker = HeaderScanWorker(
+            dataset,
+            mapping=dataset.header_mapping,
+            is_cancelled=lambda f=flag: f["cancelled"],
+        )
         self._scan_workers[dataset.id] = worker
         # Use default-argument binding so each closure captures the specific
         # dataset it was started for — otherwise late binding would make
@@ -218,18 +230,22 @@ class MainWindow(QMainWindow):
             )
         )
         worker.signals.finished.connect(
-            lambda fr, il, xl, ds=dataset: self._on_scan_finished(ds, fr, il, xl)
+            lambda mapping, arrays, ds=dataset: self._on_scan_finished(ds, mapping, arrays)
         )
         worker.signals.failed.connect(lambda msg, ds=dataset: self._on_scan_failed(ds, msg))
         log.info("dispatching header scan for %s (%d traces)", dataset.name, dataset.n_traces)
         self._pool.start(worker)
 
-    def _on_scan_finished(self, dataset: Dataset, fr, il, xl) -> None:  # noqa: ANN001
+    def _on_scan_finished(self, dataset: Dataset, mapping, arrays) -> None:  # noqa: ANN001
         self._scan_cancel_flags.pop(dataset.id, None)
         self._scan_workers.pop(dataset.id, None)
         if dataset.is_closed or dataset.group_index is None:
             return
-        dataset.group_index.update_from_scan(fr, il, xl)
+        dataset.group_index.update_from_attribute_arrays(mapping, arrays)
+        # Attach the scanned arrays (memory-mapped from the freshly-written
+        # .svh would be ideal, but the in-memory arrays are equivalent for
+        # this session; the next load will mmap the .svh).
+        dataset.attach_header_mapping(mapping, arrays, has_stale_mapping=False)
         dataset.group_index_ready.emit()
         self.statusBar().showMessage(f"Indexed {dataset.name}", 3000)
 
@@ -268,6 +284,25 @@ class MainWindow(QMainWindow):
     def _on_properties_requested(self, dataset: Dataset) -> None:
         dlg = DatasetPropertiesDialog(dataset, self)
         dlg.exec()
+
+    def _on_configure_headers(self, dataset: Dataset) -> None:
+        dlg = HeaderMappingDialog(dataset, self)
+        dlg.mapping_applied.connect(
+            lambda mapping, ds=dataset: self._on_mapping_applied(ds, mapping)
+        )
+        dlg.exec()
+
+    def _on_mapping_applied(self, dataset: Dataset, mapping) -> None:  # noqa: ANN001
+        # Cancel any in-flight scan so the new mapping drives the next one
+        # exclusively (otherwise an older scan's finished signal could land
+        # after the new scan starts and overwrite arrays).
+        self._cancel_scan(dataset.id)
+        # Attach mapping immediately (no arrays yet) so display_name_for_mode()
+        # reflects the user's choices before the scan completes.
+        dataset.attach_header_mapping(mapping, None, has_stale_mapping=False)
+        if dataset.group_index is not None:
+            dataset.group_index.reset_scannable_modes()
+        self._start_header_scan(dataset)
 
     def _on_remove_requested(self, dataset_id: str) -> None:
         # Cancel any in-flight header scan before the handle closes so the
