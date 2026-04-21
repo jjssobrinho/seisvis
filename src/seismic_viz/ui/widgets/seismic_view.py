@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 import logging
-from typing import cast
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QPointF, QRectF, Qt, QThreadPool, Signal
-from PySide6.QtGui import QKeyEvent, QKeySequence, QShortcut
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QThreadPool, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from seismic_viz.io.slice_cache import SliceCache, SliceKey
 from seismic_viz.models.group_index import GroupingMode
 from seismic_viz.models.toggle_group import Member, ToggleGroup
 from seismic_viz.ui.widgets.group_command_bar import GroupCommandBar
 from seismic_viz.ui.widgets.info_track import InfoTrack, default_display_names
+from seismic_viz.ui.widgets.toggle_bar import ToggleBar
 from seismic_viz.workers.slice_worker import SliceWorker
 
 log = logging.getLogger(__name__)
@@ -45,9 +45,13 @@ class _SeismicViewBox(pg.ViewBox):
 class SeismicView(QWidget):
     """Canvas for a single toggle group.
 
-    Holds one ImageItem per member (all attached to the same PlotItem) so
-    that M5 can append additional members without restructuring. For M3 only
-    ``N == 1`` is exercised; every non-active item stays invisible regardless.
+    Holds one ImageItem per member (all attached to the same PlotItem).
+    Compatible members share the reference's axes and toggle via
+    ``setVisible``. Incompatible members reconfigure the viewbox to their
+    own extent on activation, save their last view into
+    ``member.display_state.view_hint``, and surface an "Independent axes"
+    badge. The info track and crosshair readout both track the active
+    member's group index.
     """
 
     # Emits (trace, t_ms, amp); each may be None when the cursor is outside data.
@@ -70,14 +74,16 @@ class SeismicView(QWidget):
         self._last_arrays: list[np.ndarray | None] = []
         self._last_rects: list[QRectF | None] = []
         self._updating_range = False
+        self._last_active_index: int = -1
 
         self._build_ui()
         self._wire_group_signals()
         # Build ImageItems for any pre-existing members (created-with-member path).
         for i in range(group.n_members):
             self._on_member_added(i)
-        self._apply_shared_state_to_viewbox()
+        self._apply_plot_ranges()
         self._apply_active_visibility()
+        self._last_active_index = self.group.active_index
 
     # --- UI construction ---
 
@@ -86,12 +92,9 @@ class SeismicView(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Top placeholder for the toggle bar (M5).
-        self.toggle_bar_slot = QWidget(self)
-        tb_layout = QHBoxLayout(self.toggle_bar_slot)
-        tb_layout.setContentsMargins(0, 0, 0, 0)
-        self.toggle_bar_slot.setFixedHeight(0)
-        root.addWidget(self.toggle_bar_slot)
+        # Canvas toggle bar: numbered buttons, auto-flicker, compat status.
+        self.toggle_bar = ToggleBar(self.group, parent=self)
+        root.addWidget(self.toggle_bar)
 
         # Info track: group-number labels above the plot, aligned to x-axis.
         self.info_track = InfoTrack(parent=self)
@@ -127,7 +130,28 @@ class SeismicView(QWidget):
         self.loading_label.move(8, 8)
         self.loading_label.adjustSize()
 
+        # "Independent axes" badge (top-right of the plot area), shown when
+        # the active member is incompatible with the reference.
+        self.independent_axes_badge = QLabel("Independent axes", self.plot_widget)
+        self.independent_axes_badge.setStyleSheet(
+            "background-color: rgba(192, 120, 0, 200); color: white; padding: 2px 6px;"
+            "border-radius: 3px; font-weight: bold;"
+        )
+        self.independent_axes_badge.setVisible(False)
+        self.independent_axes_badge.adjustSize()
+
+        # "Group not present" overlay: centered, shown when the active
+        # member has no traces for the commanded group selection.
+        self.group_missing_label = QLabel("Group not present in this dataset", self.plot_widget)
+        self.group_missing_label.setStyleSheet(
+            "background-color: rgba(40, 40, 40, 200); color: white; padding: 6px 12px;"
+            "border-radius: 4px; font-weight: bold;"
+        )
+        self.group_missing_label.setVisible(False)
+        self.group_missing_label.adjustSize()
+
         root.addWidget(self.plot_widget, stretch=1)
+        self.plot_widget.installEventFilter(self)
 
         # Group command bar (M4) — drives reference-member group navigation.
         self.command_bar = GroupCommandBar(self.group, parent=self)
@@ -151,6 +175,18 @@ class SeismicView(QWidget):
             sc = QShortcut(seq, self)
             sc.setContext(ctx)
             sc.activated.connect(handler)
+        # Number keys 1..9 select members 1..9 when the canvas (or any of
+        # its non-spinbox children) has focus. Tab-switching on the parent
+        # QTabWidget is not bound to number keys, so this cannot switch
+        # tabs.
+        for i in range(9):
+            sc = QShortcut(QKeySequence(Qt.Key.Key_1 + i), self)
+            sc.setContext(ctx)
+            sc.activated.connect(lambda idx=i: self._activate_member_by_shortcut(idx))
+
+    def _activate_member_by_shortcut(self, index: int) -> None:
+        if 0 <= index < self.group.n_members:
+            self.group.set_active(index)
 
     # --- Group signal wiring ---
 
@@ -158,6 +194,7 @@ class SeismicView(QWidget):
         self.group.member_added.connect(self._on_member_added)
         self.group.member_removed.connect(self._on_member_removed)
         self.group.active_index_changed.connect(self._on_active_index_changed)
+        self.group.reference_index_changed.connect(self._on_reference_index_changed)
         self.group.shared_state_changed.connect(self._on_shared_state_changed)
         self.group.zoom_changed.connect(self._on_zoom_changed)
 
@@ -173,18 +210,56 @@ class SeismicView(QWidget):
         self._apply_active_visibility()
         self._fit_to_member(index)
         self._request_slice(index)
+        # The newly added member might be incompatible — refresh plot
+        # ranges + overlays so the badge reflects reality even if active
+        # didn't change.
+        self._apply_plot_ranges()
+        self._refresh_overlays()
 
     def _on_member_removed(self, index: int) -> None:
+        # Cancel any in-flight worker for the removed member so its stale
+        # result doesn't touch a disposed ImageItem.
+        for w in self._active_workers:
+            if w.member_index == index:
+                w.is_cancelled = True
         if 0 <= index < len(self._image_items):
             item = self._image_items.pop(index)
             self.plot_item.removeItem(item)
             self._last_arrays.pop(index)
             self._last_rects.pop(index)
+        # Subsequent workers' member_index values shift down by one, but
+        # since the slice cache is keyed by (group_id, member_index), we
+        # invalidate the removed slot so a later refill can't collide.
+        self._cache.invalidate_member(self.group.id, index)
         self._apply_active_visibility()
+        self._apply_plot_ranges()
+        self._refresh_info_track()
+        self._refresh_overlays()
+        self._last_active_index = self.group.active_index
 
     def _on_active_index_changed(self, _index: int) -> None:
+        # Save the previously active member's view if it was incompatible,
+        # so re-activating it later restores the user's chosen range.
+        self._save_view_hint_for(self._last_active_index)
         self._apply_active_visibility()
+        self._apply_plot_ranges()
         self._refresh_info_track()
+        self._refresh_overlays()
+        self._last_active_index = self.group.active_index
+        # Requesting a slice for the newly active member ensures it renders
+        # even if nothing was fetched during an earlier incompatible
+        # activation.
+        self._request_slice(self.group.active_index)
+
+    def _on_reference_index_changed(self, _index: int) -> None:
+        # Compatibility flips for every non-reference member when the
+        # reference swaps. Invalidate cached view hints (compat members no
+        # longer need one; previously-compat now-incompat need to rebuild).
+        for m in self.group.members:
+            m.display_state.view_hint = None
+        self._apply_plot_ranges()
+        self._refresh_info_track()
+        self._refresh_overlays()
 
     def _apply_active_visibility(self) -> None:
         active = self.group.active_index
@@ -265,23 +340,31 @@ class SeismicView(QWidget):
                         # Avoid feedback into this same slot; reset zoom.
                         state.commanded_trace_range = new_range
                         state.zoomed_trace_range = new_range
-        self._apply_shared_state_to_viewbox()
+        self._apply_plot_ranges()
         self._refresh_info_track()
+        self._refresh_overlays()
         for i in range(len(self._image_items)):
             self._request_slice(i)
 
     def _on_zoom_changed(self) -> None:
         # Zoom is a pure view operation — update the viewbox and the info
         # track, but never refetch.
-        self._apply_shared_state_to_viewbox()
+        self._apply_plot_ranges()
         self._refresh_info_track()
 
-    def _apply_shared_state_to_viewbox(self) -> None:
-        state = self.group.shared_state
-        x_range = state.zoomed_trace_range or state.commanded_trace_range
-        y_range = state.zoomed_time_range_ms or state.commanded_time_range_ms
-        if x_range is None or y_range is None:
+    def _apply_plot_ranges(self) -> None:
+        """Drive the plot viewbox for the currently active member.
+
+        Compatible active members (including the reference) use the group's
+        shared zoom/commanded ranges. Incompatible active members render
+        with their own ranges — either a saved ``view_hint`` or the
+        dataset's full extent.
+        """
+        active = self.group.active_index
+        ranges = self._ranges_for_member(active)
+        if ranges is None:
             return
+        x_range, y_range = ranges
         view_box = self.plot_item.getViewBox()
         self._updating_range = True
         try:
@@ -289,10 +372,67 @@ class SeismicView(QWidget):
         finally:
             self._updating_range = False
 
+    def _ranges_for_member(
+        self, index: int
+    ) -> tuple[tuple[float, float], tuple[float, float]] | None:
+        if not 0 <= index < self.group.n_members:
+            return None
+        compat = self.group.compatibility_with_reference(index).ok
+        state = self.group.shared_state
+        if compat:
+            x_range = state.zoomed_trace_range or state.commanded_trace_range
+            y_range = state.zoomed_time_range_ms or state.commanded_time_range_ms
+            if x_range is None or y_range is None:
+                return None
+            return (float(x_range[0]), float(x_range[1])), (
+                float(y_range[0]),
+                float(y_range[1]),
+            )
+        hint = self.group.members[index].display_state.view_hint
+        if hint and "x" in hint and "y" in hint:
+            return hint["x"], hint["y"]
+        ds = self.group.members[index].dataset
+        dt_ms = ds.sample_interval_ms or 1.0
+        x_extent = (0.0, float(min(ds.n_traces, SeismicView.MAX_FIT_TRACES)))
+        y_extent = (0.0, float(ds.n_samples * dt_ms))
+        return x_extent, y_extent
+
+    def _save_view_hint_for(self, index: int) -> None:
+        """Persist the current viewbox range into the member's view_hint
+        (but only for incompatible members — compatible ones share
+        ``SharedState``).
+        """
+        if not 0 <= index < self.group.n_members:
+            return
+        if self.group.compatibility_with_reference(index).ok:
+            return
+        view_box = self.plot_item.getViewBox()
+        (x0, x1), (y0, y1) = view_box.viewRange()
+        self.group.members[index].display_state.view_hint = {
+            "x": (float(x0), float(x1)),
+            "y": (float(y0), float(y1)),
+        }
+
     def _on_view_range_changed(self, _view_box, ranges) -> None:
         # User-driven pan/zoom updates the zoomed ranges only. The clamping
         # setter pins the view to the commanded working window — no refetch.
         if self._updating_range:
+            return
+        active = self.group.active_index
+        compat = (
+            self.group.compatibility_with_reference(active).ok
+            if 0 <= active < self.group.n_members
+            else True
+        )
+        if not compat:
+            # Incompatible members live in their own coordinate system; stash
+            # the new range on the member so it persists across switches but
+            # leave shared_state untouched.
+            x_range, y_range = ranges
+            self.group.members[active].display_state.view_hint = {
+                "x": (float(x_range[0]), float(x_range[1])),
+                "y": (float(y_range[0]), float(y_range[1])),
+            }
             return
         state = self.group.shared_state
         if state.commanded_trace_range is None or state.commanded_time_range_ms is None:
@@ -305,7 +445,7 @@ class SeismicView(QWidget):
         # If the clamping setter rejected the request (e.g. user panned past
         # the commanded edge), re-apply the authoritative state so the view
         # snaps back to the allowed sub-range.
-        self._apply_shared_state_to_viewbox()
+        self._apply_plot_ranges()
 
     def _on_view_x_range_changed(self, _view_box, x_range) -> None:
         # Info track stays aligned with the plot during any x-axis change
@@ -622,14 +762,71 @@ class SeismicView(QWidget):
             return None
         return float(arr[row, col])
 
-    # --- Keyboard (M5 will grow this) ---
+    # --- Overlays / event filter ---
 
-    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: D401 - Qt override
-        key = event.key()
-        if Qt.Key.Key_1 <= key <= Qt.Key.Key_9:
-            target = key - int(Qt.Key.Key_1)
-            if 0 <= target < self.group.n_members:
-                self.group.set_active(target)
-                event.accept()
-                return
-        super().keyPressEvent(cast(QKeyEvent, event))
+    def _refresh_overlays(self) -> None:
+        active = self.group.active_index
+        # "Independent axes" badge (top-right).
+        badge_on = (
+            self.group.n_members >= 2
+            and 0 <= active < self.group.n_members
+            and not self.group.compatibility_with_reference(active).ok
+        )
+        self.independent_axes_badge.setVisible(badge_on)
+        if badge_on:
+            self._reposition_badge()
+
+        # "Group not present" overlay — centered on the plot. Triggered
+        # when the active member resolves to an empty trace selection for
+        # the commanded group under the current mode.
+        empty = self._active_member_has_no_traces()
+        self.group_missing_label.setVisible(empty)
+        if empty:
+            self._reposition_group_missing()
+
+    def _reposition_badge(self) -> None:
+        self.independent_axes_badge.adjustSize()
+        w = self.plot_widget.width()
+        self.independent_axes_badge.move(max(0, w - self.independent_axes_badge.width() - 10), 8)
+
+    def _reposition_group_missing(self) -> None:
+        self.group_missing_label.adjustSize()
+        w = self.plot_widget.width()
+        h = self.plot_widget.height()
+        lw = self.group_missing_label.width()
+        lh = self.group_missing_label.height()
+        self.group_missing_label.move(max(0, (w - lw) // 2), max(0, (h - lh) // 2))
+
+    def _active_member_has_no_traces(self) -> bool:
+        active = self.group.active_index
+        if not 0 <= active < self.group.n_members:
+            return False
+        state = self.group.shared_state
+        if state.grouping_mode is None or state.current_group_id is None:
+            return False
+        ds = self.group.members[active].dataset
+        gi = getattr(ds, "group_index", None)
+        if gi is None:
+            return False
+        if state.grouping_mode not in gi.available_modes:
+            # Active member lacks the mode entirely — treat as "not present".
+            return True
+        if gi.current_mode != state.grouping_mode:
+            try:
+                gi.set_mode(state.grouping_mode)
+            except ValueError:
+                return True
+        displayed = gi.displayed_group_ids(
+            int(state.current_group_id),
+            int(state.groups_per_view or 1),
+            int(state.group_skip or 1),
+        )
+        return not displayed
+
+    def eventFilter(self, watched, event):  # noqa: ANN001, D401
+        if watched is self.plot_widget and event.type() == QEvent.Type.Resize:
+            if self.independent_axes_badge.isVisible():
+                self._reposition_badge()
+            if self.group_missing_label.isVisible():
+                self._reposition_group_missing()
+        return super().eventFilter(watched, event)

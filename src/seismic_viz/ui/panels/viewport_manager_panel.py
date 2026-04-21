@@ -1,13 +1,30 @@
+"""Viewport Manager: per-group panel with member composition UI.
+
+M5 grows this panel from a flat QTreeWidget into a scrollable stack of
+"group cards." Each card shows the toggle group's name, a close button,
+an ordered list of member rows (Reference radio, name, compatibility
+badge, Remove button, up/down reorder buttons), and a summary line.
+
+Drag-and-drop and button-based reordering both route through
+``ToggleGroup.move_member`` — the widget is a projection of the model,
+not a parallel state store.
+"""
+
 from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QPoint, Qt, Signal
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtCore import QMimeData, QPoint, Qt, Signal
+from PySide6.QtGui import QColor, QDrag
 from PySide6.QtWidgets import (
+    QButtonGroup,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
     QMenu,
-    QTreeWidget,
-    QTreeWidgetItem,
+    QRadioButton,
+    QScrollArea,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -17,34 +34,268 @@ from seismic_viz.models.toggle_group import ToggleGroup
 
 log = logging.getLogger(__name__)
 
-_ROLE_GROUP_ID = Qt.ItemDataRole.UserRole
-_ROLE_KIND = Qt.ItemDataRole.UserRole + 1
-_KIND_GROUP = "group"
-_KIND_MEMBER = "member"
+_MIME_MEMBER_DRAG = "application/x-seismic-viz-member"
+
+_COMPAT_OK_COLOR = QColor(32, 160, 64)
+_COMPAT_WARN_COLOR = QColor(192, 120, 0)
 
 
-class _GroupTree(QTreeWidget):
-    """QTreeWidget that emits on Delete key instead of consuming it."""
+class _MemberRow(QFrame):
+    """Single-member row inside a group card.
 
-    delete_pressed = Signal()
-
-    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: D401 - Qt override
-        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
-            self.delete_pressed.emit()
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
-
-class ViewportManagerPanel(QWidget):
-    """Tree listing of open toggle groups and their members.
-
-    Each top-level row is a toggle group, expanded to show its ordered
-    members prefixed with their 1-indexed toggle number. Groups are
-    created elsewhere (double-click a catalog dataset); closing happens
-    via the right-click context menu, the Delete key, or the display
-    tab's close button.
+    Owns its own up/down/remove buttons and a Reference radio. Also
+    implements a basic drag source so rows can be reordered within the
+    same group card via drag-and-drop.
     """
+
+    def __init__(
+        self,
+        panel: ViewportManagerPanel,
+        group: ToggleGroup,
+        index: int,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._panel = panel
+        self.group = group
+        self.member_index = index
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setAcceptDrops(True)
+
+        member = group.members[index]
+        compat = group.compatibility_with_reference(index)
+
+        self._ref_radio = QRadioButton(self)
+        self._ref_radio.setChecked(index == group.reference_index)
+        self._ref_radio.setToolTip("Mark as reference member")
+        self._ref_radio.clicked.connect(self._on_reference_clicked)
+        # Every row's radio joins the card-level exclusive group — the
+        # card wires that up.
+        self.reference_radio = self._ref_radio
+
+        self._label = QLabel(f"{index + 1}. {member.dataset.name}", self)
+
+        badge = QLabel("●", self)
+        color = _COMPAT_OK_COLOR if compat.ok else _COMPAT_WARN_COLOR
+        badge.setStyleSheet(f"color: {color.name()}; font-weight: bold;")
+        badge.setToolTip("Compatible" if compat.ok else f"Independent axes — {compat.reason}")
+        self._badge = badge
+
+        self._up_btn = QToolButton(self)
+        self._up_btn.setText("▲")
+        self._up_btn.setAutoRaise(True)
+        self._up_btn.setToolTip("Move up")
+        self._up_btn.clicked.connect(lambda: self._panel._move_row(self, -1))
+
+        self._down_btn = QToolButton(self)
+        self._down_btn.setText("▼")
+        self._down_btn.setAutoRaise(True)
+        self._down_btn.setToolTip("Move down")
+        self._down_btn.clicked.connect(lambda: self._panel._move_row(self, 1))
+
+        self._remove_btn = QToolButton(self)
+        self._remove_btn.setText("✕")
+        self._remove_btn.setAutoRaise(True)
+        self._remove_btn.setToolTip("Remove member from group")
+        self._remove_btn.clicked.connect(self._on_remove_clicked)
+
+        self._up_btn.setEnabled(index > 0)
+        self._down_btn.setEnabled(index < group.n_members - 1)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(4)
+        layout.addWidget(self._ref_radio)
+        layout.addWidget(self._badge)
+        layout.addWidget(self._label, stretch=1)
+        layout.addWidget(self._up_btn)
+        layout.addWidget(self._down_btn)
+        layout.addWidget(self._remove_btn)
+
+    # --- actions ---
+
+    def _on_reference_clicked(self) -> None:
+        if self.member_index != self.group.reference_index:
+            self.group.set_reference(self.member_index)
+
+    def _on_remove_clicked(self) -> None:
+        self.group.remove_member(self.member_index)
+        # If that was the last member, remove the group itself.
+        if self.group.is_empty:
+            self._panel.close_group_requested.emit(self.group.id)
+
+    # --- drag source ---
+
+    def mousePressEvent(self, event) -> None:  # noqa: D401, ANN001
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: D401, ANN001
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            return
+        start = getattr(self, "_drag_start", None)
+        if start is None:
+            return
+        if (event.position().toPoint() - start).manhattanLength() < 8:
+            return
+        drag = QDrag(self)
+        mime = QMimeData()
+        # Encode the group id + source index so the drop target can route.
+        mime.setData(
+            _MIME_MEMBER_DRAG,
+            f"{self.group.id}:{self.member_index}".encode(),
+        )
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.MoveAction)
+
+    # --- drop target ---
+
+    def dragEnterEvent(self, event) -> None:  # noqa: D401, ANN001
+        if event.mimeData().hasFormat(_MIME_MEMBER_DRAG):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: D401, ANN001
+        if event.mimeData().hasFormat(_MIME_MEMBER_DRAG):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:  # noqa: D401, ANN001
+        data = bytes(event.mimeData().data(_MIME_MEMBER_DRAG)).decode("utf-8")
+        src_group_id, src_index_str = data.split(":", 1)
+        if src_group_id != self.group.id:
+            return
+        src_index = int(src_index_str)
+        dst_index = self.member_index
+        if src_index == dst_index:
+            return
+        try:
+            self.group.move_member(src_index, dst_index)
+        except IndexError:
+            return
+        event.acceptProposedAction()
+
+
+class _GroupCard(QFrame):
+    """Expandable card for one ``ToggleGroup``."""
+
+    def __init__(
+        self,
+        panel: ViewportManagerPanel,
+        group: ToggleGroup,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._panel = panel
+        self.group = group
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setFrameShadow(QFrame.Shadow.Plain)
+
+        self._header = QLabel(group.name, self)
+        self._header.setStyleSheet("font-weight: bold;")
+
+        self._close_btn = QToolButton(self)
+        self._close_btn.setText("×")
+        self._close_btn.setToolTip("Close toggle group")
+        self._close_btn.setAutoRaise(True)
+        self._close_btn.clicked.connect(
+            lambda: self._panel.close_group_requested.emit(self.group.id)
+        )
+
+        header_row = QHBoxLayout()
+        header_row.addWidget(self._header, stretch=1)
+        header_row.addWidget(self._close_btn)
+
+        self._members_host = QWidget(self)
+        self._members_layout = QVBoxLayout(self._members_host)
+        self._members_layout.setContentsMargins(0, 0, 0, 0)
+        self._members_layout.setSpacing(0)
+        self._member_rows: list[_MemberRow] = []
+        self._reference_bg = QButtonGroup(self)
+        self._reference_bg.setExclusive(True)
+
+        self._summary = QLabel("", self)
+        self._summary.setStyleSheet("color: #666; font-style: italic;")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(2)
+        layout.addLayout(header_row)
+        layout.addWidget(self._members_host)
+        layout.addWidget(self._summary)
+
+        group.member_added.connect(self._rebuild_members)
+        group.member_removed.connect(self._rebuild_members)
+        group.members_reordered.connect(self._rebuild_members)
+        group.active_index_changed.connect(self._on_active_changed)
+        group.reference_index_changed.connect(self._rebuild_members)
+        group.name_changed.connect(self._header.setText)
+
+        self.setAcceptDrops(True)
+        self._rebuild_members()
+
+    def _rebuild_members(self, *_args) -> None:
+        # Tear down existing rows.
+        for row in self._member_rows:
+            self._reference_bg.removeButton(row.reference_radio)
+            row.deleteLater()
+        self._member_rows.clear()
+        while self._members_layout.count():
+            item = self._members_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+        for i in range(self.group.n_members):
+            row = _MemberRow(self._panel, self.group, i, parent=self._members_host)
+            self._members_layout.addWidget(row)
+            self._member_rows.append(row)
+            self._reference_bg.addButton(row.reference_radio, i)
+
+        self._refresh_summary()
+
+    def _on_active_changed(self, _index: int) -> None:
+        # Active-member change only affects tooltips; reference-based
+        # compat classifications are unchanged, so no full rebuild needed.
+        pass
+
+    def _refresh_summary(self) -> None:
+        n = self.group.n_members
+        if n == 0:
+            self._summary.setText("(empty)")
+            return
+        ref_name = self.group.members[self.group.reference_index].dataset.name
+        compat_count = sum(1 for i in range(n) if self.group.compatibility_with_reference(i).ok)
+        self._summary.setText(f"Reference: {ref_name}, Compatible members: {compat_count}/{n}")
+
+    # --- drop target: allow dropping onto the card's empty space to
+    # append to the end ---
+
+    def dragEnterEvent(self, event) -> None:  # noqa: D401, ANN001
+        if event.mimeData().hasFormat(_MIME_MEMBER_DRAG):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: D401, ANN001
+        if event.mimeData().hasFormat(_MIME_MEMBER_DRAG):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:  # noqa: D401, ANN001
+        data = bytes(event.mimeData().data(_MIME_MEMBER_DRAG)).decode("utf-8")
+        src_group_id, src_index_str = data.split(":", 1)
+        if src_group_id != self.group.id:
+            return
+        src_index = int(src_index_str)
+        dst_index = max(0, self.group.n_members - 1)
+        if src_index == dst_index:
+            return
+        try:
+            self.group.move_member(src_index, dst_index)
+        except IndexError:
+            return
+        event.acceptProposedAction()
+
+
+class ViewportManagerPanel(QScrollArea):
+    """Scrollable stack of group cards."""
 
     close_group_requested = Signal(str)  # group id
     group_selected = Signal(str)
@@ -52,21 +303,20 @@ class ViewportManagerPanel(QWidget):
     def __init__(self, project: Project, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._project = project
-        self._group_items: dict[str, QTreeWidgetItem] = {}
+        self._cards: dict[str, _GroupCard] = {}
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        self.setWidgetResizable(True)
+        container = QWidget(self)
+        self._container_layout = QVBoxLayout(container)
+        self._container_layout.setContentsMargins(4, 4, 4, 4)
+        self._container_layout.setSpacing(6)
+        self._container_layout.addStretch(1)
+        self.setWidget(container)
+        self._container = container
 
-        self._tree = _GroupTree(self)
-        self._tree.setHeaderHidden(True)
-        self._tree.setColumnCount(1)
-        self._tree.setRootIsDecorated(True)
-        self._tree.setUniformRowHeights(True)
-        self._tree.currentItemChanged.connect(self._on_current_item_changed)
-        self._tree.delete_pressed.connect(self._close_current_group)
-        self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._tree.customContextMenuRequested.connect(self._show_context_menu)
-        layout.addWidget(self._tree, stretch=1)
+        # Right-click anywhere empty opens a minimal context menu.
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
 
         project.toggle_group_added.connect(self._on_group_added)
         project.toggle_group_removed.connect(self._on_group_removed)
@@ -75,99 +325,52 @@ class ViewportManagerPanel(QWidget):
     # --- Project events ---
 
     def _on_group_added(self, group: ToggleGroup) -> None:
-        item = QTreeWidgetItem([self._label_for(group)])
-        item.setData(0, _ROLE_GROUP_ID, group.id)
-        item.setData(0, _ROLE_KIND, _KIND_GROUP)
-        self._tree.addTopLevelItem(item)
-        item.setExpanded(True)
-        self._group_items[group.id] = item
-        self._rebuild_members(group)
-
-        group.name_changed.connect(lambda _name, g=group: self._refresh_group(g))
-        group.member_added.connect(lambda _i, g=group: self._refresh_group(g))
-        group.member_removed.connect(lambda _i, g=group: self._refresh_group(g))
-        group.members_reordered.connect(lambda g=group: self._refresh_group(g))
+        card = _GroupCard(self, group, parent=self._container)
+        # Insert above the trailing stretch so cards stack top-to-bottom.
+        self._container_layout.insertWidget(self._container_layout.count() - 1, card)
+        self._cards[group.id] = card
+        # Clicking anywhere in the card selects the group.
+        card.mousePressEvent = self._card_click_hook(card, card.mousePressEvent)
 
     def _on_group_removed(self, group_id: str) -> None:
-        item = self._group_items.pop(group_id, None)
-        if item is None:
+        card = self._cards.pop(group_id, None)
+        if card is None:
             return
-        idx = self._tree.indexOfTopLevelItem(item)
-        if idx >= 0:
-            self._tree.takeTopLevelItem(idx)
+        self._container_layout.removeWidget(card)
+        card.deleteLater()
 
-    def _on_active_group_changed(self, group_id: object) -> None:
-        if group_id is None:
-            self._tree.clearSelection()
-            return
-        item = self._group_items.get(str(group_id))
-        if item is not None and self._tree.currentItem() is not item:
-            self._tree.setCurrentItem(item)
-
-    # --- Widget interactions ---
-
-    def _on_current_item_changed(
-        self, current: QTreeWidgetItem | None, _prev: QTreeWidgetItem | None
-    ) -> None:
-        if current is None:
-            return
-        group_item = current if self._kind(current) == _KIND_GROUP else current.parent()
-        if group_item is None:
-            return
-        gid = group_item.data(0, _ROLE_GROUP_ID)
-        if gid:
-            self.group_selected.emit(gid)
-
-    def _show_context_menu(self, pos: QPoint) -> None:
-        item = self._tree.itemAt(pos)
-        if item is None:
-            return
-        if self._kind(item) != _KIND_GROUP:
-            # Member rows: no context actions in M3 (member management lands in M5).
-            return
-        self._tree.setCurrentItem(item)
-        gid = item.data(0, _ROLE_GROUP_ID)
-        if not gid:
-            return
-        menu = QMenu(self._tree)
-        close = menu.addAction("Close Toggle Group")
-        close.triggered.connect(lambda _checked=False, g=gid: self.close_group_requested.emit(g))
-        menu.exec(self._tree.viewport().mapToGlobal(pos))
-
-    def _close_current_group(self) -> None:
-        item = self._tree.currentItem()
-        if item is None or self._kind(item) != _KIND_GROUP:
-            return
-        gid = item.data(0, _ROLE_GROUP_ID)
-        if gid:
-            self.close_group_requested.emit(gid)
+    def _on_active_group_changed(self, _group_id: object) -> None:
+        # Visual selection state is minimal in M5 — the active tab in the
+        # Display Canvas is the authoritative cue. No extra highlighting
+        # here; skip.
+        pass
 
     # --- Helpers ---
 
-    def _refresh_group(self, group: ToggleGroup) -> None:
-        item = self._group_items.get(group.id)
-        if item is None:
+    def _card_click_hook(self, card: _GroupCard, original):  # noqa: ANN001
+        panel = self
+
+        def hook(event):  # noqa: ANN001
+            panel.group_selected.emit(card.group.id)
+            original(event)
+
+        return hook
+
+    def _move_row(self, row: _MemberRow, delta: int) -> None:
+        src = row.member_index
+        dst = src + delta
+        if not 0 <= dst < row.group.n_members:
             return
-        item.setText(0, self._label_for(group))
-        self._rebuild_members(group)
+        row.group.move_member(src, dst)
 
-    def _rebuild_members(self, group: ToggleGroup) -> None:
-        item = self._group_items.get(group.id)
-        if item is None:
-            return
-        item.takeChildren()
-        for i, member in enumerate(group.members):
-            child = QTreeWidgetItem([f"{i + 1}. {member.dataset.name}"])
-            child.setData(0, _ROLE_GROUP_ID, group.id)
-            child.setData(0, _ROLE_KIND, _KIND_MEMBER)
-            item.addChild(child)
-        item.setExpanded(True)
+    def _show_context_menu(self, pos: QPoint) -> None:
+        menu = QMenu(self)
+        close_all = menu.addAction("Close All Toggle Groups")
+        close_all.setEnabled(bool(self._cards))
+        action = menu.exec(self.viewport().mapToGlobal(pos))
+        if action is close_all:
+            for gid in list(self._cards.keys()):
+                self.close_group_requested.emit(gid)
 
-    def _label_for(self, group: ToggleGroup) -> str:
-        n = group.n_members
-        member_word = "member" if n == 1 else "members"
-        return f"{group.name} ({n} {member_word})"
 
-    def _kind(self, item: QTreeWidgetItem) -> str:
-        value = item.data(0, _ROLE_KIND)
-        return str(value) if value else ""
+__all__ = ["ViewportManagerPanel"]

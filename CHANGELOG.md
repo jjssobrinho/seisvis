@@ -1,5 +1,112 @@
 # Changelog
 
+## [M5] Toggle Groups: Multi-Member Composition
+
+M5 turns single-member toggle groups into full N-member entities.
+Members can be added, removed, reordered, and switched among; members
+are not required to be mutually toggle-compatible, and incompatible
+members render with their own viewbox configuration plus an
+"Independent axes" badge.
+
+- `models/compatibility.py` (new): `CompatResult(ok, reason)` and
+  `are_toggle_compatible(a, b)`. Short-circuits on identity, then
+  checks `n_traces`, `n_samples`, `sample_interval_ms`
+  (`np.isclose(rtol=1e-6)`), `inline_range`, `xline_range`, a
+  missing-`group_index` guard, `available_modes` parity, and finally
+  group-id parity for the reference's `default_mode`. The group-id
+  query briefly sets the requested mode on each `GroupIndex` and
+  restores it afterwards so the call is side-effect-free.
+- `models/toggle_group.py`: removes the M3 `NotImplementedError`
+  guardrail on `add_member`. Insertions at or below a cursor shift
+  that cursor up by one; only the very first member seeds shared
+  grouping state. `remove_member` uses a new
+  `_adjust_cursor_for_removal` helper — cursors above the removed
+  index shift down, cursors equal to it are promoted to 0
+  (MILESTONE "Removing reference promotes index 0"), cursors below
+  are unchanged. `reference_index_changed` and `active_index_changed`
+  fire only when removal actually moves the cursor. Adds
+  `compatibility_with_reference(index)` (returns `(True, "reference")`
+  for the reference's own index, `(False, "out of range")` for
+  invalid indices) and `all_members_compatible()`.
+- `models/display_state.py`: new optional `view_hint: dict[str,
+  tuple[float, float]] | None` for persisting incompatible members'
+  per-viewbox ranges across active-member switches; compatible
+  members continue to share `SharedState` and leave this `None`.
+- `ui/widgets/toggle_bar.py` (new): `ToggleBar(QWidget)` with a
+  `QButtonGroup` of numbered `QToolButton`s rebuilt on
+  `member_added` / `member_removed` / `members_reordered`. Clicking a
+  button calls `group.set_active(i)` directly (no intermediate
+  signals). `QCheckBox` "Auto" + `QDoubleSpinBox` (0.5–10 Hz, default
+  2 Hz) drive a `QTimer` that cycles `active_index`; both disabled
+  when `n_members < 2`. Compat indicator reads "All compatible"
+  (green) or "Independent axes" (amber) based on
+  `all_members_compatible()`.
+- `ui/widgets/seismic_view.py`: mounts the `ToggleBar` at the top.
+  Replaces the single-member range apply with `_apply_plot_ranges` +
+  `_ranges_for_member(index)` — compatible members read from
+  `SharedState` zoom/commanded ranges; incompatible members read from
+  their `display_state.view_hint`, falling back to the dataset's
+  extent. `_on_view_range_changed` routes to
+  `update_zoomed_ranges` for compatible members and directly to
+  `view_hint` for incompatible ones. `_on_reference_index_changed`
+  clears all `view_hint`s so compat classifications re-derive
+  against the new reference. Adds a top-right "Independent axes"
+  badge and a centered "Group not present in this dataset" overlay;
+  both reposition on plot-widget resize via an `eventFilter`.
+  Installs `QShortcut`s for `Key_1`..`Key_9` with
+  `WidgetWithChildrenShortcut` context, routing to
+  `_activate_member_by_shortcut` so number-key switching cannot
+  change the parent `QTabWidget`'s tab. Tracks
+  `_last_active_index` so an outgoing incompatible member's view
+  gets saved to its `view_hint` before the switch.
+- `ui/panels/viewport_manager_panel.py`: rewritten from the M3
+  `QTreeWidget` skeleton into a `QScrollArea` with a vertical stack of
+  `_GroupCard(QFrame)` widgets. Each card: name header + close
+  button, a vertical list of `_MemberRow(QFrame)`s (reference
+  `QRadioButton`, compatibility dot, "N. {dataset_name}" label, up/
+  down reorder buttons, "✕" remove), and a summary line of the form
+  `Reference: {name}, Compatible members: K/N`. Rows are drag sources
+  (MIME `application/x-seismic-viz-member` carrying `"{group.id}:
+  {index}"`) and drop targets within the same group; the card itself
+  is a drop target for appending to the end. All reorder and remove
+  paths route through `ToggleGroup.move_member` /
+  `ToggleGroup.remove_member` so the panel stays a pure projection of
+  the model. Closing the last member emits `close_group_requested`
+  so the owning tab is dropped.
+- `ui/panels/catalog_panel.py`: adds
+  `add_to_active_group_requested(Dataset)` signal and an "Add to
+  active toggle group" context-menu action on single-dataset
+  selections; the action is enabled only when
+  `project.active_toggle_group()` is not `None`.
+- `app.py`: wires the new catalog signal to
+  `MainWindow._on_add_to_active_group`, which adds the dataset to the
+  active group via `group.add_member(dataset)` (falling back to
+  `_create_group_for` if no active group exists).
+- `tests/test_compatibility.py` (new): short-circuit on identity,
+  happy-path (two loads of the same file), `n_traces` /
+  `n_samples` / `sample_interval_ms` / `inline_range` / `xline_range`
+  mismatches (built from synthetic SEG-Y fixtures), missing
+  `group_index`, `available_modes` divergence when only one side has
+  been scanned, and SHOT group-id divergence produced by injecting a
+  permuted FieldRecord array.
+- `tests/test_toggle_group_members.py` (new): multi-member
+  lifecycle — append ordering, head-insert cursor shifts,
+  below-cursor removal, reference promotion on self-removal,
+  above-cursor removal, `edit_target_index` clamping (bypassed when
+  `link_all=True`, rejected otherwise), `members_reordered`
+  emission count, end-to-end signal counts across add/move/remove,
+  and compatibility helpers for the reference's own index,
+  out-of-range, and all-same-dataset groups.
+- `tests/test_toggle_group.py`: replaces the obsolete
+  `test_add_second_member_raises_m5_guardrail` with
+  `test_add_second_member_succeeds_in_m5`, which verifies the
+  guardrail is gone and `member_added` fires once per insertion.
+- `tests/manual/toggle_switching.md` (new): manual checklist for
+  number-key switching without tab change, info track / crosshair
+  mode-awareness on active-member change, auto-flicker cadence,
+  Viewport Manager drag-reorder, reference promotion on remove, and
+  the "Add to active toggle group" enabled gate.
+
 ## [M4.3] Canvas Info & Zoom
 
 Zoom becomes a pure view operation over the already-fetched working set;

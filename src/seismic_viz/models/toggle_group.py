@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from PySide6.QtCore import QObject, Signal
 
+from seismic_viz.models.compatibility import CompatResult, are_toggle_compatible
 from seismic_viz.models.dataset import Dataset
 from seismic_viz.models.display_state import DisplayState
 from seismic_viz.models.group_index import GroupingMode
@@ -49,8 +50,11 @@ class Member:
 class ToggleGroup(QObject):
     """An ordered list of dataset members displayed in one canvas tab.
 
-    M3 only fully supports ``N == 1``. ``add_member`` beyond the first member
-    raises ``NotImplementedError`` so scope for M5 cannot leak in accidentally.
+    M5 lifts the single-member restriction: members may be added freely and
+    are not required to be mutually toggle-compatible. Compatibility is
+    assessed against the reference member via :func:`are_toggle_compatible`,
+    and the UI surfaces the result (compat badge + "Independent axes"
+    overlay on the canvas).
     """
 
     member_added = Signal(int)  # index
@@ -117,27 +121,66 @@ class ToggleGroup(QObject):
         self.name_changed.emit(name)
 
     def add_member(self, dataset: Dataset, at_index: int | None = None) -> int:
-        if self._members:
-            raise NotImplementedError("multi-member composition lands in M5")
         member = Member(dataset=dataset)
         insert_at = len(self._members) if at_index is None else int(at_index)
         insert_at = max(0, min(insert_at, len(self._members)))
         self._members.insert(insert_at, member)
-        self._initialize_grouping_from_reference()
+        # Inserting at or before an existing cursor shifts it up by one, but
+        # the reference (and therefore the grouping anchor) stays on the
+        # original dataset.
+        if insert_at <= self._active_index and len(self._members) > 1:
+            self._active_index += 1
+        if insert_at <= self._reference_index and len(self._members) > 1:
+            self._reference_index += 1
+        if insert_at <= self._edit_target_index and len(self._members) > 1:
+            self._edit_target_index += 1
+        # Only seed shared grouping state on the very first member — later
+        # adds keep the reference's existing navigation intact.
+        if len(self._members) == 1:
+            self._initialize_grouping_from_reference()
         self.member_added.emit(insert_at)
         return insert_at
 
     def remove_member(self, index: int) -> None:
         if not 0 <= index < len(self._members):
             raise IndexError(f"member index {index} out of range")
+        old_reference = self._reference_index
+        old_active = self._active_index
+        old_edit_target = self._edit_target_index
         self._members.pop(index)
+
+        new_reference = self._adjust_cursor_for_removal(old_reference, index)
+        new_active = self._adjust_cursor_for_removal(old_active, index)
+        new_edit_target = self._adjust_cursor_for_removal(old_edit_target, index)
+        self._reference_index = new_reference
+        self._active_index = new_active
+        self._edit_target_index = new_edit_target
+
         self.member_removed.emit(index)
-        # Clamp cursors so they remain in-range (or 0 for an empty group).
-        new_len = len(self._members)
-        upper = max(0, new_len - 1)
-        self._active_index = min(self._active_index, upper)
-        self._reference_index = min(self._reference_index, upper)
-        self._edit_target_index = min(self._edit_target_index, upper)
+        # If the reference dataset actually changed, re-seed grouping state
+        # from the promoted member (spec: "Removing reference promotes
+        # index 0") and notify subscribers.
+        if self._members and new_reference != old_reference:
+            self._initialize_grouping_from_reference(reset_group=True)
+            self.reference_index_changed.emit(new_reference)
+        if self._members and new_active != old_active:
+            self.active_index_changed.emit(new_active)
+
+    def _adjust_cursor_for_removal(self, cursor: int, removed_index: int) -> int:
+        """Return the cursor position after removing ``removed_index``.
+
+        Cursors above the removed index shift down by one. Cursors equal to
+        the removed index are promoted to 0 per MILESTONE M5. Cursors below
+        are unaffected. When the group becomes empty the cursor collapses
+        to 0.
+        """
+        if not self._members:
+            return 0
+        if cursor > removed_index:
+            return cursor - 1
+        if cursor == removed_index:
+            return 0
+        return cursor
 
     def move_member(self, from_index: int, to_index: int) -> None:
         if not 0 <= from_index < len(self._members):
@@ -175,6 +218,24 @@ class ToggleGroup(QObject):
         self._edit_target_index = index
         self._link_all = link_all
         self.edit_target_changed.emit(index, link_all)
+
+    def compatibility_with_reference(self, index: int) -> CompatResult:
+        """Return whether the member at ``index`` toggles against the reference.
+
+        The reference is trivially compatible with itself. Out-of-range
+        indices return ``CompatResult(False, "out of range")`` rather than
+        raising so UI code can call this during transient states.
+        """
+        if not 0 <= index < len(self._members):
+            return CompatResult(False, "out of range")
+        if index == self._reference_index:
+            return CompatResult(True, "reference")
+        ref = self._members[self._reference_index].dataset
+        other = self._members[index].dataset
+        return are_toggle_compatible(ref, other)
+
+    def all_members_compatible(self) -> bool:
+        return all(self.compatibility_with_reference(i).ok for i in range(len(self._members)))
 
     @property
     def is_zoomed(self) -> bool:

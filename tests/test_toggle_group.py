@@ -26,13 +26,16 @@ def test_add_first_member_emits_signal(group: ToggleGroup, segy_3d: Path) -> Non
         ds.close()
 
 
-def test_add_second_member_raises_m5_guardrail(group: ToggleGroup, segy_3d: Path) -> None:
+def test_add_second_member_succeeds_in_m5(group: ToggleGroup, segy_3d: Path) -> None:
     ds = load_segy(segy_3d)
     try:
-        group.add_member(ds)
-        with pytest.raises(NotImplementedError, match="multi-member composition lands in M5"):
-            group.add_member(ds)
-        assert group.n_members == 1
+        added: list[int] = []
+        group.member_added.connect(added.append)
+        first = group.add_member(ds)
+        second = group.add_member(ds)
+        assert (first, second) == (0, 1)
+        assert group.n_members == 2
+        assert added == [0, 1]
     finally:
         ds.close()
 
