@@ -39,6 +39,22 @@ _MIME_MEMBER_DRAG = "application/x-seismic-viz-member"
 _COMPAT_OK_COLOR = QColor(32, 160, 64)
 _COMPAT_WARN_COLOR = QColor(192, 120, 0)
 
+_ACTIVE_BUTTON_STYLE = """
+QToolButton {
+    color: black;
+    background-color: #dcdcdc;
+    border: 1px solid #888;
+    padding: 1px 6px;
+    min-width: 16px;
+    font-weight: bold;
+}
+QToolButton:checked {
+    color: black;
+    background-color: #ffcc33;
+    border: 1px solid #b38600;
+}
+"""
+
 
 class _MemberRow(QFrame):
     """Single-member row inside a group card.
@@ -73,7 +89,22 @@ class _MemberRow(QFrame):
         # card wires that up.
         self.reference_radio = self._ref_radio
 
-        self._label = QLabel(f"{index + 1}. {member.dataset.name}", self)
+        self._active_btn = QToolButton(self)
+        self._active_btn.setCheckable(True)
+        self._active_btn.setText(str(index + 1))
+        self._active_btn.setChecked(index == group.active_index)
+        self._active_btn.setToolTip(
+            f"Show this member in the canvas (shortcut: {index + 1})"
+            if index < 9
+            else "Show this member in the canvas"
+        )
+        self._active_btn.setAutoRaise(False)
+        self._active_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._active_btn.setStyleSheet(_ACTIVE_BUTTON_STYLE)
+        self._active_btn.clicked.connect(self._on_active_clicked)
+        self.active_button = self._active_btn
+
+        self._label = QLabel(member.dataset.name, self)
 
         badge = QLabel("●", self)
         color = _COMPAT_OK_COLOR if compat.ok else _COMPAT_WARN_COLOR
@@ -106,6 +137,7 @@ class _MemberRow(QFrame):
         layout.setContentsMargins(4, 2, 4, 2)
         layout.setSpacing(4)
         layout.addWidget(self._ref_radio)
+        layout.addWidget(self._active_btn)
         layout.addWidget(self._badge)
         layout.addWidget(self._label, stretch=1)
         layout.addWidget(self._up_btn)
@@ -117,6 +149,16 @@ class _MemberRow(QFrame):
     def _on_reference_clicked(self) -> None:
         if self.member_index != self.group.reference_index:
             self.group.set_reference(self.member_index)
+
+    def _on_active_clicked(self) -> None:
+        # Keep the model as the source of truth: always request the switch,
+        # and let the reconciler below re-check the right button if the
+        # model refused (e.g. already active).
+        if self.member_index != self.group.active_index:
+            self.group.set_active(self.member_index)
+        else:
+            # Prevent un-toggling the currently-active button.
+            self._active_btn.setChecked(True)
 
     def _on_remove_clicked(self) -> None:
         self.group.remove_member(self.member_index)
@@ -212,6 +254,8 @@ class _GroupCard(QFrame):
         self._member_rows: list[_MemberRow] = []
         self._reference_bg = QButtonGroup(self)
         self._reference_bg.setExclusive(True)
+        self._active_bg = QButtonGroup(self)
+        self._active_bg.setExclusive(True)
 
         self._summary = QLabel("", self)
         self._summary.setStyleSheet("color: #666; font-style: italic;")
@@ -237,6 +281,7 @@ class _GroupCard(QFrame):
         # Tear down existing rows.
         for row in self._member_rows:
             self._reference_bg.removeButton(row.reference_radio)
+            self._active_bg.removeButton(row.active_button)
             row.deleteLater()
         self._member_rows.clear()
         while self._members_layout.count():
@@ -250,13 +295,15 @@ class _GroupCard(QFrame):
             self._members_layout.addWidget(row)
             self._member_rows.append(row)
             self._reference_bg.addButton(row.reference_radio, i)
+            self._active_bg.addButton(row.active_button, i)
 
         self._refresh_summary()
 
-    def _on_active_changed(self, _index: int) -> None:
-        # Active-member change only affects tooltips; reference-based
-        # compat classifications are unchanged, so no full rebuild needed.
-        pass
+    def _on_active_changed(self, index: int) -> None:
+        # Sync the numbered buttons with the model when active changes
+        # programmatically (keyboard shortcut, flicker timer, etc.).
+        for row in self._member_rows:
+            row.active_button.setChecked(row.member_index == index)
 
     def _refresh_summary(self) -> None:
         n = self.group.n_members
