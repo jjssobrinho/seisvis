@@ -294,9 +294,19 @@ class GroupIndex:
                 return None
             stop_exclusive = min(self._n_traces, start + size)
             return start, stop_exclusive - 1
-        arr = self._field_array_for(mode)
         state = self._mode_state.get(mode)
-        if arr is None or state is not ModeState.READY:
+        if state is not ModeState.READY:
+            return None
+        # Fast path: the cached per-group trace arrays for the current mode
+        # are built in _group_by via np.flatnonzero, so they're already
+        # sorted and give first/last in O(1).
+        if mode is self._current_mode:
+            cached = self._groups.get(int(group_id))
+            if cached is None or cached.size == 0:
+                return None
+            return int(cached[0]), int(cached[-1])
+        arr = self._field_array_for(mode)
+        if arr is None:
             return None
         matches = np.flatnonzero(arr == int(group_id))
         if matches.size == 0:
