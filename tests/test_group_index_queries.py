@@ -61,6 +61,25 @@ def test_group_trace_range_unavailable_mode_returns_none() -> None:
     assert gi.group_trace_range(GroupingMode.SHOT, 0) is None
 
 
+def test_group_trace_range_current_mode_uses_cached_bounds() -> None:
+    """The current mode hits an O(1) cached-bounds path; the fallback scan
+    path still runs for non-current modes. Both must return identical results."""
+    gi = _scanned_index()
+
+    # SHOT is current → fast path.
+    gi.set_mode(GroupingMode.SHOT)
+    fast = gi.group_trace_range(GroupingMode.SHOT, 101)
+    # INLINE is not current → fallback scan path.
+    slow = gi.group_trace_range(GroupingMode.INLINE, 11)
+    assert fast == (4, 7)
+    assert slow == (4, 7)
+
+    # Flip current mode and re-check.
+    gi.set_mode(GroupingMode.INLINE)
+    assert gi.group_trace_range(GroupingMode.INLINE, 11) == (4, 7)
+    assert gi.group_trace_range(GroupingMode.SHOT, 101) == (4, 7)
+
+
 def test_group_for_trace_trace_range_mode() -> None:
     gi = GroupIndex(n_traces=7)
     gi.set_mode(GroupingMode.TRACE_RANGE, trace_range_size=3)

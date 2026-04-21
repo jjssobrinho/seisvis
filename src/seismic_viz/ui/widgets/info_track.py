@@ -146,7 +146,8 @@ class InfoTrack(QWidget):
         """Return ``[(group_id, first_trace), …]`` for groups whose start
         trace lies in ``[x0, x1]``, sorted by first_trace ascending."""
         entries: list[tuple[int, int]] = []
-        for gid in gi.group_ids:
+        ids = gi.group_ids
+        for gid in ids:
             rng = gi.group_trace_range(mode, gid)
             if rng is None:
                 continue
