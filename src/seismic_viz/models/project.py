@@ -5,6 +5,7 @@ import logging
 from PySide6.QtCore import QObject, Signal
 
 from seismic_viz.models.dataset import Dataset
+from seismic_viz.models.diff_selection import DiffSelection
 from seismic_viz.models.toggle_group import ToggleGroup
 
 log = logging.getLogger(__name__)
@@ -24,6 +25,8 @@ class Project(QObject):
         self._datasets: list[Dataset] = []
         self._toggle_groups: list[ToggleGroup] = []
         self._active_toggle_group_id: str | None = None
+        self.diff_selection = DiffSelection(self)
+        self.toggle_group_removed.connect(self.diff_selection.on_group_removed)
 
     # --- Datasets ---
 

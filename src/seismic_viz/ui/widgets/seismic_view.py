@@ -150,6 +150,16 @@ class SeismicView(QWidget):
         self.group_missing_label.setVisible(False)
         self.group_missing_label.adjustSize()
 
+        # "Parent dataset missing" overlay: centered, shown when the active
+        # member is a DerivedDataset with parents_missing == True.
+        self.parent_missing_label = QLabel("Parent dataset missing", self.plot_widget)
+        self.parent_missing_label.setStyleSheet(
+            "background-color: rgba(150, 30, 30, 210); color: white; padding: 6px 12px;"
+            "border-radius: 4px; font-weight: bold;"
+        )
+        self.parent_missing_label.setVisible(False)
+        self.parent_missing_label.adjustSize()
+
         root.addWidget(self.plot_widget, stretch=1)
         self.plot_widget.installEventFilter(self)
 
@@ -765,10 +775,24 @@ class SeismicView(QWidget):
     # --- Overlays / event filter ---
 
     def _refresh_overlays(self) -> None:
+        from seismic_viz.models.derived_dataset import DerivedDataset
+
         active = self.group.active_index
+        active_ds = (
+            self.group.members[active].dataset if 0 <= active < self.group.n_members else None
+        )
+
+        # "Parent dataset missing" overlay — highest priority.
+        parents_missing = isinstance(active_ds, DerivedDataset) and active_ds.parents_missing
+        self.parent_missing_label.setVisible(parents_missing)
+        self.command_bar.setEnabled(not parents_missing)
+        if parents_missing:
+            self._reposition_parent_missing()
+
         # "Independent axes" badge (top-right).
         badge_on = (
-            self.group.n_members >= 2
+            not parents_missing
+            and self.group.n_members >= 2
             and 0 <= active < self.group.n_members
             and not self.group.compatibility_with_reference(active).ok
         )
@@ -779,7 +803,7 @@ class SeismicView(QWidget):
         # "Group not present" overlay — centered on the plot. Triggered
         # when the active member resolves to an empty trace selection for
         # the commanded group under the current mode.
-        empty = self._active_member_has_no_traces()
+        empty = not parents_missing and self._active_member_has_no_traces()
         self.group_missing_label.setVisible(empty)
         if empty:
             self._reposition_group_missing()
@@ -796,6 +820,14 @@ class SeismicView(QWidget):
         lw = self.group_missing_label.width()
         lh = self.group_missing_label.height()
         self.group_missing_label.move(max(0, (w - lw) // 2), max(0, (h - lh) // 2))
+
+    def _reposition_parent_missing(self) -> None:
+        self.parent_missing_label.adjustSize()
+        w = self.plot_widget.width()
+        h = self.plot_widget.height()
+        lw = self.parent_missing_label.width()
+        lh = self.parent_missing_label.height()
+        self.parent_missing_label.move(max(0, (w - lw) // 2), max(0, (h - lh) // 2))
 
     def _active_member_has_no_traces(self) -> bool:
         active = self.group.active_index
@@ -829,4 +861,6 @@ class SeismicView(QWidget):
                 self._reposition_badge()
             if self.group_missing_label.isVisible():
                 self._reposition_group_missing()
+            if self.parent_missing_label.isVisible():
+                self._reposition_parent_missing()
         return super().eventFilter(watched, event)

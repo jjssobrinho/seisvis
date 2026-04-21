@@ -144,6 +144,11 @@ class MainWindow(QMainWindow):
         self.viewport_manager = ViewportManagerPanel(self.project)
         self.viewport_manager.close_group_requested.connect(self._on_close_group_requested)
         self.viewport_manager.group_selected.connect(self.project.set_active_toggle_group)
+        self.project.diff_selection.diff_selection_invalidated.connect(
+            lambda: self.statusBar().showMessage(
+                "Diff selection cleared — selected group was removed", 4000
+            )
+        )
         left_splitter.addWidget(self.viewport_manager)
         left_splitter.setSizes([300, 200])
 
@@ -273,7 +278,21 @@ class MainWindow(QMainWindow):
         # Cancel any in-flight header scan before the handle closes so the
         # worker's next iteration exits instead of raising on a dead handle.
         self._cancel_scan(dataset_id)
+        # Mark any derived datasets that use this as a parent so the canvas
+        # can show the "Parent dataset missing" overlay.
+        self._mark_derived_parents_missing(dataset_id)
         self.project.remove(dataset_id)
+
+    def _mark_derived_parents_missing(self, removed_id: str) -> None:
+        from seismic_viz.models.derived_dataset import DerivedDataset
+
+        for ds in self.project.datasets:
+            if (
+                isinstance(ds, DerivedDataset)
+                and not ds.parents_missing
+                and (ds.parent_a.id == removed_id or ds.parent_b.id == removed_id)
+            ):
+                ds.mark_parents_missing()
 
     def _on_open_in_new_group(self, dataset: Dataset) -> None:
         self._create_group_for(dataset)
