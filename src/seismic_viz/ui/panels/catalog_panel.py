@@ -179,6 +179,7 @@ class CatalogPanel(QWidget):
     properties_requested = Signal(object)  # Dataset
     remove_requested = Signal(str)  # dataset id
     open_in_new_group_requested = Signal(object)  # Dataset
+    add_to_active_group_requested = Signal(object)  # Dataset
 
     def __init__(self, project: Project, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -219,6 +220,9 @@ class CatalogPanel(QWidget):
             ds = datasets[0]
             open_group = menu.addAction("Open in new toggle group")
             open_group.triggered.connect(lambda: self.open_in_new_group_requested.emit(ds))
+            add_to_active = menu.addAction("Add to active toggle group")
+            add_to_active.triggered.connect(lambda: self.add_to_active_group_requested.emit(ds))
+            add_to_active.setEnabled(self._project.active_toggle_group() is not None)
             menu.addSeparator()
             props = menu.addAction("Properties…")
             remove = menu.addAction("Remove")

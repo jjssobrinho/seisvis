@@ -138,6 +138,7 @@ class MainWindow(QMainWindow):
         self.catalog_panel.properties_requested.connect(self._on_properties_requested)
         self.catalog_panel.remove_requested.connect(self._on_remove_requested)
         self.catalog_panel.open_in_new_group_requested.connect(self._on_open_in_new_group)
+        self.catalog_panel.add_to_active_group_requested.connect(self._on_add_to_active_group)
         left_splitter.addWidget(self.catalog_panel)
 
         self.viewport_manager = ViewportManagerPanel(self.project)
@@ -276,6 +277,13 @@ class MainWindow(QMainWindow):
 
     def _on_open_in_new_group(self, dataset: Dataset) -> None:
         self._create_group_for(dataset)
+
+    def _on_add_to_active_group(self, dataset: Dataset) -> None:
+        group = self.project.active_toggle_group()
+        if group is None:
+            self._create_group_for(dataset)
+            return
+        group.add_member(dataset)
 
     def _create_group_for(self, dataset: Dataset) -> ToggleGroup:
         name = f"Group {self.project.next_toggle_group_number()}"
