@@ -10,8 +10,6 @@ from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
-    QGroupBox,
-    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -20,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from seismic_viz.controllers.active_group_controller import ActiveGroupController
 from seismic_viz.io.slice_cache import SliceCache
 from seismic_viz.models.dataset import Dataset
 from seismic_viz.models.project import Project
@@ -28,6 +27,7 @@ from seismic_viz.ui.dialogs.dataset_properties_dialog import DatasetPropertiesDi
 from seismic_viz.ui.panels.catalog_panel import CatalogPanel
 from seismic_viz.ui.panels.display_panel import DisplayPanel
 from seismic_viz.ui.panels.viewport_manager_panel import ViewportManagerPanel
+from seismic_viz.ui.toolbar.global_toolbar import GlobalToolbar
 from seismic_viz.workers.header_scan_worker import HeaderScanWorker
 from seismic_viz.workers.load_worker import LoadWorker
 
@@ -61,25 +61,6 @@ def _make_placeholder(text: str) -> QLabel:
     label.setAlignment(Qt.AlignmentFlag.AlignCenter)
     label.setStyleSheet("color: #888; font-style: italic;")
     return label
-
-
-def _make_toolbar() -> QWidget:
-    toolbar = QWidget()
-    layout = QHBoxLayout(toolbar)
-    layout.setContentsMargins(4, 4, 4, 4)
-
-    for name in ("Appearance", "Processing", "Edit Target"):
-        box = QGroupBox(name)
-        inner = QHBoxLayout(box)
-        placeholder = _make_placeholder("(placeholder)")
-        placeholder.setEnabled(False)
-        inner.addWidget(placeholder)
-        box.setEnabled(False)
-        layout.addWidget(box)
-
-    layout.addStretch()
-    toolbar.setFixedHeight(80)
-    return toolbar
 
 
 class MainWindow(QMainWindow):
@@ -128,8 +109,11 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        toolbar = _make_toolbar()
-        root_layout.addWidget(toolbar)
+        self.toolbar = GlobalToolbar(self)
+        self.active_group_controller = ActiveGroupController(
+            self.project, self.toolbar, parent=self
+        )
+        root_layout.addWidget(self.toolbar)
 
         h_splitter = QSplitter(Qt.Orientation.Horizontal)
 

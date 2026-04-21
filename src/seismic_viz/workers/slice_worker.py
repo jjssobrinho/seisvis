@@ -55,7 +55,8 @@ class SliceWorker(QRunnable):
         try:
             pad = int(self.processing_chain.pad_samples)
             padded = self.dataset.read_slice(self.trace_indices, self.time_slice, pad_samples=pad)
-            processed = self.processing_chain.apply(padded)
+            dt_ms = float(self.dataset.sample_interval_ms or 1.0)
+            processed = self.processing_chain.apply(padded, dt_ms)
             if pad > 0:
                 # Crop the padding introduced above/below. The cropped amount
                 # mirrors what Dataset.read_slice could actually apply at the

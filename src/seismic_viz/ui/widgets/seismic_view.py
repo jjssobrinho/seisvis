@@ -14,6 +14,7 @@ from seismic_viz.models.toggle_group import Member, ToggleGroup
 from seismic_viz.ui.widgets.group_command_bar import GroupCommandBar
 from seismic_viz.ui.widgets.info_track import InfoTrack, default_display_names
 from seismic_viz.ui.widgets.toggle_bar import ToggleBar
+from seismic_viz.utils.colormaps import get_colormap
 from seismic_viz.workers.slice_worker import SliceWorker
 
 log = logging.getLogger(__name__)
@@ -207,6 +208,8 @@ class SeismicView(QWidget):
         self.group.reference_index_changed.connect(self._on_reference_index_changed)
         self.group.shared_state_changed.connect(self._on_shared_state_changed)
         self.group.zoom_changed.connect(self._on_zoom_changed)
+        self.group.display_state_changed.connect(self._on_display_state_changed)
+        self.group.processing_chain_changed.connect(self._on_processing_chain_changed)
 
     # --- Member management ---
 
@@ -661,12 +664,10 @@ class SeismicView(QWidget):
         trace_extent = trace_range[1] - trace_range[0]
         rect = QRectF(trace_range[0], t0, trace_extent, t_extent)
         item = self._image_items[member_index]
-        # Symmetric clip around the slice's max-abs amplitude (simple M3 default).
         if array.size:
-            lo, hi = np.quantile(array, [0.01, 0.99])
-            if lo == hi:
-                lo, hi = float(lo) - 1.0, float(hi) + 1.0
-            item.setImage(array, autoLevels=False, levels=(float(lo), float(hi)))
+            levels = self._levels_for_member(member, array)
+            item.setImage(array, autoLevels=False, levels=levels)
+            item.setLookupTable(get_colormap(member.display_state.colormap))
         else:
             item.clear()
         item.setRect(rect)
@@ -674,6 +675,39 @@ class SeismicView(QWidget):
         self._last_rects[member_index] = rect
         if show_loading:
             self.loading_label.setVisible(True)
+
+    @staticmethod
+    def _levels_for_member(member: Member, array: np.ndarray) -> tuple[float, float]:
+        """Compute (lo, hi) levels from the display_state percentiles."""
+        ds = member.display_state
+        lo_pct = max(0.0, min(100.0, float(ds.clip_low_pct))) / 100.0
+        hi_pct = max(0.0, min(100.0, float(ds.clip_high_pct))) / 100.0
+        if hi_pct <= lo_pct:
+            hi_pct = min(1.0, lo_pct + 0.01)
+        lo, hi = np.quantile(array, [lo_pct, hi_pct])
+        if lo == hi:
+            lo, hi = float(lo) - 1.0, float(hi) + 1.0
+        return float(lo), float(hi)
+
+    def _on_display_state_changed(self, member_index: int) -> None:
+        """Re-apply LUT + levels for the affected member — no re-slice."""
+        if not 0 <= member_index < len(self._image_items):
+            return
+        arr = self._last_arrays[member_index]
+        if arr is None or arr.size == 0:
+            return
+        try:
+            member = self.group.members[member_index]
+        except IndexError:
+            return
+        item = self._image_items[member_index]
+        item.setImage(arr, autoLevels=False, levels=self._levels_for_member(member, arr))
+        item.setLookupTable(get_colormap(member.display_state.colormap))
+
+    def _on_processing_chain_changed(self, member_index: int) -> None:
+        """Drop cached slices for the member and re-request a fresh one."""
+        self._cache.invalidate_member(self.group.id, member_index)
+        self._request_slice(member_index)
 
     # --- Crosshair + cursor readout ---
 

@@ -1,5 +1,90 @@
 # Changelog
 
+## [M7] Toolbar Wire-Up (N-way edit target + All)
+
+M7 connects the global top toolbar to the active toggle group's members
+through a dedicated controller, and replaces the identity-stub
+`ProcessingChain` with a real ordered `[ConstantGain, AGC, Bandpass]`
+pipeline. A single toolbar instance drives the whole app; its signals
+are routed to "all members" (link_all=True) or just the target member
+based on the edit-target selector.
+
+- `processing/gain.py`, `processing/agc.py`, `processing/filters.py`
+  (new): `ConstantGain(db, enabled)` — dB → linear scale. `AGC(window_ms,
+  enabled)` — cumsum-based sliding-window RMS normalization along time,
+  falls back to trace-wide RMS when the window meets or exceeds the
+  trace length. `Bandpass(low_hz, high_hz, order, enabled)` —
+  zero-phase Butterworth via `scipy.signal.butter + sosfiltfilt`.
+  Each op exposes `pad_samples` and `hash_parts()` so the chain's hash
+  reflects every knob.
+- `models/processing_chain.py`: replaces the identity stub with the
+  real ordered pipeline. `pad_samples` sums enabled-op pads;
+  `apply(arr, dt_ms)` runs only enabled ops in `[gain, agc, bandpass]`
+  order; `hash()` keys include all three ops; `reset()` reinstates
+  fresh defaults.
+- `models/toggle_group.py`: adds `display_state_changed(int)` and
+  `processing_chain_changed(int)` signals, plus
+  `update_member_display_state(index, **kwargs)`,
+  `update_member_processing_chain(index, **ops)` (values are dicts of
+  per-op fields, e.g. `bandpass={"enabled": True, "low_hz": 10.0}`),
+  and `reset_member(index)` which swaps in fresh `DisplayState` and
+  `ProcessingChain` instances and fires both signals.
+- `utils/colormaps.py` (new): `get_colormap(name)` returns a 256×4
+  uint8 LUT for `"seismic"`, `"RdBu"`, `"gray"`, `"petrel"` built by
+  linear RGB interpolation between stops. `available_colormaps()`
+  exposes the name tuple.
+- `ui/toolbar/appearance_group.py` (new): `AppearanceGroup` —
+  colormap combo, clip low/high spinboxes (with auto-nudge if
+  high ≤ low), gain dB slider (−40..+40). Emits
+  `colormap_changed(str)`, `clip_changed(float, float)`,
+  `gain_changed(float)`. `set_values(...)` uses `blockSignals` so
+  programmatic rebinds don't echo back as fresh edits.
+- `ui/toolbar/processing_group.py` (new): `ProcessingGroup` —
+  bandpass enable + low/high/order; AGC enable + window ms. Emits
+  `bandpass_changed(bool, float, float, int)` and
+  `agc_changed(bool, float)`.
+- `ui/toolbar/edit_target_selector.py` (new): `EditTargetSelector` —
+  exclusive button group `[1] [2] … [N] [All]` that wraps to a
+  second row past 12 buttons. Emits `target_changed(int, bool)`;
+  rebuilds on `set_member_count(n)`; `set_selection(index, link_all)`
+  does a silent rebind.
+- `ui/toolbar/global_toolbar.py` (new): `GlobalToolbar` composes
+  `AppearanceGroup`, `ProcessingGroup`, `EditTargetSelector`, and a
+  "Reset target" button. Exposes `reset_requested` and a
+  `set_group_enabled(bool)` that cascades to every child.
+- `controllers/active_group_controller.py` (new):
+  `ActiveGroupController(QObject)` subscribes to every toolbar signal
+  plus `project.active_toggle_group_changed`. `_bind_group` (re-)wires
+  to the active group's `member_added`, `member_removed`,
+  `reference_index_changed`, `edit_target_changed`,
+  `display_state_changed` signals; on first bind it picks a sensible
+  default `link_all = group.all_members_compatible()`.
+  `_target_indices()` fans out to every member when `link_all`, else
+  just the current `edit_target_index`. `_rebind_toolbar_values()`
+  reads the target's `DisplayState` + `ProcessingChain` and pushes
+  them into the toolbar with `blockSignals`. Gain is routed through
+  `ProcessingChain.gain.db` (not `DisplayState.gain_db`), which is
+  the MILESTONES-specified op.
+- `ui/widgets/seismic_view.py`: hooks `display_state_changed` (reapply
+  LUT + clip levels without re-slicing) and `processing_chain_changed`
+  (invalidate cache entry for the affected member and re-request the
+  slice). Uses `get_colormap` via `ImageItem.setLookupTable` and
+  replaces the hardcoded 1/99 quantile with
+  `DisplayState.clip_low_pct / clip_high_pct`.
+- `workers/slice_worker.py`: applies the processing chain after
+  padded `read_slice`, passing `dataset.sample_interval_ms`.
+- `app.py`: replaces the `_make_toolbar` placeholder with the real
+  `GlobalToolbar` and instantiates `ActiveGroupController(project,
+  toolbar, parent=self)` as a child of the main window.
+- `tests/conftest.py`: autouse qapp fixture upgraded to
+  `QApplication` (with `QT_QPA_PLATFORM=offscreen`) so tests can
+  construct QWidget-backed toolbar pieces.
+- Tests: 10 new processing tests in `tests/test_processing.py`
+  (gain, bandpass, AGC, chain hash + pad + order) and 4 controller
+  tests in `tests/test_controller.py` (link-all fan-out, isolated
+  target edits, member-removal clamping of edit target, and rebind
+  on active-group switch without phantom emits).
+
 ## [M6] Derived Datasets (A − B diff)
 
 M6 adds lazy dataset differencing driven from the Viewport Manager.

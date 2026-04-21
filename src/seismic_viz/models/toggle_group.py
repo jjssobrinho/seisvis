@@ -66,6 +66,8 @@ class ToggleGroup(QObject):
     shared_state_changed = Signal()
     zoom_changed = Signal()
     name_changed = Signal(str)
+    display_state_changed = Signal(int)  # member index
+    processing_chain_changed = Signal(int)  # member index
 
     def __init__(self, name: str, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -218,6 +220,64 @@ class ToggleGroup(QObject):
         self._edit_target_index = index
         self._link_all = link_all
         self.edit_target_changed.emit(index, link_all)
+
+    def update_member_display_state(self, index: int, **kwargs: object) -> bool:
+        """Apply keyword updates to a member's DisplayState.
+
+        Returns True when at least one field actually changed (and the
+        ``display_state_changed`` signal was emitted). Unknown keys raise
+        AttributeError so typos surface early.
+        """
+        if not 0 <= index < len(self._members):
+            raise IndexError(f"member index {index} out of range")
+        ds = self._members[index].display_state
+        changed = False
+        for key, value in kwargs.items():
+            if not hasattr(ds, key):
+                raise AttributeError(f"DisplayState has no field {key!r}")
+            if getattr(ds, key) != value:
+                setattr(ds, key, value)
+                changed = True
+        if changed:
+            self.display_state_changed.emit(index)
+        return changed
+
+    def update_member_processing_chain(self, index: int, **ops: object) -> bool:
+        """Apply keyword updates to a member's ProcessingChain ops.
+
+        Keys must name existing op attributes (``gain``, ``agc``, ``bandpass``)
+        and values are dicts of field updates for that op. Returns True iff
+        any field was actually mutated.
+        """
+        if not 0 <= index < len(self._members):
+            raise IndexError(f"member index {index} out of range")
+        chain = self._members[index].processing_chain
+        changed = False
+        for op_name, updates in ops.items():
+            if not hasattr(chain, op_name):
+                raise AttributeError(f"ProcessingChain has no op {op_name!r}")
+            if not isinstance(updates, dict):
+                raise TypeError(f"updates for {op_name!r} must be a dict")
+            op = getattr(chain, op_name)
+            for key, value in updates.items():
+                if not hasattr(op, key):
+                    raise AttributeError(f"{op_name} has no field {key!r}")
+                if getattr(op, key) != value:
+                    setattr(op, key, value)
+                    changed = True
+        if changed:
+            self.processing_chain_changed.emit(index)
+        return changed
+
+    def reset_member(self, index: int) -> None:
+        """Reset a member's DisplayState and ProcessingChain to defaults."""
+        if not 0 <= index < len(self._members):
+            raise IndexError(f"member index {index} out of range")
+        member = self._members[index]
+        member.display_state = DisplayState()
+        member.processing_chain = ProcessingChain()
+        self.display_state_changed.emit(index)
+        self.processing_chain_changed.emit(index)
 
     def compatibility_with_reference(self, index: int) -> CompatResult:
         """Return whether the member at ``index`` toggles against the reference.
