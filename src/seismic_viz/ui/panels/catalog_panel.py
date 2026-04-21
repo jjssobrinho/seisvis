@@ -155,9 +155,11 @@ class CatalogModel(QAbstractItemModel):
             return font
         if role == Qt.ItemDataRole.ForegroundRole and isinstance(ds, DerivedDataset):
             return QColor("#1E40AF")
-        if role == Qt.ItemDataRole.ToolTipRole and isinstance(ds, DerivedDataset):
-            direction = "A \u2212 B" if ds.direction == "a_minus_b" else "B \u2212 A"
-            return f"{direction} where A = {ds.parent_a.source_path}, B = {ds.parent_b.source_path}"
+        if role == Qt.ItemDataRole.ToolTipRole:
+            if isinstance(ds, DerivedDataset):
+                direction = "A \u2212 B" if ds.direction == "a_minus_b" else "B \u2212 A"
+                return f"{direction} where A = {ds.parent_a.source_path}, B = {ds.parent_b.source_path}"
+            return str(ds.source_path)
         return None
 
     def headerData(
