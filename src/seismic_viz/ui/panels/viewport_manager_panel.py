@@ -28,7 +28,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMenu,
-    QPushButton,
     QRadioButton,
     QScrollArea,
     QToolButton,
@@ -61,15 +60,6 @@ QToolButton:checked {
     border: 1px solid #b38600;
 }
 """
-
-_BADGE_A_STYLE = (
-    "background-color: #1E40AF; color: white; font-weight: bold;"
-    " border-radius: 3px; padding: 0px 4px;"
-)
-_BADGE_B_STYLE = (
-    "background-color: #166534; color: white; font-weight: bold;"
-    " border-radius: 3px; padding: 0px 4px;"
-)
 
 
 class _MemberRow(QFrame):
@@ -276,10 +266,6 @@ class _GroupCard(QFrame):
         self._header = QLabel(group.name, self)
         self._header.setStyleSheet("font-weight: bold;")
 
-        # A/B diff badge — hidden unless this card is in diff_a or diff_b.
-        self._diff_badge = QLabel("", self)
-        self._diff_badge.setVisible(False)
-
         self._close_btn = QToolButton(self)
         self._close_btn.setText("×")
         self._close_btn.setToolTip("Close toggle group")
@@ -289,7 +275,6 @@ class _GroupCard(QFrame):
         )
 
         header_row = QHBoxLayout()
-        header_row.addWidget(self._diff_badge)
         header_row.addWidget(self._header, stretch=1)
         header_row.addWidget(self._close_btn)
 
@@ -322,18 +307,6 @@ class _GroupCard(QFrame):
 
         self.setAcceptDrops(True)
         self._rebuild_members()
-
-    # --- diff badge ---
-
-    def set_diff_badge(self, slot: str | None) -> None:
-        """Set the A/B diff badge. *slot* is 'A', 'B', or None."""
-        if slot is None:
-            self._diff_badge.setVisible(False)
-        else:
-            self._diff_badge.setText(slot)
-            self._diff_badge.setStyleSheet(_BADGE_A_STYLE if slot == "A" else _BADGE_B_STYLE)
-            self._diff_badge.setVisible(True)
-            self._diff_badge.adjustSize()
 
     # --- member rebuild ---
 
@@ -375,18 +348,6 @@ class _GroupCard(QFrame):
         compat_count = sum(1 for i in range(n) if self.group.compatibility_with_reference(i).ok)
         self._summary.setText(f"Reference: {ref_name}, Compatible members: {compat_count}/{n}")
 
-    # --- Ctrl+click intercept for diff slot assignment ---
-
-    def mousePressEvent(self, event) -> None:  # noqa: D401, ANN001
-        if (
-            event.button() == Qt.MouseButton.LeftButton
-            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
-        ):
-            self._panel._project.diff_selection.toggle_diff_slot(self.group.id)
-            event.accept()
-            return
-        super().mousePressEvent(event)
-
     # --- drop target: allow dropping onto the card's empty space to
     # append to the end ---
 
@@ -414,95 +375,6 @@ class _GroupCard(QFrame):
         event.acceptProposedAction()
 
 
-class _DiffSelectionBar(QFrame):
-    """Bar below the group-card list showing A/B slots and action buttons."""
-
-    compute_requested = Signal()
-
-    def __init__(self, project: Project, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._project = project
-        self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setFrameShadow(QFrame.Shadow.Sunken)
-
-        self._a_label = QLabel("A: —")
-        self._b_label = QLabel("B: —")
-
-        self._swap_btn = QPushButton("Swap")
-        self._swap_btn.setToolTip("Swap A and B")
-        self._swap_btn.clicked.connect(self._on_swap)
-
-        self._clear_btn = QPushButton("Clear")
-        self._clear_btn.setToolTip("Clear diff selection")
-        self._clear_btn.clicked.connect(self._on_clear)
-
-        self._compute_btn = QPushButton("Compute A − B")
-        self._compute_btn.setToolTip("Create derived A − B dataset")
-        self._compute_btn.clicked.connect(self.compute_requested)
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 4, 6, 4)
-        layout.setSpacing(8)
-        layout.addWidget(self._a_label)
-        layout.addWidget(self._b_label)
-        layout.addStretch(1)
-        layout.addWidget(self._swap_btn)
-        layout.addWidget(self._clear_btn)
-        layout.addWidget(self._compute_btn)
-
-        project.diff_selection.changed.connect(self._refresh)
-        project.toggle_group_added.connect(lambda _: self._refresh())
-        project.toggle_group_removed.connect(lambda _: self._refresh())
-
-        self._refresh()
-
-    def _refresh(self) -> None:
-        sel = self._project.diff_selection
-        a_id = sel.diff_a
-        b_id = sel.diff_b
-
-        a_name = "—"
-        b_name = "—"
-        if a_id is not None:
-            g = self._project.find_toggle_group(a_id)
-            a_name = g.name if g else "?"
-        if b_id is not None:
-            g = self._project.find_toggle_group(b_id)
-            b_name = g.name if g else "?"
-
-        self._a_label.setText(f"A: {a_name}")
-        self._b_label.setText(f"B: {b_name}")
-
-        both_filled = a_id is not None and b_id is not None
-        self._swap_btn.setEnabled(both_filled)
-        self._clear_btn.setEnabled(a_id is not None or b_id is not None)
-
-        # Evaluate compatibility for the Compute button.
-        if both_filled:
-            pair = sel.resolve_datasets(self._project)
-            if pair is None:
-                self._compute_btn.setEnabled(False)
-                self._compute_btn.setToolTip("Selected groups no longer resolve")
-            else:
-                from seismic_viz.models.compatibility import are_toggle_compatible
-
-                compat = are_toggle_compatible(pair[0], pair[1])
-                self._compute_btn.setEnabled(compat.ok)
-                if compat.ok:
-                    self._compute_btn.setToolTip("Create derived A − B dataset")
-                else:
-                    self._compute_btn.setToolTip(f"Incompatible: {compat.reason}")
-        else:
-            self._compute_btn.setEnabled(False)
-            self._compute_btn.setToolTip("Select two groups with Ctrl+click first")
-
-    def _on_swap(self) -> None:
-        self._project.diff_selection.swap()
-
-    def _on_clear(self) -> None:
-        self._project.diff_selection.clear()
-
-
 class ViewportManagerPanel(QWidget):
     """Scrollable stack of group cards with a Diff Selection bar at the bottom."""
 
@@ -527,15 +399,10 @@ class ViewportManagerPanel(QWidget):
         self._scroll.setWidget(container)
         self._container = container
 
-        # Diff selection bar pinned at the bottom.
-        self._diff_bar = _DiffSelectionBar(project, self)
-        self._diff_bar.compute_requested.connect(self._on_compute_diff)
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self._scroll, stretch=1)
-        layout.addWidget(self._diff_bar)
 
         # Right-click on the scroll viewport opens a minimal context menu.
         self._scroll.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -544,7 +411,6 @@ class ViewportManagerPanel(QWidget):
         project.toggle_group_added.connect(self._on_group_added)
         project.toggle_group_removed.connect(self._on_group_removed)
         project.active_toggle_group_changed.connect(self._on_active_group_changed)
-        project.diff_selection.changed.connect(self._refresh_diff_badges)
 
     # --- Project events ---
 
@@ -570,26 +436,13 @@ class ViewportManagerPanel(QWidget):
     def _on_active_group_changed(self, _group_id: object) -> None:
         pass
 
-    def _refresh_diff_badges(self) -> None:
-        sel = self._project.diff_selection
-        for gid, card in self._cards.items():
-            if gid == sel.diff_a:
-                card.set_diff_badge("A")
-            elif gid == sel.diff_b:
-                card.set_diff_badge("B")
-            else:
-                card.set_diff_badge(None)
-
     # --- Helpers ---
 
     def _card_click_hook(self, card: _GroupCard, original):  # noqa: ANN001
         panel = self
 
         def hook(event):  # noqa: ANN001
-            # Ctrl+click is handled inside _GroupCard.mousePressEvent; only
-            # emit group_selected for plain clicks.
-            if not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
-                panel.group_selected.emit(card.group.id)
+            panel.group_selected.emit(card.group.id)
             original(event)
 
         return hook
@@ -659,7 +512,13 @@ class ViewportManagerPanel(QWidget):
             dlg = DiffDialog(a, b, parent=self)
             if dlg.exec():
                 try:
-                    compute_difference(self._project, a, b, dlg.direction(), dlg.result_name())
+                    derived = compute_difference(
+                        self._project, a, b, dlg.direction(), dlg.result_name()
+                    )
+                    # Add the new derived dataset to the currently active toggle group.
+                    active_group = self._project.active_toggle_group()
+                    if active_group is not None:
+                        active_group.add_member(derived)
                     self._selected_members.clear()
                     self._apply_selection_highlights()
                 except IncompatibleDatasetsError as exc:
@@ -673,30 +532,6 @@ class ViewportManagerPanel(QWidget):
         if action is close_all:
             for gid in list(self._cards.keys()):
                 self.close_group_requested.emit(gid)
-
-    def _on_compute_diff(self) -> None:
-        from seismic_viz.services.derivation import IncompatibleDatasetsError, compute_difference
-
-        sel = self._project.diff_selection
-        pair = sel.resolve_datasets(self._project)
-        if pair is None:
-            log.warning("diff compute: groups no longer resolve — clearing")
-            sel.clear()
-            return
-
-        a, b = pair
-        name = ""
-        ga = self._project.find_toggle_group(sel.diff_a)  # type: ignore[arg-type]
-        gb = self._project.find_toggle_group(sel.diff_b)  # type: ignore[arg-type]
-        if ga and gb:
-            name = f"{ga.name} \u2212 {gb.name}"
-
-        try:
-            derived = compute_difference(self._project, a, b, "a_minus_b", name)
-            sel.clear()
-            log.info("created derived dataset: %s", derived.name)
-        except IncompatibleDatasetsError as exc:
-            log.warning("diff compute failed: %s", exc)
 
 
 __all__ = ["ViewportManagerPanel"]
