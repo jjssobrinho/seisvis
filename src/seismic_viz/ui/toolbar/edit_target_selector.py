@@ -24,6 +24,10 @@ class EditTargetSelector(QGroupBox):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Edit Target", parent)
+        self.setStyleSheet(
+            "QToolButton:checked { background-color: #d0d0d0; color: black; "
+            "border: 1px solid #8a8a8a; }"
+        )
         self._layout = QGridLayout(self)
         self._layout.setContentsMargins(6, 6, 6, 6)
         self._layout.setHorizontalSpacing(2)
