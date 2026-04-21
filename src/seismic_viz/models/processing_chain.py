@@ -1,23 +1,53 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
+
+from seismic_viz.processing.agc import AGC
+from seismic_viz.processing.filters import Bandpass
+from seismic_viz.processing.gain import ConstantGain
 
 
 @dataclass
 class ProcessingChain:
-    """Identity processing chain for M3.
+    """Ordered [ConstantGain, AGC, Bandpass] applied to a slice.
 
-    Real processing steps (ConstantGain, AGC, Bandpass) arrive in M7. For now
-    the chain contributes no padding and returns its input unchanged. The
-    ``hash()`` value is stable so the slice cache can key on it.
+    Each op exposes ``enabled`` and its own parameters; the chain runs only
+    the enabled ones in fixed order. The cache uses :meth:`hash` to key
+    slices, so toggling any op or changing a parameter invalidates the
+    cached result naturally.
     """
 
-    pad_samples: int = 0
+    gain: ConstantGain = field(default_factory=ConstantGain)
+    agc: AGC = field(default_factory=AGC)
+    bandpass: Bandpass = field(default_factory=Bandpass)
 
-    def apply(self, arr: np.ndarray) -> np.ndarray:
-        return arr
+    @property
+    def pad_samples(self) -> int:
+        return (
+            int(self.gain.pad_samples) + int(self.agc.pad_samples) + int(self.bandpass.pad_samples)
+        )
+
+    def apply(self, arr: np.ndarray, sample_interval_ms: float) -> np.ndarray:
+        out = arr
+        if self.gain.enabled:
+            out = self.gain.apply(out, sample_interval_ms)
+        if self.agc.enabled:
+            out = self.agc.apply(out, sample_interval_ms)
+        if self.bandpass.enabled:
+            out = self.bandpass.apply(out, sample_interval_ms)
+        return out
 
     def hash(self) -> str:
-        return "identity:v1"
+        parts = (
+            self.gain.hash_parts(),
+            self.agc.hash_parts(),
+            self.bandpass.hash_parts(),
+        )
+        return "chain:" + repr(parts)
+
+    def reset(self) -> None:
+        self.gain = ConstantGain()
+        self.agc = AGC()
+        self.bandpass = Bandpass()

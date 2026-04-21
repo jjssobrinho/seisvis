@@ -1,21 +1,28 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 import segyio
-from PySide6.QtCore import QCoreApplication
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import QCoreApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
 
 
 @pytest.fixture(scope="session", autouse=True)
 def qapp() -> QCoreApplication:
     # Autouse so Dataset (QObject) and any other Qt-backed models can be
     # instantiated safely in tests that don't explicitly request the fixture.
+    # Use QApplication (subclass of QCoreApplication) so tests that construct
+    # QWidgets — e.g. the M7 toolbar — work too.
     app = QCoreApplication.instance()
     if app is None:
-        app = QCoreApplication(sys.argv)
+        app = QApplication(sys.argv)
     return app
 
 
