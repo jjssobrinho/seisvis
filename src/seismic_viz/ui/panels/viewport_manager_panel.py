@@ -78,6 +78,11 @@ class _MemberRow(QFrame):
     Owns its own up/down/remove buttons and a Reference radio. Also
     implements a basic drag source so rows can be reordered within the
     same group card via drag-and-drop.
+
+    Left-click (plain or Ctrl) on the row registers it as selected for
+    diff purposes. Plain click selects exclusively; Ctrl+click toggles.
+    Right-click shows a context menu with "Compute Difference..." when
+    exactly two rows are selected across all cards.
     """
 
     def __init__(
@@ -182,12 +187,32 @@ class _MemberRow(QFrame):
         if self.group.is_empty:
             self._panel.close_group_requested.emit(self.group.id)
 
+    # --- selection highlight ---
+
+    def set_selected(self, selected: bool) -> None:
+        if selected:
+            self.setStyleSheet(
+                "QFrame { background-color: #1E3A5F; border-radius: 2px; }"
+                "QLabel { background: transparent; }"
+            )
+        else:
+            self.setStyleSheet("")
+
     # --- drag source ---
 
     def mousePressEvent(self, event) -> None:  # noqa: D401, ANN001
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start = event.position().toPoint()
+            add = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            self._panel._on_member_row_clicked(self, add_to_selection=add)
+            # Accept so Ctrl+click does not propagate to _GroupCard (diff slots).
+            event.accept()
+            return
         super().mousePressEvent(event)
+
+    def contextMenuEvent(self, event) -> None:  # noqa: D401, ANN001
+        self._panel._show_member_context_menu(self, event.globalPos())
+        event.accept()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: D401, ANN001
         if not (event.buttons() & Qt.MouseButton.LeftButton):
@@ -327,6 +352,7 @@ class _GroupCard(QFrame):
 
         for i in range(self.group.n_members):
             row = _MemberRow(self._panel, self.group, i, parent=self._members_host)
+            row.set_selected((self.group.id, i) in self._panel._selected_members)
             self._members_layout.addWidget(row)
             self._member_rows.append(row)
             self._reference_bg.addButton(row.reference_radio, i)
@@ -487,6 +513,8 @@ class ViewportManagerPanel(QWidget):
         super().__init__(parent)
         self._project = project
         self._cards: dict[str, _GroupCard] = {}
+        # Set of (group_id, member_index) tuples selected for diff.
+        self._selected_members: set[tuple[str, int]] = set()
 
         # Scrollable area for group cards.
         self._scroll = QScrollArea(self)
@@ -529,6 +557,10 @@ class ViewportManagerPanel(QWidget):
         card.mousePressEvent = self._card_click_hook(card, card.mousePressEvent)
 
     def _on_group_removed(self, group_id: str) -> None:
+        # Clear selection entries for the removed group.
+        self._selected_members = {
+            (gid, idx) for gid, idx in self._selected_members if gid != group_id
+        }
         card = self._cards.pop(group_id, None)
         if card is None:
             return
@@ -568,6 +600,70 @@ class ViewportManagerPanel(QWidget):
         if not 0 <= dst < row.group.n_members:
             return
         row.group.move_member(src, dst)
+
+    # --- member-row selection ---
+
+    def _on_member_row_clicked(self, row: _MemberRow, *, add_to_selection: bool) -> None:
+        key = (row.group.id, row.member_index)
+        if add_to_selection:
+            if key in self._selected_members:
+                self._selected_members.discard(key)
+            else:
+                self._selected_members.add(key)
+        else:
+            self._selected_members = {key}
+        self._apply_selection_highlights()
+        # Also select the group in the active-tab sense.
+        self.group_selected.emit(row.group.id)
+
+    def _apply_selection_highlights(self) -> None:
+        for gid, card in self._cards.items():
+            for row in card._member_rows:
+                row.set_selected((gid, row.member_index) in self._selected_members)
+
+    def _selected_datasets(self) -> list:
+        """Return Dataset objects for all selected member rows, in selection order."""
+        result = []
+        for gid, idx in self._selected_members:
+            card = self._cards.get(gid)
+            if card is None:
+                continue
+            members = card.group.members
+            if 0 <= idx < len(members):
+                result.append(members[idx].dataset)
+        return result
+
+    def _show_member_context_menu(self, row: _MemberRow, global_pos) -> None:  # noqa: ANN001
+        from seismic_viz.models.compatibility import are_toggle_compatible
+        from seismic_viz.ui.dialogs.diff_dialog import DiffDialog
+
+        datasets = self._selected_datasets()
+        if len(datasets) != 2:
+            return
+        a, b = datasets[0], datasets[1]
+        compat = are_toggle_compatible(a, b)
+
+        menu = QMenu(self)
+        diff_action = menu.addAction("Compute Difference…")
+        diff_action.setEnabled(compat.ok)
+        if not compat.ok:
+            diff_action.setToolTip(f"Incompatible: {compat.reason}")
+
+        action = menu.exec(global_pos)
+        if action is diff_action and compat.ok:
+            from seismic_viz.services.derivation import (
+                IncompatibleDatasetsError,
+                compute_difference,
+            )
+
+            dlg = DiffDialog(a, b, parent=self)
+            if dlg.exec():
+                try:
+                    compute_difference(self._project, a, b, dlg.direction(), dlg.result_name())
+                    self._selected_members.clear()
+                    self._apply_selection_highlights()
+                except IncompatibleDatasetsError as exc:
+                    log.warning("diff compute failed: %s", exc)
 
     def _show_context_menu(self, pos: QPoint) -> None:
         menu = QMenu(self)
