@@ -9,8 +9,27 @@ import segyio
 from PySide6.QtCore import QObject, Signal
 
 from seismic_viz.models.group_index import GroupIndex, GroupingMode, ModeState
+from seismic_viz.models.header_mapping import HeaderMapping
 
 log = logging.getLogger(__name__)
+
+
+_MODE_ROLE: dict[GroupingMode, str] = {
+    GroupingMode.SHOT: "field_record",
+    GroupingMode.INLINE: "inline",
+    GroupingMode.CROSSLINE: "crossline",
+}
+
+_DEFAULT_MODE_LABELS: dict[GroupingMode, str] = {
+    GroupingMode.SHOT: "Shot",
+    GroupingMode.INLINE: "IL",
+    GroupingMode.CROSSLINE: "XL",
+    GroupingMode.TRACE_RANGE: "T",
+}
+
+
+def _mode_to_role(mode: GroupingMode) -> str | None:
+    return _MODE_ROLE.get(mode)
 
 
 class Dataset(QObject):
@@ -26,6 +45,10 @@ class Dataset(QObject):
     # ``group_index`` has been updated. UI widgets bound to the dataset
     # rebuild their mode-dependent state in response.
     group_index_ready = Signal()
+    # Fired when the attached HeaderMapping (display names, included
+    # attributes, group roles) changes — typically after the user edits
+    # the mapping via the Configure Headers dialog.
+    mapping_changed = Signal()
 
     def __init__(
         self,
@@ -41,6 +64,10 @@ class Dataset(QObject):
         group_index: GroupIndex | None = None,
         id: str | None = None,
         name: str = "",
+        header_mapping: HeaderMapping | None = None,
+        attribute_arrays: dict[str, np.ndarray] | None = None,
+        has_stale_mapping: bool = False,
+        needs_sv_prompt: bool = False,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -55,6 +82,10 @@ class Dataset(QObject):
         self.group_index = group_index
         self.id = id if id is not None else str(uuid.uuid4())
         self.name = name if name else Path(source_path).stem
+        self.header_mapping: HeaderMapping | None = header_mapping
+        self.attribute_arrays: dict[str, np.ndarray] | None = attribute_arrays
+        self.has_stale_mapping: bool = bool(has_stale_mapping)
+        self.needs_sv_prompt: bool = bool(needs_sv_prompt)
         self._closed = False
 
     @property
@@ -108,9 +139,9 @@ class Dataset(QObject):
     def inline_at(self, trace_index: int) -> int | None:
         """Return the inline number at ``trace_index``, or ``None``.
 
-        Reads from the scanned array produced by the background header
-        scan. Returns ``None`` when the scan hasn't completed, the file
-        isn't structured, or ``trace_index`` is out of range.
+        When a :class:`HeaderMapping` is attached, the value is looked up
+        on the role-configured attribute. Otherwise falls back to the
+        ``INLINE_3D`` field scanned into the GroupIndex (M4.2 behavior).
         """
         return self._header_value_at(GroupingMode.INLINE, trace_index)
 
@@ -119,16 +150,91 @@ class Dataset(QObject):
         return self._header_value_at(GroupingMode.CROSSLINE, trace_index)
 
     def _header_value_at(self, mode: GroupingMode, trace_index: int) -> int | None:
+        t = int(trace_index)
+        if t < 0 or t >= self.n_traces:
+            return None
+        # Prefer the mapped attribute array when available — it carries the
+        # user-configured byte offsets from the ``.sv``.
+        if self.header_mapping is not None and self.attribute_arrays is not None:
+            role = _mode_to_role(mode)
+            if role is not None:
+                attr_name = self.header_mapping.role_attribute(role)
+                if attr_name is not None:
+                    arr = self.attribute_arrays.get(attr_name)
+                    if arr is not None and 0 <= t < arr.size:
+                        return int(arr[t])
         gi = self.group_index
         if gi is None or gi.mode_state(mode) is not ModeState.READY:
             return None
         arr = gi._field_array_for(mode)
         if arr is None:
             return None
+        if t >= arr.size:
+            return None
+        return int(arr[t])
+
+    # --- Mapping-aware attribute access ---
+
+    def attribute_at(self, internal_name: str, trace_index: int) -> int | None:
+        """Read one mapped header attribute for a single trace.
+
+        Returns ``None`` when the attribute isn't indexed (no mapping
+        attached, scan hasn't populated ``attribute_arrays``, or the
+        trace index is out of range).
+        """
+        if self.attribute_arrays is None:
+            return None
+        arr = self.attribute_arrays.get(internal_name)
+        if arr is None:
+            return None
         t = int(trace_index)
         if t < 0 or t >= arr.size:
             return None
         return int(arr[t])
+
+    def display_name_for(self, internal_name: str) -> str:
+        """Return the user-assigned display name, or ``internal_name``."""
+        if self.header_mapping is None:
+            return internal_name
+        return self.header_mapping.display_name_for(internal_name)
+
+    def display_name_for_mode(self, mode: GroupingMode) -> str:
+        """Return the display name for the attribute filling ``mode``'s role.
+
+        Falls back to the built-in default label (``Shot`` / ``IL`` /
+        ``XL`` / ``T``) when no mapping is attached or the role is
+        unfilled.
+        """
+        default = _DEFAULT_MODE_LABELS.get(mode, "")
+        if self.header_mapping is None:
+            return default
+        role = _mode_to_role(mode)
+        if role is None:
+            return default
+        attr_name = self.header_mapping.role_attribute(role)
+        if attr_name is None:
+            return default
+        spec = self.header_mapping.attribute_by_name(attr_name)
+        return spec.display_name if spec is not None else default
+
+    def attach_header_mapping(
+        self,
+        mapping: HeaderMapping | None,
+        attribute_arrays: dict[str, np.ndarray] | None,
+        *,
+        has_stale_mapping: bool = False,
+    ) -> None:
+        """Replace the attached mapping + attribute arrays; emit ``mapping_changed``.
+
+        Used by the load flow (fresh ``.svh`` mmap) and by the scheduler
+        when a scan completes. Also updates ``has_stale_mapping`` and
+        clears ``needs_sv_prompt`` since the mapping is now authoritative.
+        """
+        self.header_mapping = mapping
+        self.attribute_arrays = attribute_arrays
+        self.has_stale_mapping = bool(has_stale_mapping)
+        self.needs_sv_prompt = False
+        self.mapping_changed.emit()
 
     def close(self) -> None:
         if self._closed:

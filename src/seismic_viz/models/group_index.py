@@ -112,6 +112,38 @@ class GroupIndex:
             if state is ModeState.UNSCANNED:
                 self._mode_state[mode] = ModeState.SCANNING
 
+    def reset_scannable_modes(self) -> None:
+        """Flip SHOT / INLINE / CROSSLINE back to UNSCANNED so a new scan
+        (e.g. after the user edited the header mapping) can repopulate
+        them. TRACE_RANGE is unaffected since it's always READY."""
+        for mode in (GroupingMode.SHOT, GroupingMode.INLINE, GroupingMode.CROSSLINE):
+            if mode in self._mode_state:
+                self._mode_state[mode] = ModeState.UNSCANNED
+
+    def update_from_attribute_arrays(
+        self,
+        mapping: object,
+        attribute_arrays: dict[str, np.ndarray] | None,
+    ) -> None:
+        """Populate the index from a HeaderMapping + per-attribute arrays.
+
+        The three group roles (``field_record``, ``inline``,
+        ``crossline``) are resolved to attributes via
+        ``mapping.group_roles``; missing / unresolved roles flip the
+        corresponding mode to FAILED.
+        """
+        if attribute_arrays is None:
+            self.update_from_scan(None, None, None)
+            return
+        role_map: dict[str, str | None] = getattr(mapping, "group_roles", {}) or {}
+        fr_name = role_map.get("field_record")
+        il_name = role_map.get("inline")
+        xl_name = role_map.get("crossline")
+        fr = attribute_arrays.get(fr_name) if fr_name else None
+        il = attribute_arrays.get(il_name) if il_name else None
+        xl = attribute_arrays.get(xl_name) if xl_name else None
+        self.update_from_scan(fr, il, xl)
+
     def update_from_scan(
         self,
         field_records: np.ndarray | None,
