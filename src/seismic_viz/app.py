@@ -3,16 +3,20 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import sys
+import traceback
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThreadPool
-from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -63,6 +67,39 @@ def _make_placeholder(text: str) -> QLabel:
     return label
 
 
+class _ExceptionDialog(QDialog):
+    """Non-modal dialog shown by the global exception hook."""
+
+    def __init__(self, exc_type: type, exc_val: BaseException, tb_text: str) -> None:
+        super().__init__()
+        self.setWindowTitle("Unexpected Error")
+        self.setMinimumWidth(500)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"<b>{exc_type.__name__}:</b> {exc_val}"))
+
+        detail = QPlainTextEdit(tb_text, self)
+        detail.setReadOnly(True)
+        detail.setMaximumHeight(200)
+        layout.addWidget(detail)
+
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok, self)
+        bb.accepted.connect(self.accept)
+        layout.addWidget(bb)
+
+
+def _install_excepthook() -> None:
+    def _hook(exc_type: type, exc_val: BaseException, exc_tb: object) -> None:
+        tb_text = "".join(traceback.format_exception(exc_type, exc_val, exc_tb))
+        log.error("Unhandled exception:\n%s", tb_text)
+        app = QApplication.instance()
+        if app is not None:
+            dlg = _ExceptionDialog(exc_type, exc_val, tb_text)
+            dlg.exec()
+
+    sys.excepthook = _hook
+
+
 class MainWindow(QMainWindow):
     def __init__(self, project: Project) -> None:
         super().__init__()
@@ -70,16 +107,14 @@ class MainWindow(QMainWindow):
         self._pool = QThreadPool.globalInstance()
         self._slice_cache = SliceCache(max_entries=32)
         self._pending_loads = 0
-        # Per-dataset cancellation flags for in-flight header scans. The worker
-        # reads the flag on every iteration; setting it True is the only way
-        # to stop a scan short of letting it finish.
         self._scan_cancel_flags: dict[str, dict[str, bool]] = {}
-        # Keep a Python-side reference to every in-flight scan worker.
-        # QThreadPool owns the C++ QRunnable, but once the Python wrapper is
-        # garbage-collected its ``signals`` QObject can be freed too — which
-        # silently drops the progress/finished/failed callbacks. Holding the
-        # worker here guarantees the signals survive until the scan completes.
         self._scan_workers: dict[str, HeaderScanWorker] = {}
+
+        # Persisted defaults applied to new groups.
+        self._last_opened_folder: Path | None = None
+        self._default_group_skip: int = 1
+        self._default_groups_per_view: int = 1
+        self._default_flicker_hz: float = 2.0
 
         self.setWindowTitle("Seismic View")
         self.resize(1280, 800)
@@ -87,21 +122,42 @@ class MainWindow(QMainWindow):
 
         self._build_menu()
         self._build_ui()
+        self._install_global_shortcuts()
+
+        # Permanent right-side status label (group / member / state info).
+        self._status_group_label = QLabel("", self)
+        self._status_group_label.setStyleSheet("padding: 0 6px;")
+        self.statusBar().addPermanentWidget(self._status_group_label)
+
         self.statusBar().showMessage("Ready")
+
+        # Wire status-bar updates.
+        project.active_toggle_group_changed.connect(self._on_active_group_changed_for_status)
+        project.toggle_group_removed.connect(lambda _: self._update_status_group_info())
+        project.group_index_scan_started = None  # not a signal; updated via dataset callbacks
+
+        self._update_status_group_info()
         log.info("MainWindow created")
+
+    # --- Menu ---
 
     def _build_menu(self) -> None:
         menu = self.menuBar()
-        file_menu = menu.addMenu("&File")
 
+        file_menu = menu.addMenu("&File")
         open_action = file_menu.addAction("&Load data…")
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self._on_open_files)
-
         file_menu.addSeparator()
-
         exit_action = file_menu.addAction("E&xit")
         exit_action.triggered.connect(self.close)
+
+        help_menu = menu.addMenu("&Help")
+        shortcuts_action = help_menu.addAction("Keyboard &Shortcuts…")
+        shortcuts_action.triggered.connect(self._on_show_shortcuts)
+        help_menu.addSeparator()
+        about_action = help_menu.addAction("&About…")
+        about_action.triggered.connect(self._on_show_about)
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -115,15 +171,15 @@ class MainWindow(QMainWindow):
         )
         root_layout.addWidget(self.toolbar)
 
-        h_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._h_splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        left_splitter = QSplitter(Qt.Orientation.Vertical)
+        self._left_splitter = QSplitter(Qt.Orientation.Vertical)
         self.catalog_panel = CatalogPanel(self.project)
         self.catalog_panel.properties_requested.connect(self._on_properties_requested)
         self.catalog_panel.remove_requested.connect(self._on_remove_requested)
         self.catalog_panel.open_in_new_group_requested.connect(self._on_open_in_new_group)
         self.catalog_panel.add_to_active_group_requested.connect(self._on_add_to_active_group)
-        left_splitter.addWidget(self.catalog_panel)
+        self._left_splitter.addWidget(self.catalog_panel)
 
         self.viewport_manager = ViewportManagerPanel(self.project)
         self.viewport_manager.close_group_requested.connect(self._on_close_group_requested)
@@ -133,10 +189,10 @@ class MainWindow(QMainWindow):
                 "Diff selection cleared — selected group was removed", 4000
             )
         )
-        left_splitter.addWidget(self.viewport_manager)
-        left_splitter.setSizes([300, 200])
+        self._left_splitter.addWidget(self.viewport_manager)
+        self._left_splitter.setSizes([300, 200])
 
-        h_splitter.addWidget(left_splitter)
+        self._h_splitter.addWidget(self._left_splitter)
 
         display_container = QWidget()
         display_layout = QVBoxLayout(display_container)
@@ -149,23 +205,140 @@ class MainWindow(QMainWindow):
         self.display_panel.close_group_requested.connect(self._on_close_group_requested)
         display_layout.addWidget(self.display_panel, stretch=1)
 
-        h_splitter.addWidget(display_container)
-        h_splitter.setSizes([250, 1030])
+        self._h_splitter.addWidget(display_container)
+        self._h_splitter.setSizes([250, 1030])
 
-        root_layout.addWidget(h_splitter, stretch=1)
+        root_layout.addWidget(self._h_splitter, stretch=1)
         self.setCentralWidget(central)
+
+    def _install_global_shortcuts(self) -> None:
+        ctx = Qt.ShortcutContext.WindowShortcut
+        for seq, handler in (
+            (QKeySequence("Ctrl+W"), self._on_close_active_group),
+            (QKeySequence("Ctrl+T"), self._on_new_group_from_catalog),
+            (QKeySequence("Ctrl+D"), self._on_compute_diff),
+        ):
+            sc = QShortcut(seq, self)
+            sc.setContext(ctx)
+            sc.activated.connect(handler)
+
+    # --- Global shortcut handlers ---
+
+    def _on_close_active_group(self) -> None:
+        group = self.project.active_toggle_group()
+        if group is not None:
+            self._on_close_group_requested(group.id)
+
+    def _on_new_group_from_catalog(self) -> None:
+        datasets = self.catalog_panel.selected_datasets()
+        if not datasets:
+            return
+        self._create_group_for(datasets[0])
+
+    def _on_compute_diff(self) -> None:
+        from seismic_viz.models.compatibility import are_toggle_compatible
+        from seismic_viz.services.derivation import IncompatibleDatasetsError, compute_difference
+        from seismic_viz.ui.dialogs.diff_dialog import DiffDialog
+
+        pair = self.project.diff_selection.resolve_datasets(self.project)
+        if pair is None:
+            self.statusBar().showMessage(
+                "Select A and B groups in the Viewport Manager first (Ctrl+click)", 4000
+            )
+            return
+        a, b = pair
+        compat = are_toggle_compatible(a, b)
+        if not compat.ok:
+            QMessageBox.warning(
+                self,
+                "Incompatible datasets",
+                f"Cannot compute A − B: {compat.reason}",
+            )
+            return
+        dlg = DiffDialog(a, b, parent=self)
+        if dlg.exec():
+            try:
+                derived = compute_difference(self.project, a, b, dlg.direction(), dlg.result_name())
+                active_group = self.project.active_toggle_group()
+                if active_group is not None:
+                    active_group.add_member(derived)
+                self.project.diff_selection.clear()
+            except IncompatibleDatasetsError as exc:
+                QMessageBox.warning(self, "Diff failed", str(exc))
+
+    # --- Help menu handlers ---
+
+    def _on_show_shortcuts(self) -> None:
+        from seismic_viz.ui.dialogs.shortcuts_dialog import ShortcutsDialog
+
+        dlg = ShortcutsDialog(self)
+        dlg.exec()
+
+    def _on_show_about(self) -> None:
+        from seismic_viz.ui.dialogs.about_dialog import AboutDialog
+
+        dlg = AboutDialog(self)
+        dlg.exec()
+
+    # --- Status bar: permanent group/member info ---
+
+    def _on_active_group_changed_for_status(self, group_id: str | None) -> None:
+        self._update_status_group_info()
+        if group_id is not None:
+            group = self.project.find_toggle_group(group_id)
+            if group is not None:
+                self._connect_group_status_signals(group)
+
+    def _connect_group_status_signals(self, group: ToggleGroup) -> None:
+        for sig in (
+            group.active_index_changed,
+            group.member_added,
+            group.member_removed,
+            group.name_changed,
+        ):
+            sig.connect(lambda *_: self._update_status_group_info())
+
+    def _update_status_group_info(self) -> None:
+        group = self.project.active_toggle_group()
+        if group is None or group.n_members == 0:
+            self._status_group_label.setText("")
+            return
+
+        k = group.active_index + 1
+        n = group.n_members
+        member_name = group.members[group.active_index].dataset.name
+
+        compat = ""
+        if n > 1:
+            compat = "Compatible" if group.all_members_compatible() else "Independent axes"
+
+        ds = group.members[group.active_index].dataset
+        gi = ds.group_index
+        index_state = ""
+        if gi is not None and gi.has_pending_scan:
+            index_state = "Indexing…"
+
+        parts = [group.name, f"{k}/{n}: {member_name}"]
+        if compat:
+            parts.append(compat)
+        if index_state:
+            parts.append(index_state)
+        self._status_group_label.setText("  |  ".join(parts))
 
     # --- File loading ---
 
     def _on_open_files(self) -> None:
+        start_dir = str(self._last_opened_folder) if self._last_opened_folder else ""
         paths, _ = QFileDialog.getOpenFileNames(
             self,
             "Load data",
-            "",
+            start_dir,
             "SEG-Y files (*.segy *.sgy);;All files (*)",
         )
         for p in paths:
-            self._submit_load(Path(p))
+            path = Path(p)
+            self._last_opened_folder = path.parent
+            self._submit_load(path)
 
     def _submit_load(self, path: Path) -> None:
         if path.suffix.lower() not in _SEGY_SUFFIXES:
@@ -185,8 +358,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Loaded {dataset.name}", 3000)
         else:
             self.statusBar().showMessage(f"Loaded {dataset.name} ({self._pending_loads} pending)")
-        # Kick off the deferred header scan that unlocks
-        # SHOT/INLINE/CROSSLINE modes once it completes.
         self._start_header_scan(dataset)
 
     def _start_header_scan(self, dataset: Dataset) -> None:
@@ -198,9 +369,6 @@ class MainWindow(QMainWindow):
         self._scan_cancel_flags[dataset.id] = flag
         worker = HeaderScanWorker(dataset, is_cancelled=lambda f=flag: f["cancelled"])
         self._scan_workers[dataset.id] = worker
-        # Use default-argument binding so each closure captures the specific
-        # dataset it was started for — otherwise late binding would make
-        # every signal refer to the last-loaded dataset.
         worker.signals.progress.connect(
             lambda pct, name=dataset.name: self.statusBar().showMessage(
                 f"Indexing headers for {name}… {pct:.0f}%"
@@ -221,6 +389,7 @@ class MainWindow(QMainWindow):
         dataset.group_index.update_from_scan(fr, il, xl)
         dataset.group_index_ready.emit()
         self.statusBar().showMessage(f"Indexed {dataset.name}", 3000)
+        self._update_status_group_info()
 
     def _on_scan_failed(self, dataset: Dataset, message: str) -> None:
         self._scan_cancel_flags.pop(dataset.id, None)
@@ -230,6 +399,7 @@ class MainWindow(QMainWindow):
         dataset.group_index.update_from_scan(None, None, None)
         dataset.group_index_ready.emit()
         self.statusBar().showMessage(f"Header scan failed for {dataset.name}: {message}", 5000)
+        self._update_status_group_info()
 
     def _cancel_scan(self, dataset_id: str) -> None:
         flag = self._scan_cancel_flags.pop(dataset_id, None)
@@ -259,11 +429,7 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _on_remove_requested(self, dataset_id: str) -> None:
-        # Cancel any in-flight header scan before the handle closes so the
-        # worker's next iteration exits instead of raising on a dead handle.
         self._cancel_scan(dataset_id)
-        # Mark any derived datasets that use this as a parent so the canvas
-        # can show the "Parent dataset missing" overlay.
         self._mark_derived_parents_missing(dataset_id)
         self.project.remove(dataset_id)
 
@@ -292,6 +458,11 @@ class MainWindow(QMainWindow):
         name = f"Group {self.project.next_toggle_group_number()}"
         group = ToggleGroup(name=name)
         group.add_member(dataset)
+        if self._default_groups_per_view != 1 or self._default_group_skip != 1:
+            group.update_shared_state(
+                groups_per_view=self._default_groups_per_view,
+                group_skip=self._default_group_skip,
+            )
         self.project.add_toggle_group(group)
         return group
 
@@ -307,10 +478,7 @@ class MainWindow(QMainWindow):
         if trace is None:
             self.statusBar().clearMessage()
             return
-        if amp is None:
-            amp_str = "—"
-        else:
-            amp_str = f"{amp:.4g}"
+        amp_str = f"{amp:.4g}" if amp is not None else "—"
         self.statusBar().showMessage(f"Trace {trace} | t = {t_ms:.1f} ms | amp = {amp_str}")
 
     # --- Drag and drop ---
@@ -327,17 +495,24 @@ class MainWindow(QMainWindow):
         for url in event.mimeData().urls():
             local = url.toLocalFile()
             if local:
-                self._submit_load(Path(local))
+                path = Path(local)
+                self._last_opened_folder = path.parent
+                self._submit_load(path)
         event.acceptProposedAction()
 
 
 def main() -> int:
     _configure_logging()
+    _install_excepthook()
     app = QApplication.instance() or QApplication(sys.argv)
     project = Project()
     window = MainWindow(project)
-    # Cancel any in-flight scans before tearing the project down so their
-    # next iteration returns cleanly instead of touching closed handles.
+
+    from seismic_viz.utils import qsettings
+
+    qsettings.restore(window)
+
+    app.aboutToQuit.connect(lambda: qsettings.save(window))
     app.aboutToQuit.connect(window._cancel_all_scans)
     app.aboutToQuit.connect(project.close_all)
     window.show()

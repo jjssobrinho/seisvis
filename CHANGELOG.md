@@ -1,5 +1,29 @@
 # Changelog
 
+## [M8] Polish & Persistence
+
+M8 completes v1 with QSettings persistence, consolidated keyboard shortcuts,
+status-bar group/member info, Help menu dialogs, a global exception hook,
+and a rewritten README.
+
+- `utils/qsettings.py` (new): `save(window)` / `restore(window)` persist
+  window geometry, splitter sizes, last-opened folder, toolbar defaults
+  (colormap, clip, gain, bandpass, AGC), and default group_skip /
+  groups_per_view / flicker_hz. Hooked to `QApplication.aboutToQuit`.
+- `app.py`: Help menu (Keyboard Shortcuts…, About…); Ctrl+W closes the
+  active toggle group; Ctrl+T opens a new group from the selected catalog
+  item; Ctrl+D triggers A−B compute from the current diff selection;
+  permanent right-side status-bar label shows active group name, member
+  index, compat summary, and indexing state; last-opened folder tracked
+  and restored in the file dialog; global `sys.excepthook` shows a Qt
+  dialog with exception type, message, and collapsible traceback.
+- `ui/widgets/seismic_view.py`: Space shortcut toggles auto-flicker on
+  the active group's ToggleBar.
+- `ui/dialogs/about_dialog.py` (new): version, license, repo link.
+- `ui/dialogs/shortcuts_dialog.py` (new): read-only shortcut table.
+- `README.md`: rewritten with install, run, first-steps walkthrough, and
+  full keyboard-shortcut table.
+
 ## [M7] Toolbar Wire-Up (N-way edit target + All)
 
 M7 connects the global top toolbar to the active toggle group's members
