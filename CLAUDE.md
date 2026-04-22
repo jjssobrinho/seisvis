@@ -288,7 +288,7 @@ standard byte offsets only).
 
 ## UX Defaults
 
-Clip percentile 1–99. Default colormap "seismic". Bandpass off by
+Clip percentile 1–99. Default colormap "gray". Bandpass off by
 default (5–80 Hz order 4 when on). AGC off by default (500 ms when
 on). Trace Range grouping 100 traces per range. Auto-flicker 2 Hz.
 Scroll-bar drag throttle 150 ms. Scroll-bar markers blue (range

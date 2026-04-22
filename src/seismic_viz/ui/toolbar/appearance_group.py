@@ -59,6 +59,7 @@ class AppearanceGroup(QGroupBox):
         clip_layout.addWidget(self._clip_low)
         clip_layout.addWidget(QLabel("–", self))
         clip_layout.addWidget(self._clip_high)
+        clip_layout.addStretch(1)
 
         self._gain = QSlider(Qt.Orientation.Horizontal, self)
         self._gain.setRange(-40, 40)
@@ -73,6 +74,7 @@ class AppearanceGroup(QGroupBox):
         gain_layout.setContentsMargins(0, 0, 0, 0)
         gain_layout.addWidget(self._gain)
         gain_layout.addWidget(self._gain_label)
+        gain_layout.addStretch(1)
 
         self._scale_fixed = QCheckBox("Fixed", self)
         self._scale_min = QDoubleSpinBox(self)
@@ -104,15 +106,23 @@ class AppearanceGroup(QGroupBox):
         scale_layout.addWidget(QLabel("–", self))
         scale_layout.addWidget(self._scale_max)
         scale_layout.addWidget(self._scale_auto)
+        scale_layout.addStretch(1)
+
+        colormap_row = QWidget(self)
+        colormap_layout = QHBoxLayout(colormap_row)
+        colormap_layout.setContentsMargins(0, 0, 0, 0)
+        colormap_layout.addWidget(self._colormap)
+        colormap_layout.addStretch(1)
 
         layout.addWidget(QLabel("Colormap"), 0, 0)
-        layout.addWidget(self._colormap, 0, 1)
+        layout.addWidget(colormap_row, 0, 1)
         layout.addWidget(QLabel("Clip"), 1, 0)
         layout.addWidget(clip_row, 1, 1)
         layout.addWidget(QLabel("Gain"), 2, 0)
         layout.addWidget(gain_row, 2, 1)
         layout.addWidget(QLabel("Scale"), 3, 0)
         layout.addWidget(scale_row, 3, 1)
+        layout.setColumnStretch(2, 1)
 
     def _on_clip_changed(self, _value: float) -> None:
         low = float(self._clip_low.value())
