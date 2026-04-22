@@ -50,8 +50,9 @@ QToolButton {
     color: black;
     background-color: #dcdcdc;
     border: 1px solid #888;
-    padding: 1px 6px;
-    min-width: 16px;
+    padding: 0px 2px;
+    min-width: 14px;
+    max-width: 22px;
     font-weight: bold;
 }
 QToolButton:checked {

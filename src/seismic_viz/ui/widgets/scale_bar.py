@@ -18,12 +18,13 @@ class ScaleBar(QWidget):
     """QWidget drawing a vertical LUT gradient with min/mid/max labels."""
 
     BAR_WIDTH = 20
-    BAR_LEFT_MARGIN = 6
-    LABEL_LEFT_MARGIN = 4
+    # Symmetric side padding so labels can straddle the bar centerline; the
+    # bar sits in the middle of the widget, keeping overall width compact.
+    BAR_SIDE_MARGIN = 12
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFixedWidth(self.BAR_WIDTH + self.BAR_LEFT_MARGIN + 60)
+        self.setFixedWidth(self.BAR_WIDTH + 2 * self.BAR_SIDE_MARGIN)
         self._lut: np.ndarray | None = None
         self._levels: tuple[float, float] | None = None
 
@@ -49,7 +50,7 @@ class ScaleBar(QWidget):
         # exactly where the min/max text begins.
         top_margin = label_h + 2
         bottom_margin = label_h + 2
-        bar_x = self.BAR_LEFT_MARGIN
+        bar_x = self.BAR_SIDE_MARGIN
         bar_y0 = top_margin
         bar_y1 = self.height() - bottom_margin
         bar_h = max(1, bar_y1 - bar_y0)

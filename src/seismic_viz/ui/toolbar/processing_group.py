@@ -60,6 +60,7 @@ class ProcessingGroup(QGroupBox):
         bp_layout.addWidget(QLabel("–", self))
         bp_layout.addWidget(self._bp_high)
         bp_layout.addWidget(self._bp_order)
+        bp_layout.addStretch(1)
 
         # AGC row.
         self._agc_enable = QCheckBox("AGC", self)
@@ -73,10 +74,17 @@ class ProcessingGroup(QGroupBox):
         self._agc_enable.toggled.connect(self._emit_agc)
         self._agc_window.valueChanged.connect(self._emit_agc)
 
+        agc_row = QWidget(self)
+        agc_layout = QHBoxLayout(agc_row)
+        agc_layout.setContentsMargins(0, 0, 0, 0)
+        agc_layout.addWidget(self._agc_window)
+        agc_layout.addStretch(1)
+
         layout.addWidget(self._bp_enable, 0, 0)
         layout.addWidget(bp_row, 0, 1)
         layout.addWidget(self._agc_enable, 1, 0)
-        layout.addWidget(self._agc_window, 1, 1)
+        layout.addWidget(agc_row, 1, 1)
+        layout.setColumnStretch(2, 1)
 
     def _emit_bandpass(self, *_args: object) -> None:
         enabled = bool(self._bp_enable.isChecked())

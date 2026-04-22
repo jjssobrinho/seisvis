@@ -14,7 +14,7 @@ class DisplayState:
     the group's ``SharedState`` and leave this ``None``.
     """
 
-    colormap: str = "seismic"
+    colormap: str = "gray"
     clip_low_pct: float = 1.0
     clip_high_pct: float = 99.0
     gain_db: float = 0.0

@@ -91,9 +91,9 @@ def test_target_only_when_link_all_false(
         assert group.edit_target_index == 1
 
         toolbar.appearance.colormap_changed.emit("RdBu")
-        assert group.members[0].display_state.colormap == "seismic"
+        assert group.members[0].display_state.colormap == "gray"
         assert group.members[1].display_state.colormap == "RdBu"
-        assert group.members[2].display_state.colormap == "seismic"
+        assert group.members[2].display_state.colormap == "gray"
 
         toolbar.processing.agc_changed.emit(True, 300.0)
         assert group.members[0].processing_chain.agc.enabled is False
@@ -199,6 +199,6 @@ def test_active_group_switch_rebinds_without_phantom_emits(
         # The rebind must not have emitted colormap_changed.
         assert received == []
         # And group A's state must be unchanged.
-        assert group_a.members[0].display_state.colormap == "seismic"
+        assert group_a.members[0].display_state.colormap == "gray"
     finally:
         ds.close()
