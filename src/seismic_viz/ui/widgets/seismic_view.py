@@ -212,6 +212,7 @@ class SeismicView(QWidget):
             (QKeySequence(Qt.Key.Key_Home), self.command_bar.go_first),
             (QKeySequence(Qt.Key.Key_End), self.command_bar.go_last),
             (QKeySequence(Qt.Key.Key_F), self._reset_zoom_to_commanded),
+            (QKeySequence(Qt.Key.Key_Space), self._toggle_flicker),
             (QKeySequence("g"), lambda: self._bump_gain(3.0)),
             (QKeySequence("Shift+g"), lambda: self._bump_gain(-3.0)),
         ):
@@ -230,6 +231,11 @@ class SeismicView(QWidget):
     def _activate_member_by_shortcut(self, index: int) -> None:
         if 0 <= index < self.group.n_members:
             self.group.set_active(index)
+
+    def _toggle_flicker(self) -> None:
+        cb = self.toggle_bar._flicker_check
+        if cb.isEnabled():
+            cb.setChecked(not cb.isChecked())
 
     # Mirrors the controller's edit-target fan-out: link_all=True fans to every
     # member, otherwise only the edit target is bumped. Kept on the canvas (not
