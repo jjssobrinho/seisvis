@@ -37,6 +37,8 @@ class ActiveGroupController(QObject):
         toolbar.appearance.colormap_changed.connect(self._on_colormap_changed)
         toolbar.appearance.clip_changed.connect(self._on_clip_changed)
         toolbar.appearance.gain_changed.connect(self._on_gain_changed)
+        toolbar.appearance.color_scale_changed.connect(self._on_color_scale_changed)
+        toolbar.appearance.color_scale_auto_requested.connect(self._on_color_scale_auto)
         toolbar.processing.bandpass_changed.connect(self._on_bandpass_changed)
         toolbar.processing.agc_changed.connect(self._on_agc_changed)
         toolbar.edit_target.target_changed.connect(self._on_edit_target_changed)
@@ -64,18 +66,25 @@ class ActiveGroupController(QObject):
                 self._group.reference_index_changed.disconnect(self._on_reference_changed)
                 self._group.edit_target_changed.disconnect(self._on_group_edit_target_changed)
                 self._group.display_state_changed.disconnect(self._on_group_display_state_changed)
+                self._group.processing_chain_changed.disconnect(
+                    self._on_group_processing_chain_changed
+                )
+                self._group.color_scale_changed.disconnect(self._on_group_color_scale_changed)
             except (RuntimeError, TypeError):
                 pass
         self._group = group
         if group is None:
             self._toolbar.set_group_enabled(False)
             self._toolbar.edit_target.set_member_count(0)
+            self._toolbar.appearance.set_color_scale(None)
             return
         group.member_added.connect(self._on_member_count_changed)
         group.member_removed.connect(self._on_member_count_changed)
         group.reference_index_changed.connect(self._on_reference_changed)
         group.edit_target_changed.connect(self._on_group_edit_target_changed)
         group.display_state_changed.connect(self._on_group_display_state_changed)
+        group.processing_chain_changed.connect(self._on_group_processing_chain_changed)
+        group.color_scale_changed.connect(self._on_group_color_scale_changed)
         # Pick a sensible default link_all on first bind: link only when all
         # members compatible with the reference; otherwise isolate to target 0.
         desired_link_all = group.all_members_compatible()
@@ -122,6 +131,17 @@ class ActiveGroupController(QObject):
         # toolbar widgets in sync with the target's current values.
         self._rebind_toolbar_values()
 
+    def _on_group_processing_chain_changed(self, _index: int) -> None:
+        # External chain mutations (e.g. the G/g keyboard shortcut bumping
+        # gain) must re-sync the toolbar sliders.
+        self._rebind_toolbar_values()
+
+    def _on_group_color_scale_changed(self) -> None:
+        group = self._group
+        if group is None:
+            return
+        self._toolbar.appearance.set_color_scale(group.shared_state.color_scale)
+
     def _refresh_selector(self) -> None:
         group = self._group
         if group is None:
@@ -150,6 +170,7 @@ class ActiveGroupController(QObject):
             clip_high_pct=ds.clip_high_pct,
             gain_db=chain.gain.db,
         )
+        self._toolbar.appearance.set_color_scale(group.shared_state.color_scale)
         self._toolbar.processing.set_values(
             bandpass_enabled=chain.bandpass.enabled,
             bandpass_low_hz=chain.bandpass.low_hz,
@@ -191,6 +212,19 @@ class ActiveGroupController(QObject):
             group.update_member_display_state(
                 idx, clip_low_pct=float(low), clip_high_pct=float(high)
             )
+
+    def _on_color_scale_changed(self, enabled: bool, vmin: float, vmax: float) -> None:
+        # Color scale is a group-wide property — ignores edit-target/link_all.
+        group = self._group
+        if group is None:
+            return
+        group.set_color_scale((float(vmin), float(vmax)) if enabled else None)
+
+    def _on_color_scale_auto(self) -> None:
+        group = self._group
+        if group is None:
+            return
+        group.request_auto_color_scale()
 
     def _on_gain_changed(self, db: float) -> None:
         # ConstantGain is part of the ProcessingChain, not DisplayState. The

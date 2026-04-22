@@ -121,6 +121,62 @@ def test_member_removal_clamps_edit_target_index(
         ds.close()
 
 
+def test_color_scale_routes_to_active_group_not_members(
+    project: Project, toolbar: GlobalToolbar, segy_3d: Path
+) -> None:
+    ds = load_segy(segy_3d)
+    try:
+        group = _group_with_members(project, ds, 3)
+        controller = ActiveGroupController(project, toolbar)
+        assert controller is not None  # keep reference alive
+
+        # Isolating edit target must not change the color scale fan-out.
+        toolbar.edit_target.target_changed.emit(1, False)
+
+        toolbar.appearance.color_scale_changed.emit(True, -4.0, 5.0)
+        assert group.shared_state.color_scale == (-4.0, 5.0)
+        # Per-member display state untouched: color scale is a group property.
+        for m in group.members:
+            assert m.display_state.clip_low_pct == 1.0
+            assert m.display_state.clip_high_pct == 99.0
+
+        # Disabling clears the shared scale back to percentile-clip mode.
+        toolbar.appearance.color_scale_changed.emit(False, -4.0, 5.0)
+        assert group.shared_state.color_scale is None
+    finally:
+        ds.close()
+
+
+def test_color_scale_rebinds_on_active_group_switch(
+    project: Project, toolbar: GlobalToolbar, segy_3d: Path
+) -> None:
+    ds = load_segy(segy_3d)
+    try:
+        group_a = _group_with_members(project, ds, 1)
+        group_b = ToggleGroup(name="Group B")
+        project.add_toggle_group(group_b)
+        group_b.add_member(ds)
+
+        group_a.set_color_scale((-1.0, 1.0))
+        group_b.set_color_scale(None)
+
+        controller = ActiveGroupController(project, toolbar)
+        assert controller is not None
+
+        received: list[tuple[bool, float, float]] = []
+        toolbar.appearance.color_scale_changed.connect(
+            lambda en, lo, hi: received.append((en, lo, hi))
+        )
+
+        project.set_active_toggle_group(group_b.id)
+        # Rebinding to B must not emit color_scale_changed.
+        assert received == []
+        # And group A's stored scale must be unchanged.
+        assert group_a.shared_state.color_scale == (-1.0, 1.0)
+    finally:
+        ds.close()
+
+
 def test_active_group_switch_rebinds_without_phantom_emits(
     project: Project, toolbar: GlobalToolbar, segy_3d: Path
 ) -> None:

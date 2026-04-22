@@ -6,13 +6,14 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QThreadPool, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from seismic_viz.io.slice_cache import SliceCache, SliceKey
 from seismic_viz.models.group_index import GroupingMode
 from seismic_viz.models.toggle_group import Member, ToggleGroup
 from seismic_viz.ui.widgets.group_command_bar import GroupCommandBar
 from seismic_viz.ui.widgets.info_track import InfoTrack, default_display_names
+from seismic_viz.ui.widgets.scale_bar import ScaleBar
 from seismic_viz.ui.widgets.toggle_bar import ToggleBar
 from seismic_viz.utils.colormaps import get_colormap
 from seismic_viz.workers.slice_worker import SliceWorker
@@ -84,6 +85,7 @@ class SeismicView(QWidget):
             self._on_member_added(i)
         self._apply_plot_ranges()
         self._apply_active_visibility()
+        self._refresh_scale_bar()
         self._last_active_index = self.group.active_index
 
     # --- UI construction ---
@@ -97,9 +99,23 @@ class SeismicView(QWidget):
         self.toggle_bar = ToggleBar(self.group, parent=self)
         root.addWidget(self.toggle_bar)
 
+        # Scale bar (to the right of the plot). Its reserved width is
+        # also reserved next to the info track and command bar so that
+        # info-track labels stay aligned with the plot's x-axis pixels.
+        self.scale_bar = ScaleBar(parent=self)
+        scale_bar_width = self.scale_bar.width()
+
         # Info track: group-number labels above the plot, aligned to x-axis.
         self.info_track = InfoTrack(parent=self)
-        root.addWidget(self.info_track)
+        info_row = QWidget(self)
+        info_row_layout = QHBoxLayout(info_row)
+        info_row_layout.setContentsMargins(0, 0, 0, 0)
+        info_row_layout.setSpacing(0)
+        info_row_layout.addWidget(self.info_track, stretch=1)
+        info_row_spacer = QWidget(info_row)
+        info_row_spacer.setFixedWidth(scale_bar_width)
+        info_row_layout.addWidget(info_row_spacer)
+        root.addWidget(info_row)
 
         # Central plot with our custom ViewBox so left-click always rubber-bands.
         self.plot_widget = pg.PlotWidget(parent=self, viewBox=_SeismicViewBox())
@@ -161,12 +177,26 @@ class SeismicView(QWidget):
         self.parent_missing_label.setVisible(False)
         self.parent_missing_label.adjustSize()
 
-        root.addWidget(self.plot_widget, stretch=1)
+        plot_row = QWidget(self)
+        plot_row_layout = QHBoxLayout(plot_row)
+        plot_row_layout.setContentsMargins(0, 0, 0, 0)
+        plot_row_layout.setSpacing(0)
+        plot_row_layout.addWidget(self.plot_widget, stretch=1)
+        plot_row_layout.addWidget(self.scale_bar)
+        root.addWidget(plot_row, stretch=1)
         self.plot_widget.installEventFilter(self)
 
         # Group command bar (M4) — drives reference-member group navigation.
         self.command_bar = GroupCommandBar(self.group, parent=self)
-        root.addWidget(self.command_bar)
+        command_row = QWidget(self)
+        command_row_layout = QHBoxLayout(command_row)
+        command_row_layout.setContentsMargins(0, 0, 0, 0)
+        command_row_layout.setSpacing(0)
+        command_row_layout.addWidget(self.command_bar, stretch=1)
+        command_row_spacer = QWidget(command_row)
+        command_row_spacer.setFixedWidth(scale_bar_width)
+        command_row_layout.addWidget(command_row_spacer)
+        root.addWidget(command_row)
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._install_shortcuts()
@@ -182,6 +212,8 @@ class SeismicView(QWidget):
             (QKeySequence(Qt.Key.Key_Home), self.command_bar.go_first),
             (QKeySequence(Qt.Key.Key_End), self.command_bar.go_last),
             (QKeySequence(Qt.Key.Key_F), self._reset_zoom_to_commanded),
+            (QKeySequence("g"), lambda: self._bump_gain(3.0)),
+            (QKeySequence("Shift+g"), lambda: self._bump_gain(-3.0)),
         ):
             sc = QShortcut(seq, self)
             sc.setContext(ctx)
@@ -199,6 +231,26 @@ class SeismicView(QWidget):
         if 0 <= index < self.group.n_members:
             self.group.set_active(index)
 
+    # Mirrors the controller's edit-target fan-out: link_all=True fans to every
+    # member, otherwise only the edit target is bumped. Kept on the canvas (not
+    # the controller) so the shortcut only fires while this group's plot has
+    # focus — matches the existing F/Left/Right/1..9 binding model.
+    GAIN_MIN_DB = -40.0
+    GAIN_MAX_DB = 40.0
+
+    def _bump_gain(self, delta_db: float) -> None:
+        group = self.group
+        if group.n_members == 0:
+            return
+        if group.link_all:
+            targets = list(range(group.n_members))
+        else:
+            targets = [max(0, min(group.edit_target_index, group.n_members - 1))]
+        for idx in targets:
+            current = group.members[idx].processing_chain.gain.db
+            new_db = max(self.GAIN_MIN_DB, min(self.GAIN_MAX_DB, float(current) + delta_db))
+            group.update_member_processing_chain(idx, gain={"enabled": True, "db": float(new_db)})
+
     # --- Group signal wiring ---
 
     def _wire_group_signals(self) -> None:
@@ -210,6 +262,8 @@ class SeismicView(QWidget):
         self.group.zoom_changed.connect(self._on_zoom_changed)
         self.group.display_state_changed.connect(self._on_display_state_changed)
         self.group.processing_chain_changed.connect(self._on_processing_chain_changed)
+        self.group.color_scale_changed.connect(self._on_color_scale_changed)
+        self.group.auto_color_scale_requested.connect(self._on_auto_color_scale_requested)
 
     # --- Member management ---
 
@@ -258,6 +312,7 @@ class SeismicView(QWidget):
         self._apply_plot_ranges()
         self._refresh_info_track()
         self._refresh_overlays()
+        self._refresh_scale_bar()
         self._last_active_index = self.group.active_index
         # Requesting a slice for the newly active member ensures it renders
         # even if nothing was fetched during an earlier incompatible
@@ -673,12 +728,20 @@ class SeismicView(QWidget):
         item.setRect(rect)
         self._last_arrays[member_index] = array
         self._last_rects[member_index] = rect
+        if member_index == self.group.active_index:
+            self._refresh_scale_bar()
         if show_loading:
             self.loading_label.setVisible(True)
 
+    def _levels_for_member(self, member: Member, array: np.ndarray) -> tuple[float, float]:
+        """Pick (lo, hi) levels, honoring a group-wide fixed color scale."""
+        fixed = self.group.shared_state.color_scale
+        if fixed is not None:
+            return float(fixed[0]), float(fixed[1])
+        return self._percentile_levels(member, array)
+
     @staticmethod
-    def _levels_for_member(member: Member, array: np.ndarray) -> tuple[float, float]:
-        """Compute (lo, hi) levels from the display_state percentiles."""
+    def _percentile_levels(member: Member, array: np.ndarray) -> tuple[float, float]:
         ds = member.display_state
         lo_pct = max(0.0, min(100.0, float(ds.clip_low_pct))) / 100.0
         hi_pct = max(0.0, min(100.0, float(ds.clip_high_pct))) / 100.0
@@ -703,6 +766,54 @@ class SeismicView(QWidget):
         item = self._image_items[member_index]
         item.setImage(arr, autoLevels=False, levels=self._levels_for_member(member, arr))
         item.setLookupTable(get_colormap(member.display_state.colormap))
+        if member_index == self.group.active_index:
+            self._refresh_scale_bar()
+
+    def _on_color_scale_changed(self) -> None:
+        """A group-wide scale change: re-level every member and redraw the bar."""
+        for i, item in enumerate(self._image_items):
+            arr = self._last_arrays[i]
+            if arr is None or arr.size == 0:
+                continue
+            try:
+                member = self.group.members[i]
+            except IndexError:
+                continue
+            item.setImage(arr, autoLevels=False, levels=self._levels_for_member(member, arr))
+            item.setLookupTable(get_colormap(member.display_state.colormap))
+        self._refresh_scale_bar()
+
+    def _on_auto_color_scale_requested(self) -> None:
+        """Derive a fixed scale from the active member's current data."""
+        active = self.group.active_index
+        if not 0 <= active < self.group.n_members:
+            return
+        arr = self._last_arrays[active]
+        if arr is None or arr.size == 0:
+            return
+        member = self.group.members[active]
+        lo, hi = self._percentile_levels(member, arr)
+        self.group.set_color_scale((lo, hi))
+
+    def _refresh_scale_bar(self) -> None:
+        active = self.group.active_index
+        if not 0 <= active < self.group.n_members:
+            self.scale_bar.set_data(None, None)
+            return
+        try:
+            member = self.group.members[active]
+        except IndexError:
+            self.scale_bar.set_data(None, None)
+            return
+        arr = self._last_arrays[active]
+        fixed = self.group.shared_state.color_scale
+        if fixed is not None:
+            levels = (float(fixed[0]), float(fixed[1]))
+        elif arr is not None and arr.size > 0:
+            levels = self._percentile_levels(member, arr)
+        else:
+            levels = None
+        self.scale_bar.set_data(get_colormap(member.display_state.colormap), levels)
 
     def _on_processing_chain_changed(self, member_index: int) -> None:
         """Drop cached slices for the member and re-request a fresh one."""

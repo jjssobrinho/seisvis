@@ -42,8 +42,8 @@ class InfoTrack(QWidget):
     """Draws tick marks and group-id labels aligned to the plot's x-axis."""
 
     TICK_HEIGHT = 3
-    TICK_COLOR = QColor(80, 80, 80)
-    LABEL_COLOR = QColor(40, 40, 40)
+    TICK_COLOR = QColor(200, 200, 200)
+    LABEL_COLOR = QColor(255, 255, 255)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -101,7 +101,11 @@ class InfoTrack(QWidget):
 
         fm = QFontMetrics(self.font())
         pixel_positions = [(gid, to_px(float(trace))) for gid, trace in entries]
-        label_texts = {gid: self._format_label(mode, gid) for gid, _trace in entries}
+        # The mode prefix (e.g. "Shot") appears once on the first group;
+        # subsequent groups show only the numeric id for compactness.
+        label_texts: dict[int, str] = {}
+        for i, (gid, _trace) in enumerate(entries):
+            label_texts[gid] = self._format_label(mode, gid, include_prefix=(i == 0))
         max_label_width = max(
             (fm.horizontalAdvance(label_texts[gid]) for gid, _ in entries),
             default=0,
@@ -157,8 +161,10 @@ class InfoTrack(QWidget):
         entries.sort(key=lambda pair: pair[1])
         return entries
 
-    def _format_label(self, mode: GroupingMode, group_id: int) -> str:
-        prefix = self._display_names_fn(mode)
+    def _format_label(
+        self, mode: GroupingMode, group_id: int, *, include_prefix: bool = True
+    ) -> str:
+        prefix = self._display_names_fn(mode) if include_prefix else ""
         if mode is GroupingMode.TRACE_RANGE:
             # For TRACE_RANGE, label the first trace, not the group-ordinal id.
             rng = self._group_index.group_trace_range(mode, group_id) if self._group_index else None

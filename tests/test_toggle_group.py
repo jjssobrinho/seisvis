@@ -97,6 +97,48 @@ def test_rename_emits_on_change_not_on_same(group: ToggleGroup) -> None:
     assert group.name == "Alpha"
 
 
+def test_set_color_scale_emits_and_stores(group: ToggleGroup, segy_3d: Path) -> None:
+    ds = load_segy(segy_3d)
+    try:
+        group.add_member(ds)
+        hits: list[int] = []
+        group.color_scale_changed.connect(lambda: hits.append(1))
+
+        group.set_color_scale((-2.5, 3.5))
+        assert group.shared_state.color_scale == (-2.5, 3.5)
+        assert hits == [1]
+
+        # No-op update emits nothing.
+        group.set_color_scale((-2.5, 3.5))
+        assert hits == [1]
+
+        # Collapsed range is nudged above vmin, not rejected.
+        group.set_color_scale((1.0, 1.0))
+        lo, hi = group.shared_state.color_scale
+        assert lo == 1.0
+        assert hi > lo
+        assert hits == [1, 1]
+
+        # None clears the fixed scale.
+        group.set_color_scale(None)
+        assert group.shared_state.color_scale is None
+        assert hits == [1, 1, 1]
+    finally:
+        ds.close()
+
+
+def test_request_auto_color_scale_emits_signal(group: ToggleGroup, segy_3d: Path) -> None:
+    ds = load_segy(segy_3d)
+    try:
+        group.add_member(ds)
+        hits: list[int] = []
+        group.auto_color_scale_requested.connect(lambda: hits.append(1))
+        group.request_auto_color_scale()
+        assert hits == [1]
+    finally:
+        ds.close()
+
+
 def test_update_shared_state_signal_once_per_change(group: ToggleGroup, segy_3d: Path) -> None:
     ds = load_segy(segy_3d)
     try:
