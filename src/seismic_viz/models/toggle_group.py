@@ -38,6 +38,9 @@ class SharedState:
     current_group_id: int | None = None
     groups_per_view: int | None = None
     group_skip: int = 1
+    # When set, all members render with these fixed (vmin, vmax) levels —
+    # overriding per-member percentile clip. None = auto (percentile clip).
+    color_scale: tuple[float, float] | None = None
 
 
 @dataclass
@@ -68,6 +71,8 @@ class ToggleGroup(QObject):
     name_changed = Signal(str)
     display_state_changed = Signal(int)  # member index
     processing_chain_changed = Signal(int)  # member index
+    color_scale_changed = Signal()
+    auto_color_scale_requested = Signal()
 
     def __init__(self, name: str, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -400,6 +405,28 @@ class ToggleGroup(QObject):
                 changed = True
         if changed:
             self.zoom_changed.emit()
+
+    def set_color_scale(self, color_scale: tuple[float, float] | None) -> None:
+        """Set a group-wide fixed color scale, or ``None`` for auto.
+
+        When set, every member renders with the same ``(vmin, vmax)``
+        overriding per-member clip percentiles. ``vmax`` is nudged above
+        ``vmin`` if the caller passes a collapsed range.
+        """
+        if color_scale is not None:
+            vmin = float(color_scale[0])
+            vmax = float(color_scale[1])
+            if vmax <= vmin:
+                vmax = vmin + 1e-9
+            color_scale = (vmin, vmax)
+        if color_scale == self.shared_state.color_scale:
+            return
+        self.shared_state.color_scale = color_scale
+        self.color_scale_changed.emit()
+
+    def request_auto_color_scale(self) -> None:
+        """Ask the canvas to derive a fixed scale from the active member's data."""
+        self.auto_color_scale_requested.emit()
 
     def reset_zoom(self) -> None:
         """Reset zoomed ranges to the commanded ranges (F-key semantics)."""
