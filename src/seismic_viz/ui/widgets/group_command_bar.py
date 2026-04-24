@@ -307,12 +307,22 @@ class GroupCommandBar(QWidget):
     # --- rebuild + sync ---
 
     def _rebuild(self, *_args) -> None:
+        """Resync from the group's committed state — discards any draft edits.
+
+        Called when the group itself changes (members, reference index,
+        shared state) or when the reference dataset emits a signal that
+        changes the available field list (``surange_ready``, ``sv_changed``,
+        ``group_index_ready``). Staging handlers must use
+        :meth:`_resync_widgets` instead so their staged edits survive.
+        """
+        self._draft = self.group.shared_state.sort_config
+        self._resync_widgets()
+
+    def _resync_widgets(self) -> None:
+        """Redraw widgets from the current ``self._draft`` without touching it."""
         self._subscribe_to_reference()
         self._rebuilding = True
         try:
-            # Start from whatever the group currently holds — this keeps the
-            # draft aligned with what's rendered until the user edits.
-            self._draft = self.group.shared_state.sort_config
             gi = self._reference_index()
             if gi is None:
                 self.setEnabled(False)
@@ -555,7 +565,7 @@ class GroupCommandBar(QWidget):
         # If the secondary field matches the new primary, drop secondary.
         if self._draft.secondary is not None and self._draft.secondary.field == field:
             self._stage_secondary(None)
-            self._rebuild()
+            self._resync_widgets()
             return
         gi = self._reference_index()
         if gi is not None:
@@ -661,11 +671,11 @@ class GroupCommandBar(QWidget):
             range_max=int(domain[1]),
         )
         self._stage_secondary(sec)
-        self._rebuild()
+        self._resync_widgets()
 
     def _on_remove_secondary_clicked(self) -> None:
         self._stage_secondary(None)
-        self._rebuild()
+        self._resync_widgets()
 
     def _on_swap_clicked(self) -> None:
         sec = self._draft.secondary
@@ -693,7 +703,7 @@ class GroupCommandBar(QWidget):
             range_max=int(domain[1]),
         )
         self._draft = SortConfig(primary=new_primary, secondary=new_secondary, committed=False)
-        self._rebuild()
+        self._resync_widgets()
 
     def _on_secondary_field_changed(self, _index: int) -> None:
         if self._rebuilding or self._draft.secondary is None:
