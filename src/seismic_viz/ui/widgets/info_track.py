@@ -3,6 +3,10 @@
 Shows one tick + label per group whose start trace falls inside the
 currently visible x-range of the plot. Labels are mode-aware and thinned
 via :class:`QFontMetrics` so rendered labels stay at least 80 px apart.
+
+When a secondary key is active (v2.3), a second sub-label line renders
+underneath each primary label, showing the secondary field's configured
+range, e.g. ``CH 20–100``. The widget grows taller in that case.
 """
 
 from __future__ import annotations
@@ -20,10 +24,14 @@ log = logging.getLogger(__name__)
 
 
 MIN_LABEL_GAP_PX = 80
-FIXED_HEIGHT = 20
+HEIGHT_SINGLE = 20
+HEIGHT_WITH_SECONDARY = 36
+# Backwards-compatible name still exported.
+FIXED_HEIGHT = HEIGHT_SINGLE
 
 
 DisplayNamesFn = Callable[[GroupingMode], str]
+FieldNameFn = Callable[[str], str]
 
 # Maps group_id → display x position (used when shots are packed side-by-side).
 GroupXPositions = dict[int, int]
@@ -47,15 +55,18 @@ class InfoTrack(QWidget):
     TICK_HEIGHT = 3
     TICK_COLOR = QColor(200, 200, 200)
     LABEL_COLOR = QColor(255, 255, 255)
+    SUBLABEL_COLOR = QColor(180, 180, 180)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFixedHeight(FIXED_HEIGHT)
+        self.setFixedHeight(HEIGHT_SINGLE)
         self._mode: GroupingMode | None = None
         self._group_index: GroupIndex | None = None
         self._display_names_fn: DisplayNamesFn = default_display_names
         self._x_range: tuple[float, float] | None = None
         self._group_x_positions: GroupXPositions | None = None
+        # Secondary sub-label state.
+        self._secondary_text: str | None = None
 
     def refresh(
         self,
@@ -64,19 +75,29 @@ class InfoTrack(QWidget):
         display_names_fn: DisplayNamesFn | None,
         x_range: tuple[float, float] | None,
         group_x_positions: GroupXPositions | None = None,
+        secondary_text: str | None = None,
     ) -> None:
         self._mode = mode
         self._group_index = group_index
         self._display_names_fn = display_names_fn or default_display_names
         self._x_range = x_range
         self._group_x_positions = group_x_positions
+        self._secondary_text = secondary_text
+        self._apply_height()
         self.update()
 
     def clear(self) -> None:
         self._mode = None
         self._group_index = None
         self._x_range = None
+        self._secondary_text = None
+        self._apply_height()
         self.update()
+
+    def _apply_height(self) -> None:
+        target = HEIGHT_WITH_SECONDARY if self._secondary_text else HEIGHT_SINGLE
+        if self.height() != target:
+            self.setFixedHeight(target)
 
     # --- painting ---
 
@@ -112,10 +133,13 @@ class InfoTrack(QWidget):
         label_texts: dict[int, str] = {}
         for i, (gid, _trace) in enumerate(entries):
             label_texts[gid] = self._format_label(mode, gid, include_prefix=(i == 0))
+        sec_text = self._secondary_text
+        sub_w = fm.horizontalAdvance(sec_text) if sec_text else 0
         max_label_width = max(
             (fm.horizontalAdvance(label_texts[gid]) for gid, _ in entries),
             default=0,
         )
+        max_label_width = max(max_label_width, sub_w)
 
         # Thinning: render every Nth label so rendered gaps ≥ MIN_LABEL_GAP_PX.
         step = 1
@@ -142,6 +166,12 @@ class InfoTrack(QWidget):
             label_y = fm.ascent()
             painter.setPen(self.LABEL_COLOR)
             painter.drawText(label_x, label_y, label)
+            if sec_text:
+                sub_x = px - sub_w // 2
+                sub_x = max(0, min(width - sub_w, sub_x))
+                sub_y = fm.ascent() + fm.height()
+                painter.setPen(self.SUBLABEL_COLOR)
+                painter.drawText(sub_x, sub_y, sec_text)
             painter.setPen(self.TICK_COLOR)
 
     # --- helpers ---
@@ -194,5 +224,7 @@ __all__ = [
     "GroupXPositions",
     "default_display_names",
     "MIN_LABEL_GAP_PX",
+    "HEIGHT_SINGLE",
+    "HEIGHT_WITH_SECONDARY",
     "FIXED_HEIGHT",
 ]
