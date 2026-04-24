@@ -905,7 +905,7 @@ class SeismicView(QWidget):
         if mode is GroupingMode.SHOT:
             name = _mode_name(mode)
             ch_name = _field_name("TraceNumber")
-            return f"{name} {group_id}, {ch_name} {ch} | t = {t_str} ms | amp = {amp_str}"
+            return f"{name} {group_id}, {ch_name} {ch + 1} | t = {t_str} ms | amp = {amp_str}"
         if mode is GroupingMode.INLINE:
             xl = ds.crossline_at(trace)
             il_name = _mode_name(GroupingMode.INLINE)
