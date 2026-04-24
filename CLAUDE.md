@@ -165,49 +165,92 @@ Per-mode group indexing maps group IDs to trace indices.
 
 ## Sort
 
-Sort is a **group-level** property: one sort spec per toggle group,
-shared by all members. Members cannot disagree.
+Sort is a **group-level** property: one sort configuration per
+toggle group, shared by all members. Members cannot disagree.
+
+The sort configuration is expressed as up to two **key rows** in
+the group command bar — a required primary row and an optional
+secondary row. Each row owns its own **selection control** for
+what to display along that key's axis.
 
 ### Structure
 
 ```
-SortSpec
-  primary    (field_name: str, direction: "asc" | "desc")
-  secondary  Optional[(field_name, direction)]
-  committed  bool        # True when sort is live; False while editing
-```
+SortConfig
+  primary     PrimarySelection                # required, never None
+  secondary   Optional[SecondarySelection]    # None when only primary is active
+  committed   bool                            # True when live; False while editing
 
-If `committed` is False, the display shows the last committed sort
-(or natural file order if never committed). Editing the primary/
-secondary keys does not re-render — only commit re-renders.
+PrimarySelection
+  field       str                             # field name; "TRACE_RANGE" is a sentinel
+  direction   "asc" | "desc"
+  first       int                             # first group to display
+  count       int                             # how many groups
+  skip        int                             # stride between groups
+  # (same semantics as the M4.1 scroll-bar-with-markers; the
+  #  widget for this row is the existing scroll-bar-with-markers.)
+
+SecondarySelection
+  field       str
+  direction   "asc" | "desc"
+  range_min   int                             # lowest secondary key value to include
+  range_max   int                             # highest (inclusive)
+  # (the widget for this row is a dual-handle range track —
+  #  see Secondary Range Widget.)
+```
 
 ### Semantics
 
-- **Lexicographic**: traces grouped by primary key first; within
-  each primary group, ordered by secondary. Direction flips per key.
-- `None` / empty sort = natural file order.
-- The legacy "mode" concept (SHOT/INLINE/CROSSLINE) is now a preset
-  of `SortSpec`:
-  - SHOT mode = `(FieldRecord, asc)`, no secondary (or
-    `(TraceNumber, asc)` as secondary).
-  - INLINE mode = `(INLINE_3D, asc)`, `(CROSSLINE_3D, asc)`.
-  - CROSSLINE mode = `(CROSSLINE_3D, asc)`, `(INLINE_3D, asc)`.
-  - TRACE_RANGE = no sort.
+- **Primary row** selects which groups of the primary key to
+  display, and their order along the x-axis.
+- **Secondary row** selects which values of the secondary key to
+  include within each primary group, and their order within each
+  group's image.
+- When secondary is `None`: each primary group contains every trace
+  that belongs to it, in the file's natural intra-group order. No
+  secondary selection, no intra-group sort.
+- **Primary direction** flips the order of the selected primary
+  groups across the x-axis. The set of displayed groups does not
+  change — only their left-to-right order.
+- **Secondary direction** flips the order of traces within each
+  primary group (visually flips each group upside-down). The set
+  of displayed channels does not change — only their top-to-bottom
+  order.
+- `committed == False` → display shows the last committed sort (or
+  natural file order if never committed). Editing any row's widgets
+  does not re-render until commit.
 
-### Compatibility (strict)
+### Default state on new toggle group
 
-- A dataset can be added to a toggle group only if its
-  `header_fields_available` covers the group's `SortSpec` keys.
-- Members within a group share `SortSpec` exactly; the group owns it.
-- `are_toggle_compatible(a, b, sort_spec)` adds a check: both
-  datasets have the required fields populated.
+- Primary: `field = "TRACE_RANGE"`, `direction = "asc"`, existing
+  M4.1 defaults for first/count/skip.
+- Secondary: None.
+- `committed = False`.
+
+TRACE_RANGE is always the default — consistent across all file
+types. The user explicitly switches to SHOT or another key.
+
+### Compatibility (loose)
+
+- A dataset can be added to a toggle group only if it supports the
+  group's `SortConfig` keys (the keys' fields are populated in the
+  dataset's `header_fields_available`).
+- The **currently configured ranges** must be within each member's
+  supported range. A member with channels 1–96 can participate when
+  the group's secondary range is [20, 100]: it renders partially
+  (channels 20–96) and leaves 97–100 blank for that member.
+- Members within a group share `SortConfig` exactly; the group
+  owns it.
+- `are_toggle_compatible(a, b, sort_config)` checks field
+  availability and range coverage in both datasets.
 
 ### Diff semantics
 
 - `DerivedDataset` has no sort of its own; it inherits display
-  sort from whichever toggle group it's in.
+  config from whichever toggle group it's in.
 - If A's group re-sorts, D (in the same group) re-sorts with it —
-  automatic, via strict compatibility.
+  automatic, via shared `SortConfig`.
+- D opened in a different group takes that group's config.
 - D opened in a *different* group takes that group's sort, same
   as any other dataset.
 
@@ -231,10 +274,6 @@ JSON file `<segy_name>.sv` next to the SEG-Y. Minimal in v2:
   "display_names": {
     "FieldRecord":  "SP",
     "TraceNumber":  "Channel"
-  },
-  "last_sort": {
-    "primary":   {"field": "FieldRecord", "direction": "asc"},
-    "secondary": {"field": "TraceNumber", "direction": "asc"}
   }
 }
 ```
@@ -244,8 +283,10 @@ JSON file `<segy_name>.sv` next to the SEG-Y. Minimal in v2:
 - `display_names` are per-file renames, keyed by standard field
   name. Apply to info track, crosshair, command-bar dropdowns,
   and dialog labels.
-- `last_sort` is persisted so reopening a file restores the last
-  committed sort.
+- **Sort is not persisted.** Every session starts fresh: when a
+  dataset is loaded into a toggle group, the group's sort is
+  uncommitted / natural file order. The user commits whatever
+  sort they want each session.
 - Staleness: `sha1_prefix` (first 3600 bytes of the SEG-Y) + mtime
   must match. Stale `.sv` is loaded with a warning, not refused.
 - No trace header arrays in the `.sv`. Full scan data stays in
@@ -269,7 +310,7 @@ ToggleGroup
   link_all                    bool
   shared_state                commanded_trace_range, commanded_time_range_ms,
                               zoomed_trace_range,    zoomed_time_range_ms,
-                              sort_spec,             current_group_id,
+                              sort_config,           current_group_id,
                               groups_per_view,       group_skip,
                               crosshair_trace,       crosshair_time_ms
 
@@ -313,14 +354,33 @@ on pan or zoom.
 
 ## Canvas Info Track
 
-20 px strip above the plot, aligned via `sigXRangeChanged`.
+Strip above the plot (height grows when secondary is active),
+aligned via `sigXRangeChanged`.
+
+### Primary label line
 
 - Vertical tick + label per group whose start lies in the visible
   x-range.
 - Labels use the group's key field's **display name** (from `.sv`
   if present). Defaults: `T {n}` / `Shot {n}` / `IL {n}` / `XL {n}`.
 - Thinning: `QFontMetrics`-measured; labels ≥ 80 px apart.
-- Redraws on active-member change, sort change, or x-range change.
+
+### Secondary annotation line
+
+Rendered only when the group's `SortConfig.secondary` is present.
+
+- Small sub-label under each primary label showing the configured
+  secondary range: e.g. `CH 20–100` or `IL 1000–2000`.
+- Uses the secondary field's display name.
+- Same thinning rule as primary — sub-labels are hidden where the
+  primary above is hidden.
+
+### Behavior
+
+- Info track height: ~20 px when secondary is absent; ~36 px when
+  secondary is present.
+- Redraws on active-member change, `SortConfig` change, or x-range
+  change.
 
 ---
 
@@ -370,17 +430,71 @@ Fall back to the no-sort format when `group_for_trace` returns None.
 
 ## Group Command Bar
 
-One per toggle group, at the bottom of the plot. Widgets:
+One per toggle group, at the bottom of the plot. Has two rows of
+sort-key controls plus a commit button and status label.
 
-- **Sort Key Selector** (v2.3 replaces the old mode dropdown):
-  Primary key dropdown + direction arrow; "+" button adds a
-  secondary key row; "×" removes secondary; Commit button (★)
-  toggles sort-live/sort-editable.
-- First group spinner + scroll bar with blue markers + Count spinner
-  + Skip spinner + status label.
+### Primary row (always present)
 
-Dropdowns populate from `dataset.header_fields_available` of the
-active member, using `display_name_for(field)` for the labels.
+- **Key dropdown**: populated from the active member's
+  `header_fields_available`, plus the TRACE_RANGE sentinel. Uses
+  `display_name_for(field)` for labels.
+- **Direction arrow**: toggles asc/desc for this key.
+- **Scroll-bar-with-markers widget** (the M4.1 widget, unchanged):
+  First spinbox + scroll bar with blue markers + Count spinbox +
+  Skip spinbox.
+- **`+` button**: appears only when no secondary row exists. Adds
+  a secondary row (starts with the first populated non-primary key
+  and full range).
+- **⇅ swap button**: appears only when a secondary row exists.
+  Swaps keys between primary and secondary, preserving each row's
+  range-control **widget model** but resetting secondary selection
+  to full range.
+
+### Secondary row (optional, added via `+`)
+
+- **Key dropdown**: populated the same way as primary, minus the
+  current primary.
+- **Direction arrow**: toggles asc/desc for this key.
+- **Range track widget** (new in v2.3; see Secondary Range Widget):
+  dual-handle selector showing the [min, max] of included values.
+- **`×` button**: removes the secondary row. Primary row stays as
+  is; secondary's state is forgotten.
+
+### Unified commit button
+
+- One `★` (committed) / `☆` (uncommitted) button sitting above or
+  beside the key rows. Controls both rows together.
+- Editing any widget in either row does not re-render — it only
+  marks the config uncommitted.
+- Pressing commit validates compatibility across all group members
+  for the new config, dispatches a full scan if any required field
+  isn't populated yet, and re-renders on success. On failure, the
+  status bar shows the reason and the uncommitted state persists.
+
+### Status label
+
+- Shows the active configuration succinctly — e.g.
+  `Shot 10/1202 · CH 1–120` when sorting shots primary with all
+  channels, or `(sort uncommitted)` during edits.
+
+---
+
+## Secondary Range Widget
+
+A new widget `RangeTrackWithMarkers` mirrors the M4.1 scroll-bar's
+visual language but represents a contiguous range:
+
+- A horizontal track spanning the secondary key's full extent
+  (from reference member's min to max value of that key).
+- Two draggable handles bounding the [min, max] selection.
+- The selected band between handles renders in the M4.1 marker blue
+  (matching the existing scroll-bar markers so the two widgets feel
+  coherent).
+- Min-handle clamped to not pass max-handle (and vice versa).
+- Keyboard: optional; not required for v2.3.
+
+Initial state when a secondary row is added: min = minimum value
+present, max = maximum value present (full range).
 
 ---
 

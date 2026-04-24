@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from seismic_viz.io.slice_cache import SliceCache, SliceKey
 from seismic_viz.models.group_index import GroupIndex, GroupingMode
+from seismic_viz.models.sort_config import TRACE_RANGE_FIELD, SortConfig
 from seismic_viz.models.toggle_group import Member, ToggleGroup
 from seismic_viz.ui.widgets.group_command_bar import GroupCommandBar
 from seismic_viz.ui.widgets.info_track import GroupXPositions, InfoTrack, default_display_names
@@ -19,6 +20,30 @@ from seismic_viz.utils.colormaps import get_colormap
 from seismic_viz.workers.slice_worker import SliceWorker
 
 log = logging.getLogger(__name__)
+
+
+# Map the ``sort_config.primary.field`` SEG-Y field name to the
+# ``GroupingMode`` whose labels the info track / crosshair already know how
+# to format. ``TRACE_RANGE`` is mapped separately so callers can distinguish
+# "no sort active" from "sorted by trace range".
+_PRIMARY_FIELD_TO_MODE: dict[str, GroupingMode] = {
+    "FieldRecord": GroupingMode.SHOT,
+    "INLINE_3D": GroupingMode.INLINE,
+    "CROSSLINE_3D": GroupingMode.CROSSLINE,
+}
+
+
+def _primary_mode(sc: SortConfig) -> GroupingMode | None:
+    """Return the crosshair-facing mode for ``sc.primary.field``.
+
+    Returns ``None`` when the primary field is ``TRACE_RANGE`` (the
+    no-grouping sort) or when it's an arbitrary field we don't have a
+    mode-based readout for. Callers fall back to the unmoded readout in
+    that case.
+    """
+    if sc.primary.field == TRACE_RANGE_FIELD:
+        return None
+    return _PRIMARY_FIELD_TO_MODE.get(sc.primary.field)
 
 
 class _SeismicViewBox(pg.ViewBox):
@@ -368,7 +393,7 @@ class SeismicView(QWidget):
         if state.commanded_trace_range is None:
             trace_range = self._trace_range_from_group_or_cap(ds)
             self.group.update_shared_state(commanded_trace_range=trace_range)
-            if state.grouping_mode is None and ds.n_traces > SeismicView.MAX_FIT_TRACES:
+            if not state.sort_config.committed and ds.n_traces > SeismicView.MAX_FIT_TRACES:
                 self.status_message.emit(
                     f"Dataset has {ds.n_traces} traces; showing first "
                     f"{SeismicView.MAX_FIT_TRACES} (configurable cap)."
@@ -380,19 +405,8 @@ class SeismicView(QWidget):
     def _trace_range_from_group_or_cap(self, ds) -> tuple[int, int]:  # noqa: ANN001
         state = self.group.shared_state
         gi = getattr(ds, "group_index", None)
-        if (
-            gi is not None
-            and state.grouping_mode is not None
-            and state.current_group_id is not None
-            and state.grouping_mode in gi.available_modes
-        ):
-            if gi.current_mode != state.grouping_mode:
-                gi.set_mode(state.grouping_mode)
-            indices = gi.get_trace_indices(
-                int(state.current_group_id),
-                int(state.groups_per_view or 1),
-                int(state.group_skip or 1),
-            )
+        if gi is not None and state.sort_config.committed:
+            indices = gi.get_trace_indices(state.sort_config)
             if indices.size:
                 # Use packed width (n_actual) so the viewbox matches the image.
                 return int(indices.min()), int(indices.min()) + int(indices.size)
@@ -405,24 +419,18 @@ class SeismicView(QWidget):
 
     def _on_shared_state_changed(self) -> None:
         state = self.group.shared_state
-        # When group-navigation fields drive the slice, realign the commanded
-        # trace_range to the reference group's indices before updating the
-        # viewbox. Resetting zoom keeps zoomed ⊆ commanded intact.
-        if state.grouping_mode is not None and state.current_group_id is not None:
+        # When the sort is committed, realign the commanded trace_range to the
+        # reference member's sort-driven indices before updating the viewbox.
+        # Resetting zoom keeps zoomed ⊆ commanded intact.
+        if state.sort_config.committed:
             ref = self.group.reference_index
             try:
                 ref_ds = self.group.members[ref].dataset
             except IndexError:
                 ref_ds = None
             gi = getattr(ref_ds, "group_index", None) if ref_ds is not None else None
-            if gi is not None and gi.n_groups() > 0:
-                if gi.current_mode != state.grouping_mode:
-                    gi.set_mode(state.grouping_mode)
-                indices = gi.get_trace_indices(
-                    int(state.current_group_id),
-                    int(state.groups_per_view or 1),
-                    int(state.group_skip or 1),
-                )
+            if gi is not None:
+                indices = gi.get_trace_indices(state.sort_config)
                 if indices.size:
                     self._current_trace_indices = indices
                     # Packed range: start at first physical trace, width =
@@ -565,26 +573,38 @@ class SeismicView(QWidget):
         self._refresh_info_track_with_x_range(x_range)
 
     def _refresh_info_track_with_x_range(self, x_range: tuple[float, float]) -> None:
+        state = self.group.shared_state
         ds = self._active_dataset()
-        mode = self.group.shared_state.grouping_mode
         gi = getattr(ds, "group_index", None) if ds is not None else None
+        mode = _primary_mode(state.sort_config) if state.sort_config.committed else None
         if mode is None or gi is None:
             self.info_track.clear()
             return
-        if gi.current_mode != mode:
+        if gi.current_mode != mode and mode in gi.available_modes:
             try:
                 gi.set_mode(mode)
             except ValueError:
                 self.info_track.clear()
                 return
-        ds = self._active_dataset()
         names_fn = (
             ds.display_name_for_mode
             if ds is not None and hasattr(ds, "display_name_for_mode")
             else default_display_names
         )
         group_x = self._build_group_x_positions(gi, mode)
-        self.info_track.refresh(mode, gi, names_fn, x_range, group_x)
+        secondary_text = self._format_secondary_label(ds, state.sort_config)
+        self.info_track.refresh(mode, gi, names_fn, x_range, group_x, secondary_text=secondary_text)
+
+    def _format_secondary_label(self, ds, sort_config) -> str | None:
+        sec = sort_config.secondary
+        if sec is None:
+            return None
+        name = (
+            ds.display_name_for(sec.field)
+            if ds is not None and hasattr(ds, "display_name_for")
+            else sec.field
+        )
+        return f"{name} {sec.range_min}\u2013{sec.range_max}"
 
     # --- Slice requests ---
 
@@ -660,33 +680,17 @@ class SeismicView(QWidget):
     ) -> tuple[slice | np.ndarray | None, tuple[int, int]]:
         """Pick trace indices for the member's next slice.
 
-        When the group has an active grouping mode and the member carries a
-        ``GroupIndex``, consult it for the reference's current group selection.
-        Otherwise fall back to the shared ``trace_range`` (initial fit).
+        When the group's sort is committed, resolve the member's trace list
+        through ``GroupIndex.get_trace_indices(sort_config)``. Otherwise
+        fall back to the shared ``commanded_trace_range`` (initial fit /
+        natural file order).
         """
         member = self.group.members[member_index]
         ds = member.dataset
         state = self.group.shared_state
         gi = getattr(ds, "group_index", None)
-        if (
-            gi is not None
-            and state.grouping_mode is not None
-            and state.current_group_id is not None
-        ):
-            # Non-reference members whose index lacks the same mode are
-            # handled empty for M4 (M5 will render the "group not present"
-            # overlay).
-            if state.grouping_mode not in gi.available_modes:
-                return None, (0, 0)
-            if gi.current_mode != state.grouping_mode:
-                gi.set_mode(state.grouping_mode)
-            if gi.n_groups() == 0:
-                return None, (0, 0)
-            indices = gi.get_trace_indices(
-                int(state.current_group_id),
-                int(state.groups_per_view or 1),
-                int(state.group_skip or 1),
-            )
+        if gi is not None and state.sort_config.committed:
+            indices = gi.get_trace_indices(state.sort_config)
             if indices.size == 0:
                 return None, (0, 0)
             t0 = int(indices.min())
@@ -883,7 +887,8 @@ class SeismicView(QWidget):
 
     def _emit_status_for_cursor(self, trace: int, t_ms: float, amp: float | None) -> None:
         ds = self._active_dataset()
-        mode = self.group.shared_state.grouping_mode
+        state = self.group.shared_state
+        mode = _primary_mode(state.sort_config) if state.sort_config.committed else None
         amp_str = f"{amp:.4g}" if amp is not None else "—"
         t_str = f"{t_ms:.2f}"
         readout = f"Trace {trace} | t = {t_str} ms | amp = {amp_str}"
@@ -959,16 +964,16 @@ class SeismicView(QWidget):
             indices is None
             or indices.size == 0
             or state.commanded_trace_range is None
-            or state.current_group_id is None
+            or not state.sort_config.committed
             or gi is None
             or mode is None
         ):
             return None
         t0 = state.commanded_trace_range[0]
-        first = int(state.current_group_id)
-        count = int(state.groups_per_view or 1)
-        skip = int(state.group_skip or 1)
-        displayed_ids = gi.displayed_group_ids(first, count, skip)
+        primary = state.sort_config.primary
+        displayed_ids = gi.displayed_group_ids(
+            int(primary.first), int(primary.count), int(primary.skip)
+        )
         positions: GroupXPositions = {}
         for gid in displayed_ids:
             group_arr = gi._groups.get(gid)
@@ -1089,26 +1094,14 @@ class SeismicView(QWidget):
         if not 0 <= active < self.group.n_members:
             return False
         state = self.group.shared_state
-        if state.grouping_mode is None or state.current_group_id is None:
+        if not state.sort_config.committed:
             return False
         ds = self.group.members[active].dataset
         gi = getattr(ds, "group_index", None)
         if gi is None:
             return False
-        if state.grouping_mode not in gi.available_modes:
-            # Active member lacks the mode entirely — treat as "not present".
-            return True
-        if gi.current_mode != state.grouping_mode:
-            try:
-                gi.set_mode(state.grouping_mode)
-            except ValueError:
-                return True
-        displayed = gi.displayed_group_ids(
-            int(state.current_group_id),
-            int(state.groups_per_view or 1),
-            int(state.group_skip or 1),
-        )
-        return not displayed
+        indices = gi.get_trace_indices(state.sort_config)
+        return indices.size == 0
 
     def eventFilter(self, watched, event):  # noqa: ANN001, D401
         if watched is self.plot_widget and event.type() == QEvent.Type.Resize:

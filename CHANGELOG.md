@@ -1,5 +1,60 @@
 # Changelog
 
+## [v2.3] Two-Row Sort & Command Bar
+
+Replaces the single mode dropdown with a two-row sort configuration.
+Each toggle group owns a `SortConfig` composed of a required primary
+row and an optional secondary row; every member in the group shares
+the same sort, by construction. The previous `groups_per_view` /
+`group_skip` / `current_group_id` fields on `SharedState` are gone;
+everything flows through the committed `SortConfig`.
+
+- `models/sort_config.py` (new): frozen `SortConfig`, `PrimarySelection`,
+  `SecondarySelection` dataclasses. `TRACE_RANGE_FIELD` sentinel is the
+  default primary key for new toggle groups, matching the spec's
+  "consistent across all file types" rule. `default_sort_config()`
+  helper seeds the initial group state.
+- `models/group_index.py`: `get_trace_indices(SortConfig)` and
+  `displayed_group_ids(SortConfig)` resolve both the primary selection
+  and the optional secondary filter/direction. New `_primary_groups`
+  and `_secondary_filter` helpers keep the mode-vs-field code paths
+  narrow.
+- `models/toggle_group.py`: added `sort_config_committed(SortConfig)`
+  signal. `update_sort_config(config)` is the sole entry point for
+  applying a new sort. `SharedState.sort_config` replaces the v2.2
+  grouping kwargs.
+- `models/compatibility.py`: `are_toggle_compatible(a, b, sort_config)`
+  now checks field populated-ness and secondary-range overlap on both
+  datasets. Loose compatibility: a member whose channel range only
+  partially overlaps the group's configured secondary range is still
+  accepted (it renders partially in the gaps). Disjoint ranges or a
+  missing primary/secondary field are rejected with a reason string.
+- `ui/widgets/group_command_bar.py` (fully rewritten): two-row layout.
+  Primary row reuses the M4.1 `ScrollBarWithMarkers` block for
+  navigation (First/scroll/Count/Skip — auto-committed). Field
+  dropdown, direction arrow, `+` / `⇅` / `×` structural buttons, and
+  secondary range track stage into a draft `SortConfig`; the single
+  `★` / `☆` button commits both rows together after validating
+  compatibility across all members. Status label reads
+  `Shot 10/1202 · CH 20–100` or `(sort uncommitted)`.
+- `ui/widgets/range_track_with_markers.py` (new): dual-handle contiguous
+  range selector matching the M4.1 scroll-bar's blue-band visual
+  language. Used as the secondary row's selection control.
+- `ui/widgets/info_track.py`: when the group's `SortConfig.secondary`
+  is set, the track grows from ~20 px to ~36 px and draws a sub-label
+  (e.g. `CH 20–100`) under each thinned primary label.
+- `ui/widgets/seismic_view.py`: renderer reads `state.sort_config`; when
+  `committed`, calls `gi.get_trace_indices(sort_config)`; otherwise
+  falls back to `commanded_trace_range` (natural file order). The
+  crosshair readout and scroll-bar keyboard shortcuts still work off
+  the (now draft-aware) command bar helpers.
+- `app.py`: `_create_group_for` seeds the user's default count/skip
+  directly into `PrimarySelection` rather than the retired
+  `update_shared_state` kwargs.
+- Tests: new `tests/test_sort_config.py` (6), `tests/test_group_index_sort.py`
+  (10), `tests/test_compatibility_sort.py` (6), and
+  `tests/test_range_track_logic.py` (11). Total suite 224 passing.
+
 ## [v2.2] Header Mapping + Rename
 
 Extends the header inspector into a full "Configure Headers" dialog that

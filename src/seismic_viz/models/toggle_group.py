@@ -9,8 +9,8 @@ from PySide6.QtCore import QObject, Signal
 from seismic_viz.models.compatibility import CompatResult, are_toggle_compatible
 from seismic_viz.models.dataset import Dataset
 from seismic_viz.models.display_state import DisplayState
-from seismic_viz.models.group_index import GroupingMode
 from seismic_viz.models.processing_chain import ProcessingChain
+from seismic_viz.models.sort_config import SortConfig, default_sort_config
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +26,12 @@ class SharedState:
     currently visible sub-range and must satisfy
     ``zoomed ⊆ commanded``. Zoom is a lens over already-fetched data —
     changing it does not trigger new slice reads.
+
+    v2.3 replaces the previous per-field grouping state (``grouping_mode``,
+    ``current_group_id``, ``groups_per_view``, ``group_skip``) with a
+    single :class:`SortConfig`. Natural file order (uncommitted, default
+    primary ``TRACE_RANGE``) is rendered via ``commanded_trace_range``.
+    Committed configs are resolved via ``GroupIndex.get_trace_indices``.
     """
 
     commanded_trace_range: tuple[int, int] | None = None
@@ -34,10 +40,7 @@ class SharedState:
     zoomed_time_range_ms: tuple[float, float] | None = None
     crosshair_trace: int | None = None
     crosshair_time_ms: float | None = None
-    grouping_mode: GroupingMode | None = None
-    current_group_id: int | None = None
-    groups_per_view: int | None = None
-    group_skip: int = 1
+    sort_config: SortConfig = field(default_factory=default_sort_config)
     # When set, all members render with these fixed (vmin, vmax) levels —
     # overriding per-member percentile clip. None = auto (percentile clip).
     color_scale: tuple[float, float] | None = None
@@ -73,6 +76,7 @@ class ToggleGroup(QObject):
     processing_chain_changed = Signal(int)  # member index
     color_scale_changed = Signal()
     auto_color_scale_requested = Signal()
+    sort_config_committed = Signal(object)  # SortConfig
 
     def __init__(self, name: str, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -320,12 +324,8 @@ class ToggleGroup(QObject):
         *,
         commanded_trace_range: tuple[int, int] | None = None,
         commanded_time_range_ms: tuple[float, float] | None = None,
-        crosshair_trace: int | None = None,
-        crosshair_time_ms: float | None = None,
-        grouping_mode: GroupingMode | None | object = _UNSET,
-        current_group_id: int | None | object = _UNSET,
-        groups_per_view: int | None | object = _UNSET,
-        group_skip: int | object = _UNSET,
+        crosshair_trace: int | None | object = _UNSET,
+        crosshair_time_ms: float | None | object = _UNSET,
     ) -> None:
         changed = False
         zoom_reset = False
@@ -347,36 +347,34 @@ class ToggleGroup(QObject):
             self.shared_state.zoomed_time_range_ms = commanded_time_range_ms
             zoom_reset = True
             changed = True
-        if crosshair_trace != self.shared_state.crosshair_trace:
-            self.shared_state.crosshair_trace = crosshair_trace
-            changed = True
-        if crosshair_time_ms != self.shared_state.crosshair_time_ms:
-            self.shared_state.crosshair_time_ms = crosshair_time_ms
-            changed = True
-        if grouping_mode is not _UNSET and grouping_mode != self.shared_state.grouping_mode:
-            self.shared_state.grouping_mode = grouping_mode  # type: ignore[assignment]
+        if crosshair_trace is not _UNSET and crosshair_trace != self.shared_state.crosshair_trace:
+            self.shared_state.crosshair_trace = crosshair_trace  # type: ignore[assignment]
             changed = True
         if (
-            current_group_id is not _UNSET
-            and current_group_id != self.shared_state.current_group_id
+            crosshair_time_ms is not _UNSET
+            and crosshair_time_ms != self.shared_state.crosshair_time_ms
         ):
-            self.shared_state.current_group_id = current_group_id  # type: ignore[assignment]
+            self.shared_state.crosshair_time_ms = crosshair_time_ms  # type: ignore[assignment]
             changed = True
-        if groups_per_view is not _UNSET and groups_per_view != self.shared_state.groups_per_view:
-            self.shared_state.groups_per_view = groups_per_view  # type: ignore[assignment]
-            changed = True
-        if group_skip is not _UNSET:
-            try:
-                clamped_skip = max(1, int(group_skip))  # type: ignore[arg-type]
-            except (TypeError, ValueError):
-                clamped_skip = 1
-            if clamped_skip != self.shared_state.group_skip:
-                self.shared_state.group_skip = clamped_skip
-                changed = True
         if changed:
             self.shared_state_changed.emit()
         if zoom_reset:
             self.zoom_changed.emit()
+
+    def update_sort_config(self, config: SortConfig) -> None:
+        """Replace the group's sort configuration.
+
+        Emits ``shared_state_changed`` whenever the config actually changes,
+        and ``sort_config_committed`` additionally when the new config has
+        ``committed == True``. Uncommitted edits stage silently (renderer
+        keeps the last committed view).
+        """
+        if config == self.shared_state.sort_config:
+            return
+        self.shared_state.sort_config = config
+        self.shared_state_changed.emit()
+        if config.committed:
+            self.sort_config_committed.emit(config)
 
     def update_zoomed_ranges(
         self,
@@ -466,26 +464,17 @@ class ToggleGroup(QObject):
         return lo, hi
 
     def _initialize_grouping_from_reference(self, reset_group: bool = False) -> None:
-        """Seed shared_state grouping fields from the reference dataset.
+        """Seed shared_state.sort_config to the default for a new group.
 
-        Called after the first member is added or the reference changes. Does
-        not emit shared_state_changed directly — ``member_added`` /
-        ``reference_index_changed`` already drive the relevant UI rebuilds.
+        v2.3 collapses the old per-mode grouping state to a single
+        :class:`SortConfig`. Every freshly-seeded toggle group starts with
+        the default (TRACE_RANGE asc, uncommitted) so natural file order
+        is shown until the user commits something else.
         """
         if not self._members:
             return
         ref_idx = self._reference_index
         if not 0 <= ref_idx < len(self._members):
             return
-        ds = self._members[ref_idx].dataset
-        gi = getattr(ds, "group_index", None)
-        if gi is None:
-            return
-        if reset_group or self.shared_state.grouping_mode is None:
-            self.shared_state.grouping_mode = gi.default_mode
-            self.shared_state.current_group_id = 0
-            self.shared_state.groups_per_view = 1
-            self.shared_state.group_skip = 1
-            # Align the dataset's active mode with the group's default.
-            if gi.current_mode != gi.default_mode:
-                gi.set_mode(gi.default_mode)
+        if reset_group:
+            self.shared_state.sort_config = default_sort_config()

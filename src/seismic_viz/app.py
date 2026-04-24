@@ -26,6 +26,7 @@ from seismic_viz.controllers.active_group_controller import ActiveGroupControlle
 from seismic_viz.io.slice_cache import SliceCache
 from seismic_viz.models.dataset import Dataset
 from seismic_viz.models.project import Project
+from seismic_viz.models.sort_config import PrimarySelection, SortConfig
 from seismic_viz.models.toggle_group import ToggleGroup
 from seismic_viz.ui.dialogs.dataset_properties_dialog import DatasetPropertiesDialog
 from seismic_viz.ui.panels.catalog_panel import CatalogPanel
@@ -458,10 +459,21 @@ class MainWindow(QMainWindow):
         name = f"Group {self.project.next_toggle_group_number()}"
         group = ToggleGroup(name=name)
         group.add_member(dataset)
+        # Seed primary.count/skip from the user's saved defaults. The default
+        # field remains TRACE_RANGE (uncommitted) so natural file order renders
+        # until the user explicitly commits a sort.
         if self._default_groups_per_view != 1 or self._default_group_skip != 1:
-            group.update_shared_state(
-                groups_per_view=self._default_groups_per_view,
-                group_skip=self._default_group_skip,
+            sc = group.shared_state.sort_config
+            group.shared_state.sort_config = SortConfig(
+                primary=PrimarySelection(
+                    field=sc.primary.field,
+                    direction=sc.primary.direction,
+                    first=sc.primary.first,
+                    count=int(self._default_groups_per_view),
+                    skip=int(self._default_group_skip),
+                ),
+                secondary=sc.secondary,
+                committed=sc.committed,
             )
         self.project.add_toggle_group(group)
         return group

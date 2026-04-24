@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import logging
 from enum import StrEnum
+from typing import overload
 
 import numpy as np
+
+from seismic_viz.models.sort_config import TRACE_RANGE_FIELD, SortConfig
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +33,16 @@ _MODE_LABEL_SINGULAR: dict[GroupingMode, str] = {
 }
 
 
+# SEG-Y standard field name for each grouping-mode key. ``GroupIndex`` uses
+# these when it needs to cross-reference a mode-based API call (SHOT / INLINE /
+# CROSSLINE) against the field-name-keyed per-trace arrays introduced for v2.3.
+MODE_TO_DEFAULT_FIELD: dict[GroupingMode, str] = {
+    GroupingMode.SHOT: "FieldRecord",
+    GroupingMode.INLINE: "INLINE_3D",
+    GroupingMode.CROSSLINE: "CROSSLINE_3D",
+}
+
+
 class GroupIndex:
     """Maps a grouping mode to ordered group ids and their member trace indices.
 
@@ -39,6 +52,11 @@ class GroupIndex:
     file is unstructured, for ``INLINE`` / ``CROSSLINE``) and transition
     ``UNSCANNED → SCANNING → READY | FAILED`` via ``mark_scanning`` /
     ``update_from_scan``.
+
+    v2.3 extension: per-trace arrays are stored in ``_field_arrays`` keyed by
+    SEG-Y field name so that sort configs referencing arbitrary populated
+    fields (e.g. ``TraceNumber``) can be resolved. The mode-based API above
+    is preserved as a facade over the standard field mapping.
     """
 
     def __init__(
@@ -48,13 +66,16 @@ class GroupIndex:
         field_records: np.ndarray | None = None,
         inlines: np.ndarray | None = None,
         crosslines: np.ndarray | None = None,
+        trace_numbers: np.ndarray | None = None,
     ) -> None:
         if n_traces < 0:
             raise ValueError("n_traces must be non-negative")
         self._n_traces = int(n_traces)
-        self._field_records = self._as_int_array(field_records)
-        self._inlines = self._as_int_array(inlines)
-        self._crosslines = self._as_int_array(crosslines)
+        self._field_arrays: dict[str, np.ndarray] = {}
+        self._store_named_field("FieldRecord", field_records)
+        self._store_named_field("INLINE_3D", inlines)
+        self._store_named_field("CROSSLINE_3D", crosslines)
+        self._store_named_field("TraceNumber", trace_numbers)
 
         # Modes the index knows how to produce (READY or transitional).
         # Missing from this dict ≡ "not applicable to this dataset" (e.g.
@@ -62,20 +83,25 @@ class GroupIndex:
         self._mode_state: dict[GroupingMode, ModeState] = {
             GroupingMode.TRACE_RANGE: ModeState.READY,
         }
-        if self._field_records is not None:
-            if np.unique(self._field_records).size > 1:
+        if self._field_arrays.get("FieldRecord") is not None:
+            if np.unique(self._field_arrays["FieldRecord"]).size > 1:
                 self._mode_state[GroupingMode.SHOT] = ModeState.READY
-        if self._inlines is not None:
-            if np.unique(self._inlines).size > 1:
+        if self._field_arrays.get("INLINE_3D") is not None:
+            if np.unique(self._field_arrays["INLINE_3D"]).size > 1:
                 self._mode_state[GroupingMode.INLINE] = ModeState.READY
-        if self._crosslines is not None:
-            if np.unique(self._crosslines).size > 1:
+        if self._field_arrays.get("CROSSLINE_3D") is not None:
+            if np.unique(self._field_arrays["CROSSLINE_3D"]).size > 1:
                 self._mode_state[GroupingMode.CROSSLINE] = ModeState.READY
 
         self._current_mode: GroupingMode = self.default_mode
         self._trace_range_size: int = 100
         self._group_ids: list[int] = []
         self._groups: dict[int, np.ndarray] = {}
+        # Cache for SortConfig-based trace-index computation. Keys are
+        # SortConfig instances; SortConfig is a frozen dataclass so this is
+        # safe as long as the underlying arrays haven't changed. Scan updates
+        # clear the cache.
+        self._sort_cache: dict[SortConfig, np.ndarray] = {}
         self._rebuild()
 
     # --- construction ---
@@ -104,6 +130,13 @@ class GroupIndex:
             raise ValueError("header arrays must be 1-D")
         return a.astype(np.int64, copy=False)
 
+    def _store_named_field(self, name: str, arr: np.ndarray | None) -> None:
+        coerced = self._as_int_array(arr)
+        if coerced is None:
+            self._field_arrays.pop(name, None)
+        else:
+            self._field_arrays[name] = coerced
+
     # --- state transitions ---
 
     def mark_scanning(self) -> None:
@@ -117,12 +150,15 @@ class GroupIndex:
         field_records: np.ndarray | None,
         inlines: np.ndarray | None,
         crosslines: np.ndarray | None,
+        trace_numbers: np.ndarray | None = None,
     ) -> None:
         """Ingest scan output, populate per-mode maps, flip state flags.
 
         ``None`` (or empty) arrays mark the corresponding mode ``FAILED``
         (unless it's a mode that was never applicable — in which case we
-        leave the dict untouched).
+        leave the dict untouched). ``trace_numbers`` is optional so the
+        signature remains backward compatible with tests and callers that
+        only pass the three core arrays.
         """
         self._apply_scan_field(
             GroupingMode.SHOT, field_records, self._n_traces, allow_single_value=False
@@ -133,10 +169,17 @@ class GroupIndex:
         self._apply_scan_field(
             GroupingMode.CROSSLINE, crosslines, self._n_traces, allow_single_value=False
         )
+        # TraceNumber isn't a mode — just stash the per-trace array for
+        # SortConfig lookups. Quietly ignore shape mismatches.
+        if trace_numbers is not None:
+            a = np.asarray(trace_numbers)
+            if a.ndim == 1 and a.size == self._n_traces:
+                self._store_named_field("TraceNumber", a)
         # A scan result might shrink what's available for the currently-
         # selected mode; keep TRACE_RANGE as a safe fallback.
         if self._current_mode not in self.available_modes:
             self._current_mode = self.default_mode
+        self._sort_cache.clear()
         self._rebuild()
 
     def _apply_scan_field(
@@ -150,9 +193,11 @@ class GroupIndex:
         # Mode wasn't applicable for this dataset (e.g. INLINE on 2D).
         if mode not in self._mode_state:
             return
+        field_name = MODE_TO_DEFAULT_FIELD.get(mode)
         if arr is None:
             self._mode_state[mode] = ModeState.FAILED
-            self._store_field(mode, None)
+            if field_name:
+                self._field_arrays.pop(field_name, None)
             return
         a = np.asarray(arr)
         if a.ndim != 1 or a.size != expected_len:
@@ -163,23 +208,17 @@ class GroupIndex:
                 expected_len,
             )
             self._mode_state[mode] = ModeState.FAILED
-            self._store_field(mode, None)
+            if field_name:
+                self._field_arrays.pop(field_name, None)
             return
         a64 = a.astype(np.int64, copy=False)
-        self._store_field(mode, a64)
+        if field_name:
+            self._field_arrays[field_name] = a64
         if not allow_single_value and np.unique(a64).size <= 1:
             # Only a single unique value → mode carries no grouping info.
             self._mode_state[mode] = ModeState.FAILED
             return
         self._mode_state[mode] = ModeState.READY
-
-    def _store_field(self, mode: GroupingMode, arr: np.ndarray | None) -> None:
-        if mode is GroupingMode.SHOT:
-            self._field_records = arr
-        elif mode is GroupingMode.INLINE:
-            self._inlines = arr
-        elif mode is GroupingMode.CROSSLINE:
-            self._crosslines = arr
 
     # --- queries ---
 
@@ -214,6 +253,26 @@ class GroupIndex:
     def trace_range_size(self) -> int:
         return self._trace_range_size
 
+    @property
+    def field_names_available(self) -> set[str]:
+        """Field names for which per-trace arrays are stored."""
+        return set(self._field_arrays.keys())
+
+    def field_array(self, field_name: str) -> np.ndarray | None:
+        """Return the per-trace int array for *field_name*, or ``None``."""
+        return self._field_arrays.get(field_name)
+
+    def field_value_range(self, field_name: str) -> tuple[int, int] | None:
+        """Return ``(min, max)`` of the per-trace values for *field_name*.
+
+        Returns ``None`` when the field isn't available or carries no data.
+        Used by the secondary range track widget to seed its domain.
+        """
+        arr = self._field_arrays.get(field_name)
+        if arr is None or arr.size == 0:
+            return None
+        return int(arr.min()), int(arr.max())
+
     def set_mode(self, mode: GroupingMode, trace_range_size: int = 100) -> None:
         if mode not in self.available_modes:
             raise ValueError(f"mode {mode} not available on this dataset")
@@ -233,7 +292,33 @@ class GroupIndex:
     def contains_group(self, group_id: int) -> bool:
         return int(group_id) in self._groups
 
-    def get_trace_indices(self, first_group_id: int, count: int = 1, skip: int = 1) -> np.ndarray:
+    @overload
+    def get_trace_indices(self, config: SortConfig, /) -> np.ndarray: ...
+
+    @overload
+    def get_trace_indices(
+        self, first_group_id: int, count: int = 1, skip: int = 1
+    ) -> np.ndarray: ...
+
+    def get_trace_indices(self, *args, **kwargs):  # type: ignore[override]
+        """Dispatcher between the M4.1 positional API and the v2.3 SortConfig API.
+
+        Single ``SortConfig`` arg → field-aware primary + secondary flow.
+        ``(first, count, skip)`` positional form preserves the M4.1
+        behavior used by the existing renderer and a long tail of tests.
+        """
+        if len(args) == 1 and not kwargs and isinstance(args[0], SortConfig):
+            return self._trace_indices_for_sort(args[0])
+        if not args and not kwargs:
+            raise TypeError("get_trace_indices requires at least one argument")
+        first = int(args[0]) if args else int(kwargs.pop("first_group_id"))
+        count = int(args[1]) if len(args) > 1 else int(kwargs.pop("count", 1))
+        skip = int(args[2]) if len(args) > 2 else int(kwargs.pop("skip", 1))
+        if kwargs:
+            raise TypeError(f"unexpected kwargs: {list(kwargs)}")
+        return self._trace_indices_positional(first, count, skip)
+
+    def _trace_indices_positional(self, first_group_id: int, count: int, skip: int) -> np.ndarray:
         """Return concatenated, order-preserving trace indices for the
         sequence of group ids ``[first + i*skip for i in range(count)]``.
 
@@ -254,6 +339,80 @@ class GroupIndex:
         if len(parts) > 1:
             result = np.sort(result)
         return result
+
+    def _trace_indices_for_sort(self, config: SortConfig) -> np.ndarray:
+        """Resolve a SortConfig into a flat, render-ordered trace index array."""
+        cached = self._sort_cache.get(config)
+        if cached is not None:
+            return cached
+        primary = config.primary
+        # Step 1: resolve the sequence of primary groups (by positional first/
+        # count/skip), reversing if direction is desc.
+        primary_groups = self._primary_groups(
+            primary.field, primary.first, primary.count, primary.skip
+        )
+        if primary.direction == "desc":
+            primary_groups = list(reversed(primary_groups))
+
+        # Step 2: for each primary group, pick intra-group trace order.
+        secondary = config.secondary
+        if secondary is None:
+            parts = [arr for _, arr in primary_groups if arr.size]
+        else:
+            sec_arr = self._field_arrays.get(secondary.field)
+            parts = []
+            for _, group_traces in primary_groups:
+                if group_traces.size == 0:
+                    continue
+                if sec_arr is None:
+                    # Secondary field missing on this dataset — render nothing
+                    # for this primary group (loose compat: member renders blank).
+                    continue
+                sec_vals = sec_arr[group_traces]
+                mask = (sec_vals >= secondary.range_min) & (sec_vals <= secondary.range_max)
+                filtered = group_traces[mask]
+                if filtered.size == 0:
+                    continue
+                order = np.argsort(sec_arr[filtered], kind="stable")
+                if secondary.direction == "desc":
+                    order = order[::-1]
+                parts.append(filtered[order])
+
+        if not parts:
+            result = np.empty(0, dtype=np.int64)
+        else:
+            result = np.concatenate(parts).astype(np.int64, copy=False)
+        self._sort_cache[config] = result
+        return result
+
+    def _primary_groups(
+        self, field: str, first: int, count: int, skip: int
+    ) -> list[tuple[int, np.ndarray]]:
+        """Return a list of ``(group_id, trace_indices)`` in natural order for
+        the configured primary field, before applying primary direction.
+
+        Uses the mode-based ``_groups`` map when *field* matches the current
+        mode; otherwise computes groups on the fly from ``_field_arrays``.
+        For ``TRACE_RANGE`` the group membership is arithmetic over
+        ``_trace_range_size``.
+        """
+        if field == TRACE_RANGE_FIELD:
+            groups, ordered_ids = self._build_trace_range(self._trace_range_size)
+        else:
+            arr = self._field_arrays.get(field)
+            if arr is None:
+                return []
+            groups, ordered_ids = self._group_by(arr)
+        if not ordered_ids:
+            return []
+        selected: list[tuple[int, np.ndarray]] = []
+        n = len(ordered_ids)
+        for i in range(int(count)):
+            pos = int(first) + i * int(skip)
+            if 0 <= pos < n:
+                gid = ordered_ids[pos]
+                selected.append((gid, groups[gid]))
+        return selected
 
     def displayed_group_ids(self, first_group_id: int, count: int = 1, skip: int = 1) -> list[int]:
         """In-range group ids in render order for the displayed selection.
@@ -340,13 +499,10 @@ class GroupIndex:
         return gid, ch
 
     def _field_array_for(self, mode: GroupingMode) -> np.ndarray | None:
-        if mode is GroupingMode.SHOT:
-            return self._field_records
-        if mode is GroupingMode.INLINE:
-            return self._inlines
-        if mode is GroupingMode.CROSSLINE:
-            return self._crosslines
-        return None
+        name = MODE_TO_DEFAULT_FIELD.get(mode)
+        if name is None:
+            return None
+        return self._field_arrays.get(name)
 
     def mode_label(self) -> str:
         singular = _MODE_LABEL_SINGULAR[self._current_mode]
@@ -359,11 +515,11 @@ class GroupIndex:
     def _rebuild(self) -> None:
         mode = self._current_mode
         if mode is GroupingMode.SHOT:
-            self._groups, self._group_ids = self._group_by(self._field_records)
+            self._groups, self._group_ids = self._group_by(self._field_arrays.get("FieldRecord"))
         elif mode is GroupingMode.INLINE:
-            self._groups, self._group_ids = self._group_by(self._inlines)
+            self._groups, self._group_ids = self._group_by(self._field_arrays.get("INLINE_3D"))
         elif mode is GroupingMode.CROSSLINE:
-            self._groups, self._group_ids = self._group_by(self._crosslines)
+            self._groups, self._group_ids = self._group_by(self._field_arrays.get("CROSSLINE_3D"))
         elif mode is GroupingMode.TRACE_RANGE:
             self._groups, self._group_ids = self._build_trace_range(self._trace_range_size)
         else:  # pragma: no cover - enum is exhaustive
