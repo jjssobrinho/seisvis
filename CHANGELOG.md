@@ -1,5 +1,26 @@
 # Changelog
 
+## [v2.1] Header Scanner
+
+Adds a surange-equivalent header scanner and a read-only Header Inspector
+dialog accessible from the catalog context menu.
+
+- `io/surange.py` (new): `scan_populated_fields(handle, max_traces=30_000)`
+  iterates the first N trace headers in a single pass, returning a
+  `dict[str, FieldSample]` of populated fields (unique_count > 1). Emits a
+  `logger.info` timing line for performance visibility.
+- `models/dataset.py`: added `header_fields_available: dict[str, FieldSample] | None`,
+  `surange_ready` signal, and `populate_surange(force=False)` method. Not
+  called on load — user-triggered only.
+- `ui/dialogs/header_inspector_dialog.py` (new): modal `QDialog` showing
+  populated fields in a read-only table (field name, byte offset, unique
+  count, sample values). Triggers the scan on first open if not yet cached.
+- `ui/panels/catalog_panel.py`: "Inspect Headers…" added to the
+  single-dataset context menu.
+- Tests: `tests/test_surange.py` and `tests/test_dataset_surange.py` (11 new
+  tests covering scan correctness, edge cases, idempotency, and signal
+  emission).
+
 ## [M8] Polish & Persistence
 
 M8 completes v1 with QSettings persistence, consolidated keyboard shortcuts,

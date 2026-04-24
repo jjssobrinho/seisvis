@@ -8,6 +8,7 @@ import numpy as np
 import segyio
 from PySide6.QtCore import QObject, Signal
 
+from seismic_viz.io.surange import FieldSample, scan_populated_fields
 from seismic_viz.models.group_index import GroupIndex, GroupingMode, ModeState
 
 log = logging.getLogger(__name__)
@@ -26,6 +27,9 @@ class Dataset(QObject):
     # ``group_index`` has been updated. UI widgets bound to the dataset
     # rebuild their mode-dependent state in response.
     group_index_ready = Signal()
+
+    # Fired after populate_surange() completes a (re-)scan.
+    surange_ready = Signal()
 
     def __init__(
         self,
@@ -56,6 +60,18 @@ class Dataset(QObject):
         self.id = id if id is not None else str(uuid.uuid4())
         self.name = name if name else Path(source_path).stem
         self._closed = False
+        self.header_fields_available: dict[str, FieldSample] | None = None
+
+    def populate_surange(self, force: bool = False) -> None:
+        """Run the surange header scan and cache the result.
+
+        No-op if already populated, unless ``force=True``. Emits
+        ``surange_ready`` after each actual scan.
+        """
+        if self.header_fields_available is not None and not force:
+            return
+        self.header_fields_available = scan_populated_fields(self.handle)
+        self.surange_ready.emit()
 
     @property
     def is_3d(self) -> bool:
