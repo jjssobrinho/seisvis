@@ -158,7 +158,7 @@ class CatalogModel(QAbstractItemModel):
         if role == Qt.ItemDataRole.ToolTipRole:
             if isinstance(ds, DerivedDataset):
                 direction = "A \u2212 B" if ds.direction == "a_minus_b" else "B \u2212 A"
-                return f"{direction} where A = {ds.parent_a.source_path}, B = {ds.parent_b.source_path}"
+                return f"{direction} where A = {ds.parent_a.source_path}, B = {ds.parent_b.source_path}"  # noqa: E501
             return str(ds.source_path)
         return None
 
@@ -236,6 +236,9 @@ class CatalogPanel(QWidget):
             add_to_active.triggered.connect(lambda: self.add_to_active_group_requested.emit(ds))
             add_to_active.setEnabled(self._project.active_toggle_group() is not None)
             menu.addSeparator()
+            inspect = menu.addAction("Inspect Headers…")
+            inspect.triggered.connect(lambda checked=False, d=ds: self._open_header_inspector(d))
+            menu.addSeparator()
             props = menu.addAction("Properties…")
             remove = menu.addAction("Remove")
             props.triggered.connect(lambda: self.properties_requested.emit(ds))
@@ -267,6 +270,12 @@ class CatalogPanel(QWidget):
                 from PySide6.QtWidgets import QMessageBox
 
                 QMessageBox.warning(self, "Incompatible datasets", str(exc))
+
+    def _open_header_inspector(self, dataset: Dataset) -> None:
+        from seismic_viz.ui.dialogs.header_inspector_dialog import HeaderInspectorDialog
+
+        dlg = HeaderInspectorDialog(dataset, parent=self)
+        dlg.exec()
 
     def _on_double_clicked(self, index) -> None:  # noqa: ANN001
         ds = self._model.dataset_for_index(index)
