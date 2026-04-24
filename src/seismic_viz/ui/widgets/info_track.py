@@ -25,6 +25,9 @@ FIXED_HEIGHT = 20
 
 DisplayNamesFn = Callable[[GroupingMode], str]
 
+# Maps group_id → display x position (used when shots are packed side-by-side).
+GroupXPositions = dict[int, int]
+
 
 _DEFAULT_NAMES: dict[GroupingMode, str] = {
     GroupingMode.SHOT: "Shot",
@@ -52,6 +55,7 @@ class InfoTrack(QWidget):
         self._group_index: GroupIndex | None = None
         self._display_names_fn: DisplayNamesFn = default_display_names
         self._x_range: tuple[float, float] | None = None
+        self._group_x_positions: GroupXPositions | None = None
 
     def refresh(
         self,
@@ -59,11 +63,13 @@ class InfoTrack(QWidget):
         group_index: GroupIndex | None,
         display_names_fn: DisplayNamesFn | None,
         x_range: tuple[float, float] | None,
+        group_x_positions: GroupXPositions | None = None,
     ) -> None:
         self._mode = mode
         self._group_index = group_index
         self._display_names_fn = display_names_fn or default_display_names
         self._x_range = x_range
+        self._group_x_positions = group_x_positions
         self.update()
 
     def clear(self) -> None:
@@ -147,15 +153,25 @@ class InfoTrack(QWidget):
         x0: float,
         x1: float,
     ) -> list[tuple[int, int]]:
-        """Return ``[(group_id, first_trace), …]`` for groups whose start
-        trace lies in ``[x0, x1]``, sorted by first_trace ascending."""
+        """Return ``[(group_id, display_x), …]`` for visible groups, sorted by x.
+
+        When ``_group_x_positions`` is set (packed side-by-side layout), uses
+        those display coordinates.  Otherwise falls back to the physical first
+        trace from ``group_trace_range``.
+        """
         entries: list[tuple[int, int]] = []
         ids = gi.group_ids
+        pos = self._group_x_positions
         for gid in ids:
-            rng = gi.group_trace_range(mode, gid)
-            if rng is None:
-                continue
-            first = rng[0]
+            if pos is not None:
+                first = pos.get(gid)
+                if first is None:
+                    continue
+            else:
+                rng = gi.group_trace_range(mode, gid)
+                if rng is None:
+                    continue
+                first = rng[0]
             if x0 <= first <= x1:
                 entries.append((int(gid), int(first)))
         entries.sort(key=lambda pair: pair[1])
@@ -173,4 +189,10 @@ class InfoTrack(QWidget):
         return f"{prefix} {group_id}" if prefix else f"{group_id}"
 
 
-__all__ = ["InfoTrack", "default_display_names", "MIN_LABEL_GAP_PX", "FIXED_HEIGHT"]
+__all__ = [
+    "InfoTrack",
+    "GroupXPositions",
+    "default_display_names",
+    "MIN_LABEL_GAP_PX",
+    "FIXED_HEIGHT",
+]

@@ -91,21 +91,6 @@ class SliceWorker(QRunnable):
         if self.is_cancelled:
             return
 
-        # When trace_indices is a non-contiguous numpy array, the processed
-        # array has only N_actual_traces columns, but trace_range spans
-        # (min_trace, max_trace+1) which is wider.  _apply_array uses
-        # trace_range to size the ImageItem rect, so without this expansion
-        # pyqtgraph would stretch N_actual columns across the wider rect,
-        # causing shots to visually bleed into each other.
-        # Expansion fills gaps (skipped groups) with zeros.
-        if isinstance(self.trace_indices, np.ndarray) and self.trace_indices.size > 1:
-            t_min, t_max = trace_range
-            full_width = t_max - t_min
-            if full_width > processed.shape[0]:
-                expanded = np.zeros((full_width, processed.shape[1]), dtype=np.float32)
-                expanded[self.trace_indices - t_min] = processed
-                processed = expanded
-
         self.signals.finished.emit(
             self.group_id,
             self.member_index,

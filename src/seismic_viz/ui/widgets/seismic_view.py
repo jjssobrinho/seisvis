@@ -9,10 +9,10 @@ from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from seismic_viz.io.slice_cache import SliceCache, SliceKey
-from seismic_viz.models.group_index import GroupingMode
+from seismic_viz.models.group_index import GroupIndex, GroupingMode
 from seismic_viz.models.toggle_group import Member, ToggleGroup
 from seismic_viz.ui.widgets.group_command_bar import GroupCommandBar
-from seismic_viz.ui.widgets.info_track import InfoTrack, default_display_names
+from seismic_viz.ui.widgets.info_track import GroupXPositions, InfoTrack, default_display_names
 from seismic_viz.ui.widgets.scale_bar import ScaleBar
 from seismic_viz.ui.widgets.toggle_bar import ToggleBar
 from seismic_viz.utils.colormaps import get_colormap
@@ -77,6 +77,10 @@ class SeismicView(QWidget):
         self._last_rects: list[QRectF | None] = []
         self._updating_range = False
         self._last_active_index: int = -1
+        # Physical trace indices in display order for the current render.
+        # Used to translate packed display-x coordinates back to physical
+        # trace indices for the crosshair readout and info-track ticks.
+        self._current_trace_indices: np.ndarray | None = None
 
         self._build_ui()
         self._wire_group_signals()
@@ -390,7 +394,8 @@ class SeismicView(QWidget):
                 int(state.group_skip or 1),
             )
             if indices.size:
-                return int(indices.min()), int(indices.max()) + 1
+                # Use packed width (n_actual) so the viewbox matches the image.
+                return int(indices.min()), int(indices.min()) + int(indices.size)
         trace_stop = min(ds.n_traces, SeismicView.MAX_FIT_TRACES)
         return 0, trace_stop
 
@@ -419,7 +424,11 @@ class SeismicView(QWidget):
                     int(state.group_skip or 1),
                 )
                 if indices.size:
-                    new_range = (int(indices.min()), int(indices.max()) + 1)
+                    self._current_trace_indices = indices
+                    # Packed range: start at first physical trace, width =
+                    # actual count.  Shots are rendered side-by-side with no
+                    # physical-gap blank space.
+                    new_range = (int(indices.min()), int(indices.min()) + int(indices.size))
                     if state.commanded_trace_range != new_range:
                         # Avoid feedback into this same slot; reset zoom.
                         state.commanded_trace_range = new_range
@@ -574,7 +583,8 @@ class SeismicView(QWidget):
             if ds is not None and hasattr(ds, "display_name_for_mode")
             else default_display_names
         )
-        self.info_track.refresh(mode, gi, names_fn, x_range)
+        group_x = self._build_group_x_positions(gi, mode)
+        self.info_track.refresh(mode, gi, names_fn, x_range, group_x)
 
     # --- Slice requests ---
 
@@ -623,6 +633,13 @@ class SeismicView(QWidget):
             for w in self._active_workers
             if not (w.member_index == member_index and w.is_cancelled)
         ]
+        # Clear the stale image immediately so the old frame (e.g. skip=1 data)
+        # doesn't persist alongside newly-updated tick labels until the worker
+        # finishes. The loading label replaces it.
+        if 0 <= member_index < len(self._image_items):
+            self._image_items[member_index].clear()
+            self._last_arrays[member_index] = None
+            self._last_rects[member_index] = None
 
         worker = SliceWorker(
             group_id=self.group.id,
@@ -738,8 +755,9 @@ class SeismicView(QWidget):
         dt_ms = member.dataset.sample_interval_ms or 1.0
         t0 = sample_range[0] * dt_ms
         t_extent = (sample_range[1] - sample_range[0]) * dt_ms
-        trace_extent = trace_range[1] - trace_range[0]
-        rect = QRectF(trace_range[0], t0, trace_extent, t_extent)
+        # Use actual array column count so packed multi-group layouts render
+        # side-by-side without blank physical-gap space between shots.
+        rect = QRectF(trace_range[0], t0, array.shape[0], t_extent)
         item = self._image_items[member_index]
         if array.size:
             levels = self._levels_for_member(member, array)
@@ -872,11 +890,15 @@ class SeismicView(QWidget):
         if ds is not None and mode is not None:
             gi = getattr(ds, "group_index", None)
             if gi is not None:
-                g = gi.group_for_trace(mode, trace)
+                # In packed multi-group layouts the x-axis starts at the first
+                # physical trace but display columns map to non-contiguous
+                # physical traces.  Translate before calling group_for_trace.
+                physical = self._display_x_to_physical_trace(trace)
+                g = gi.group_for_trace(mode, physical)
                 if g is not None:
                     group_id, ch = g
                     readout = self._format_mode_readout(
-                        ds, mode, group_id, ch, trace, t_str, amp_str
+                        ds, mode, group_id, ch, physical, t_str, amp_str
                     )
         self.status_message.emit(readout)
 
@@ -921,6 +943,59 @@ class SeismicView(QWidget):
                 return f"{xl_name} {group_id}, {il_name} {il} | t = {t_str} ms | amp = {amp_str}"
             return f"{xl_name} {group_id} | t = {t_str} ms | amp = {amp_str}"
         return f"Trace {trace} | t = {t_str} ms | amp = {amp_str}"
+
+    def _build_group_x_positions(
+        self, gi: GroupIndex | None, mode: GroupingMode | None
+    ) -> GroupXPositions | None:
+        """Return display-x positions for each visible group in the packed layout.
+
+        When shots are packed side-by-side, the info-track ticks must use
+        packed display coordinates (column offset from commanded_trace_range[0])
+        rather than physical trace positions.
+        """
+        indices = self._current_trace_indices
+        state = self.group.shared_state
+        if (
+            indices is None
+            or indices.size == 0
+            or state.commanded_trace_range is None
+            or state.current_group_id is None
+            or gi is None
+            or mode is None
+        ):
+            return None
+        t0 = state.commanded_trace_range[0]
+        first = int(state.current_group_id)
+        count = int(state.groups_per_view or 1)
+        skip = int(state.group_skip or 1)
+        displayed_ids = gi.displayed_group_ids(first, count, skip)
+        positions: GroupXPositions = {}
+        for gid in displayed_ids:
+            group_arr = gi._groups.get(gid)
+            if group_arr is None or group_arr.size == 0:
+                continue
+            first_physical = int(group_arr[0])
+            col = int(np.searchsorted(indices, first_physical))
+            if col < indices.size and indices[col] == first_physical:
+                positions[gid] = t0 + col
+        return positions or None
+
+    def _display_x_to_physical_trace(self, display_x: float) -> int:
+        """Map a packed display x-coordinate to its physical trace index.
+
+        When shots are packed side-by-side, the display x-axis starts at the
+        first physical trace (``commanded_trace_range[0]``) but the columns
+        correspond to the sorted trace_indices, not contiguous physical traces.
+        """
+        indices = self._current_trace_indices
+        state = self.group.shared_state
+        if indices is None or indices.size == 0 or state.commanded_trace_range is None:
+            return int(display_x)
+        t0 = state.commanded_trace_range[0]
+        col = int(round(display_x - t0))
+        if 0 <= col < indices.size:
+            return int(indices[col])
+        return int(display_x)
 
     def _active_dataset(self):  # noqa: ANN202
         i = self.group.active_index

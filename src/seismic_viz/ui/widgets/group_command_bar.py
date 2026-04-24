@@ -201,9 +201,12 @@ class GroupCommandBar(QWidget):
             self._rebuilding = False
 
     def _sync_first_range(self, gi: GroupIndex) -> None:
-        n = max(1, gi.n_groups())
+        gids = gi.group_ids
         self._first_spin.blockSignals(True)
-        self._first_spin.setMaximum(n)
+        if gids:
+            self._first_spin.setRange(min(gids), max(gids))
+        else:
+            self._first_spin.setRange(1, 1)
         self._first_spin.blockSignals(False)
         self._scroll_bar.set_range(gi.n_groups())
 
@@ -216,8 +219,10 @@ class GroupCommandBar(QWidget):
         count = int(state.groups_per_view) if state.groups_per_view is not None else 1
         skip = int(state.group_skip or 1)
 
+        gids = gi.group_ids
+        display_first = gids[first] if 0 <= first < len(gids) else first + 1
         self._first_spin.blockSignals(True)
-        self._first_spin.setValue(first + 1)
+        self._first_spin.setValue(display_first)
         self._first_spin.blockSignals(False)
 
         self._count_spin.blockSignals(True)
@@ -272,7 +277,18 @@ class GroupCommandBar(QWidget):
     def _on_first_spin_changed(self, value: int) -> None:
         if self._rebuilding:
             return
-        self.group.update_shared_state(current_group_id=int(value) - 1)
+        gi = self._reference_index()
+        if gi is None:
+            return
+        gids = gi.group_ids
+        if not gids:
+            return
+        target = int(value)
+        if target in gids:
+            pos = gids.index(target)
+        else:
+            pos = min(range(len(gids)), key=lambda i: abs(gids[i] - target))
+        self.group.update_shared_state(current_group_id=pos)
 
     def _on_count_changed(self, value: int) -> None:
         if self._rebuilding:
@@ -295,7 +311,9 @@ class GroupCommandBar(QWidget):
                 return
             self.group.shared_state.current_group_id = int(value)
             self._first_spin.blockSignals(True)
-            self._first_spin.setValue(int(value) + 1)
+            gids = gi.group_ids
+            display_val = gids[int(value)] if 0 <= int(value) < len(gids) else int(value) + 1
+            self._first_spin.setValue(display_val)
             self._first_spin.blockSignals(False)
             state = self.group.shared_state
             count = int(state.groups_per_view or 1)
@@ -338,14 +356,15 @@ class GroupCommandBar(QWidget):
         if gi is None:
             return
         n = gi.n_groups()
-        span = self._window_span()
-        self.group.update_shared_state(current_group_id=max(0, n - span))
+        count = int(self.group.shared_state.groups_per_view or 1)
+        self.group.update_shared_state(current_group_id=max(0, n - count))
 
     def _window_span(self) -> int:
+        # Advance by count positions per step so the next window shows the
+        # next non-overlapping batch of count groups at the same skip stride.
         state = self.group.shared_state
         count = int(state.groups_per_view or 1)
-        skip = int(state.group_skip or 1)
-        return max(1, count * skip)
+        return max(1, count)
 
     def _step_by(self, delta: int) -> None:
         gi = self._reference_index()
