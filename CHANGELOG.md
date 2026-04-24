@@ -1,5 +1,37 @@
 # Changelog
 
+## [v2.2] Header Mapping + Rename
+
+Extends the header inspector into a full "Configure Headers" dialog that
+persists role mappings and display-name renames in a `.sv` JSON sidecar.
+
+- `models/sv_sidecar.py` (new): `SVSidecar` dataclass with `to_json`,
+  `from_json` (raises on schema > 1), and `is_stale(segy_path)` (compares
+  SHA-1 of first 3 600 bytes + mtime). `build_sidecar_for` convenience
+  constructor fills sha1 and mtime from disk. `compute_sha1_prefix` utility.
+- `models/dataset.py`: added `sv: SVSidecar | None`, `sv_stale: bool`,
+  `sv_changed` signal, `display_name_for(field)`, `display_name_for_mode(mode)`,
+  and `persist_sv()` (writes `.sv`, clears stale flag, emits `sv_changed`).
+- `io/segy_loader.py`: probes `<segy_stem>.sv` on load; attaches the sidecar
+  and sets `sv_stale = True` when stale.
+- `ui/dialogs/header_inspector_dialog.py` (rewritten): Role Mapping panel
+  (Shot / Inline / Crossline dropdowns from populated fields), Header Fields
+  table with an editable "Display name" column, live Preview panel, Apply +
+  Cancel buttons. Apply builds a `SVSidecar`, calls `dataset.persist_sv()`,
+  and closes.
+- `ui/panels/catalog_panel.py`: warning icon + tooltip on stale-sv rows;
+  "Re-validate .sv…" context-menu item; "Configure Headers…" rename with
+  first-use rich tooltip (tracked via `QSettings`); subscribes to
+  `sv_changed` to clear the decoration after re-validate.
+- `ui/widgets/seismic_view.py`: info track and crosshair readout now call
+  `dataset.display_name_for_mode` / `display_name_for`; subscribes to
+  `sv_changed` to refresh the info track when names change.
+- `ui/widgets/group_command_bar.py`: mode combo labels use
+  `display_name_for_mode`; subscribes to `sv_changed` to rebuild.
+- Tests: `tests/test_sv_sidecar.py` (13 tests — round-trip JSON, staleness,
+  schema guard) and `tests/test_display_name_lookup.py` (16 tests —
+  `display_name_for`, `display_name_for_mode`, `persist_sv` signal).
+
 ## [v2.1] Header Scanner
 
 Adds a surange-equivalent header scanner and a read-only Header Inspector

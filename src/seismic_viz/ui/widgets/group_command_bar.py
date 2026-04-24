@@ -131,11 +131,17 @@ class GroupCommandBar(QWidget):
             try:
                 self._subscribed_dataset.group_index_ready.disconnect(self._on_index_ready)
             except (RuntimeError, TypeError):
-                # Already disconnected (e.g. dataset destroyed) — safe to ignore.
                 pass
+            if hasattr(self._subscribed_dataset, "sv_changed"):
+                try:
+                    self._subscribed_dataset.sv_changed.disconnect(self._rebuild)
+                except (RuntimeError, TypeError):
+                    pass
         self._subscribed_dataset = ds
         if ds is not None and hasattr(ds, "group_index_ready"):
             ds.group_index_ready.connect(self._on_index_ready)
+        if ds is not None and hasattr(ds, "sv_changed"):
+            ds.sv_changed.connect(self._rebuild)
 
     def _on_index_ready(self) -> None:
         # The reference's GroupIndex just gained SHOT/INLINE/CROSSLINE modes.
@@ -168,8 +174,14 @@ class GroupCommandBar(QWidget):
 
             self.setEnabled(True)
             modes = self._available_modes_ordered(gi)
+            ds = self._reference_dataset()
             for mode in modes:
-                self._mode_combo.addItem(_MODE_DISPLAY[mode], userData=mode)
+                if ds is not None and hasattr(ds, "display_name_for_mode"):
+                    sv_label = ds.display_name_for_mode(mode)
+                    label = sv_label if sv_label else _MODE_DISPLAY[mode]
+                else:
+                    label = _MODE_DISPLAY[mode]
+                self._mode_combo.addItem(label, userData=mode)
             self._mode_combo.blockSignals(False)
 
             active_mode = self.group.shared_state.grouping_mode or gi.default_mode
