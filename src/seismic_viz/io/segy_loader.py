@@ -7,6 +7,7 @@ import segyio
 
 from seismic_viz.models.dataset import Dataset
 from seismic_viz.models.group_index import GroupIndex
+from seismic_viz.models.sv_sidecar import SVSidecar
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +74,17 @@ def load_segy(path: Path) -> Dataset:
         xline_range=xline_range,
         group_index=group_index,
     )
+    sv_path = path.with_suffix(".sv")
+    if sv_path.exists():
+        try:
+            sidecar = SVSidecar.from_json(sv_path)
+            ds.sv = sidecar
+            if sidecar.is_stale(path):
+                ds.sv_stale = True
+                log.warning("stale .sv for %s — proceeding with cached metadata", path.name)
+        except Exception:
+            log.warning("failed to load .sv for %s", path.name, exc_info=True)
+
     log.info(
         "loaded %s: traces=%d samples=%d dt=%.4f ms format=%d structured=%s",
         path.name,

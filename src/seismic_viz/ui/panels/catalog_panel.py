@@ -13,7 +13,9 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QMenu,
+    QStyle,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -67,6 +69,7 @@ class CatalogModel(QAbstractItemModel):
         if gi is not None and gi.has_pending_scan:
             self._scanning.add(dataset.id)
         dataset.group_index_ready.connect(lambda ds_id=dataset.id: self._on_scan_ready(ds_id))
+        dataset.sv_changed.connect(lambda ds_id=dataset.id: self._on_sv_changed(ds_id))
 
     def _on_dataset_removed(self, dataset_id: str) -> None:
         self._scanning.discard(dataset_id)
@@ -84,7 +87,12 @@ class CatalogModel(QAbstractItemModel):
         if dataset_id not in self._scanning:
             return
         self._scanning.discard(dataset_id)
-        # Emit dataChanged on the affected row so its label repaints.
+        self._emit_data_changed_for(dataset_id)
+
+    def _on_sv_changed(self, dataset_id: str) -> None:
+        self._emit_data_changed_for(dataset_id)
+
+    def _emit_data_changed_for(self, dataset_id: str) -> None:
         for group in (GROUP_LOADED, GROUP_DERIVED):
             bucket = self._bucket(group)
             for row, ds in enumerate(bucket):
@@ -155,7 +163,14 @@ class CatalogModel(QAbstractItemModel):
             return font
         if role == Qt.ItemDataRole.ForegroundRole and isinstance(ds, DerivedDataset):
             return QColor("#1E40AF")
+        if role == Qt.ItemDataRole.DecorationRole and getattr(ds, "sv_stale", False):
+            return QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
         if role == Qt.ItemDataRole.ToolTipRole:
+            if getattr(ds, "sv_stale", False):
+                return (
+                    "The .sv for this file was generated against an older version"
+                    " of the SEG-Y. Click to re-validate."
+                )
             if isinstance(ds, DerivedDataset):
                 direction = "A \u2212 B" if ds.direction == "a_minus_b" else "B \u2212 A"
                 return f"{direction} where A = {ds.parent_a.source_path}, B = {ds.parent_b.source_path}"  # noqa: E501
@@ -236,8 +251,14 @@ class CatalogPanel(QWidget):
             add_to_active.triggered.connect(lambda: self.add_to_active_group_requested.emit(ds))
             add_to_active.setEnabled(self._project.active_toggle_group() is not None)
             menu.addSeparator()
-            inspect = menu.addAction("Inspect Headers…")
+            inspect = menu.addAction("Configure Headers…")
+            inspect.setToolTip(self._inspector_tooltip())
             inspect.triggered.connect(lambda checked=False, d=ds: self._open_header_inspector(d))
+            if getattr(ds, "sv_stale", False):
+                revalidate = menu.addAction("Re-validate .sv…")
+                revalidate.triggered.connect(
+                    lambda checked=False, d=ds: self._open_header_inspector(d)
+                )
             menu.addSeparator()
             props = menu.addAction("Properties…")
             remove = menu.addAction("Remove")
@@ -271,9 +292,26 @@ class CatalogPanel(QWidget):
 
                 QMessageBox.warning(self, "Incompatible datasets", str(exc))
 
+    def _inspector_tooltip(self) -> str:
+        from PySide6.QtCore import QSettings
+
+        settings = QSettings("SeismicView", "App")
+        if settings.value("header_inspector_opened", False, type=bool):
+            return "Inspect and remap headers for this file."
+        return (
+            "Inspect Headers…\n"
+            "Shows which SEG-Y header fields are populated in this file.\n"
+            "Lets you remap which field provides the shot / inline / crossline\n"
+            "number and rename labels for this file only."
+        )
+
     def _open_header_inspector(self, dataset: Dataset) -> None:
+        from PySide6.QtCore import QSettings
+
         from seismic_viz.ui.dialogs.header_inspector_dialog import HeaderInspectorDialog
 
+        settings = QSettings("SeismicView", "App")
+        settings.setValue("header_inspector_opened", True)
         dlg = HeaderInspectorDialog(dataset, parent=self)
         dlg.exec()
 

@@ -10,8 +10,30 @@ from PySide6.QtCore import QObject, Signal
 
 from seismic_viz.io.surange import FieldSample, scan_populated_fields
 from seismic_viz.models.group_index import GroupIndex, GroupingMode, ModeState
+from seismic_viz.models.sv_sidecar import SVSidecar
 
 log = logging.getLogger(__name__)
+
+# Default display labels for well-known SEG-Y header fields.
+_DEFAULT_FIELD_NAMES: dict[str, str] = {
+    "FieldRecord": "Shot",
+    "INLINE_3D": "IL",
+    "CROSSLINE_3D": "XL",
+    "TraceNumber": "Channel",
+}
+
+# Default SEG-Y field name for each grouping mode's key.
+_DEFAULT_ROLE_FIELDS: dict[GroupingMode, str] = {
+    GroupingMode.SHOT: "FieldRecord",
+    GroupingMode.INLINE: "INLINE_3D",
+    GroupingMode.CROSSLINE: "CROSSLINE_3D",
+}
+
+_MODE_ROLE_KEY: dict[GroupingMode, str] = {
+    GroupingMode.SHOT: "shot",
+    GroupingMode.INLINE: "inline",
+    GroupingMode.CROSSLINE: "crossline",
+}
 
 
 class Dataset(QObject):
@@ -30,6 +52,9 @@ class Dataset(QObject):
 
     # Fired after populate_surange() completes a (re-)scan.
     surange_ready = Signal()
+
+    # Fired after persist_sv() writes a new .sv to disk.
+    sv_changed = Signal()
 
     def __init__(
         self,
@@ -61,6 +86,8 @@ class Dataset(QObject):
         self.name = name if name else Path(source_path).stem
         self._closed = False
         self.header_fields_available: dict[str, FieldSample] | None = None
+        self.sv: SVSidecar | None = None
+        self.sv_stale: bool = False
 
     def populate_surange(self, force: bool = False) -> None:
         """Run the surange header scan and cache the result.
@@ -145,6 +172,44 @@ class Dataset(QObject):
         if t < 0 or t >= arr.size:
             return None
         return int(arr[t])
+
+    def display_name_for(self, field: str) -> str:
+        """Return the user-visible label for *field*.
+
+        Checks ``sv.display_names`` first; falls back to ``_DEFAULT_FIELD_NAMES``,
+        then to the raw field name.
+        """
+        if self.sv and field in self.sv.display_names:
+            return self.sv.display_names[field]
+        return _DEFAULT_FIELD_NAMES.get(field, field)
+
+    def display_name_for_mode(self, mode: GroupingMode) -> str:
+        """Return the display label for the key field of *mode*.
+
+        For TRACE_RANGE returns ``"T"``. For other modes, resolves the role
+        field from the sidecar (or SEG-Y standard default), then calls
+        ``display_name_for``.
+        """
+        if mode is GroupingMode.TRACE_RANGE:
+            return "T"
+        role_key = _MODE_ROLE_KEY.get(mode)
+        field: str | None = None
+        if role_key and self.sv and role_key in self.sv.role_mappings:
+            field = self.sv.role_mappings[role_key]
+        if not field:
+            field = _DEFAULT_ROLE_FIELDS.get(mode, "")
+        if not field:
+            return ""
+        return self.display_name_for(field)
+
+    def persist_sv(self) -> None:
+        """Write ``self.sv`` to ``<source_path>.sv`` and emit ``sv_changed``."""
+        if self.sv is None:
+            return
+        sv_path = self.source_path.with_suffix(".sv")
+        self.sv.to_json(sv_path)
+        self.sv_stale = False
+        self.sv_changed.emit()
 
     def close(self) -> None:
         if self._closed:

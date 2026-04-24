@@ -288,6 +288,16 @@ class SeismicView(QWidget):
         # didn't change.
         self._apply_plot_ranges()
         self._refresh_overlays()
+        # Subscribe to sv_changed so info track and crosshair use new names.
+        try:
+            ds = self.group.members[index].dataset
+            if hasattr(ds, "sv_changed"):
+                ds.sv_changed.connect(self._on_sv_changed)
+        except IndexError:
+            pass
+
+    def _on_sv_changed(self) -> None:
+        self._refresh_info_track()
 
     def _on_member_removed(self, index: int) -> None:
         # Cancel any in-flight worker for the removed member so its stale
@@ -558,7 +568,13 @@ class SeismicView(QWidget):
             except ValueError:
                 self.info_track.clear()
                 return
-        self.info_track.refresh(mode, gi, default_display_names, x_range)
+        ds = self._active_dataset()
+        names_fn = (
+            ds.display_name_for_mode
+            if ds is not None and hasattr(ds, "display_name_for_mode")
+            else default_display_names
+        )
+        self.info_track.refresh(mode, gi, names_fn, x_range)
 
     # --- Slice requests ---
 
@@ -874,20 +890,33 @@ class SeismicView(QWidget):
         t_str: str,
         amp_str: str,
     ) -> str:
+        def _mode_name(m: GroupingMode) -> str:
+            if hasattr(ds, "display_name_for_mode"):
+                return ds.display_name_for_mode(m)
+            return default_display_names(m)
+
+        def _field_name(f: str) -> str:
+            if hasattr(ds, "display_name_for"):
+                return ds.display_name_for(f)
+            from seismic_viz.models.dataset import _DEFAULT_FIELD_NAMES
+
+            return _DEFAULT_FIELD_NAMES.get(f, f)
+
         if mode is GroupingMode.SHOT:
-            name = default_display_names(GroupingMode.SHOT)
-            return f"{name} {group_id}, Channel {ch} | t = {t_str} ms | amp = {amp_str}"
+            name = _mode_name(mode)
+            ch_name = _field_name("TraceNumber")
+            return f"{name} {group_id}, {ch_name} {ch} | t = {t_str} ms | amp = {amp_str}"
         if mode is GroupingMode.INLINE:
             xl = ds.crossline_at(trace)
-            xl_name = default_display_names(GroupingMode.CROSSLINE)
-            il_name = default_display_names(GroupingMode.INLINE)
+            il_name = _mode_name(GroupingMode.INLINE)
+            xl_name = _mode_name(GroupingMode.CROSSLINE)
             if xl is not None:
                 return f"{il_name} {group_id}, {xl_name} {xl} | t = {t_str} ms | amp = {amp_str}"
             return f"{il_name} {group_id} | t = {t_str} ms | amp = {amp_str}"
         if mode is GroupingMode.CROSSLINE:
             il = ds.inline_at(trace)
-            il_name = default_display_names(GroupingMode.INLINE)
-            xl_name = default_display_names(GroupingMode.CROSSLINE)
+            xl_name = _mode_name(GroupingMode.CROSSLINE)
+            il_name = _mode_name(GroupingMode.INLINE)
             if il is not None:
                 return f"{xl_name} {group_id}, {il_name} {il} | t = {t_str} ms | amp = {amp_str}"
             return f"{xl_name} {group_id} | t = {t_str} ms | amp = {amp_str}"
