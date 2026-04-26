@@ -187,16 +187,18 @@ class ScrollBarWithMarkers(QWidget):
             return
         pos = event.position().toPoint()
         handle = self._handle_rect()
-        if handle.contains(pos):
-            # Drag start — preserve the click offset inside the handle.
-            self._drag_offset = pos.x() - handle.x()
-        else:
-            # Click on track: jump handle to the clicked position, then drag.
-            new_value = self._pixel_to_value(pos.x() - handle.width() // 2)
-            self._set_value_emit(new_value)
-            self._drag_offset = handle.width() // 2
+        # Flip drag state and notify listeners *before* the value emission so
+        # that a track-click jump is treated identically to a drag step. Without
+        # this ordering, listeners see ``_dragging=False`` for the initial
+        # value_changed and skip drag-only refresh paths (e.g. marker repaint).
         self._dragging = True
         self.drag_started.emit()
+        if handle.contains(pos):
+            self._drag_offset = pos.x() - handle.x()
+        else:
+            self._drag_offset = handle.width() // 2
+            new_value = self._pixel_to_value(pos.x() - handle.width() // 2)
+            self._set_value_emit(new_value)
         self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: D401 - Qt override

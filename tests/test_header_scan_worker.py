@@ -12,14 +12,14 @@ from seismic_viz.workers.header_scan_worker import HeaderScanWorker
 class _Collector:
     def __init__(self) -> None:
         self.progress: list[float] = []
-        self.finished: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        self.finished: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
         self.failed: list[str] = []
 
     def wire(self, worker: HeaderScanWorker) -> None:
         worker.signals.progress.connect(self.progress.append)
         worker.signals.finished.connect(
-            lambda fr, il, xl: self.finished.append(
-                (np.asarray(fr), np.asarray(il), np.asarray(xl))
+            lambda fr, il, xl, tn: self.finished.append(
+                (np.asarray(fr), np.asarray(il), np.asarray(xl), np.asarray(tn))
             )
         )
         worker.signals.failed.connect(self.failed.append)
@@ -35,7 +35,7 @@ def test_scan_reads_expected_fields_on_3d_fixture(segy_3d: Path) -> None:
 
         assert not collector.failed
         assert len(collector.finished) == 1
-        fr, il, xl = collector.finished[0]
+        fr, il, xl, tn = collector.finished[0]
 
         # The synthetic fixture writes FieldRecord = trace index.
         np.testing.assert_array_equal(fr, np.arange(ds.n_traces, dtype=np.int32))
@@ -45,16 +45,21 @@ def test_scan_reads_expected_fields_on_3d_fixture(segy_3d: Path) -> None:
         np.testing.assert_array_equal(il, expected_il)
         np.testing.assert_array_equal(xl, expected_xl)
 
+        # TraceNumber is read from the same loop; shape and dtype must match.
+        assert tn.shape == (ds.n_traces,)
+        assert tn.dtype == np.int32
+
         # Feed the result back into the dataset's GroupIndex and verify the
         # modes unlock as expected.
         ds.group_index.mark_scanning()
-        ds.group_index.update_from_scan(fr, il, xl)
+        ds.group_index.update_from_scan(fr, il, xl, tn)
         assert {
             GroupingMode.SHOT,
             GroupingMode.INLINE,
             GroupingMode.CROSSLINE,
             GroupingMode.TRACE_RANGE,
         } <= ds.group_index.available_modes
+        assert "TraceNumber" in ds.group_index.field_names_available
     finally:
         ds.close()
 
