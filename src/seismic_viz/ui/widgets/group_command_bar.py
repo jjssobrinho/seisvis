@@ -503,6 +503,9 @@ class GroupCommandBar(QWidget):
         text = " · ".join(pieces)
         if not sc.committed:
             text = f"{text}  (sort uncommitted)"
+            self._status_label.setStyleSheet("font-style: italic; color: #6B7280;")
+        else:
+            self._status_label.setStyleSheet("")
         self._status_label.setText(text)
 
     def _update_commit_icon(self) -> None:
@@ -765,6 +768,8 @@ class GroupCommandBar(QWidget):
     def _on_commit_clicked(self) -> None:
         # Validate against all current group members. Loose compat: partial
         # overlap counts.
+        from PySide6.QtWidgets import QMessageBox
+
         from seismic_viz.models.compatibility import are_toggle_compatible
 
         ref_ds = self._reference_dataset()
@@ -775,7 +780,12 @@ class GroupCommandBar(QWidget):
                 continue
             result = are_toggle_compatible(ref_ds, m.dataset, self._draft)
             if not result.ok:
+                msg = (
+                    f"Cannot commit sort: member {i + 1} "
+                    f"({m.dataset.name}) is incompatible.\n\n{result.reason}"
+                )
                 self.status_message.emit(f"Cannot commit sort: {result.reason}")
+                QMessageBox.warning(self, "Sort commit failed", msg)
                 return
         sc = SortConfig(
             primary=self._draft.primary,

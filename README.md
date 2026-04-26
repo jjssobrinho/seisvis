@@ -30,35 +30,39 @@ uv run python -m seismic_viz
 ## First steps
 
 1. **Open a SEG-Y file** — `Ctrl+O` or drag-and-drop onto the window.
-   The file is indexed in the background; Shot/Inline/Crossline modes
-   become available once the header scan completes.
+   The file appears in the catalog immediately; the background header
+   scan unlocks shot / inline / crossline grouping when it finishes.
 
-2. **Navigate groups** — In the command bar at the bottom of the canvas,
-   set `Count = 5` and `Skip = 3`, then drag the scroll bar to page
-   through the data.
+2. **Inspect headers** — Right-click the dataset in the catalog and
+   choose *Configure Headers…*. The dialog shows which trace-header
+   fields are populated. If the catalog row has a small info icon, the
+   file lacks the standard role fields and you'll want to remap from
+   here. Click the icon to jump straight in.
 
-3. **Create a toggle group with a second file** — Load a second SEG-Y,
-   then double-click it in the Data Catalog (or right-click → *Open in
-   new toggle group*). A new tab appears in the Display Canvas.
-   To add the second file as a member of the first group, right-click it
-   in the catalog and choose *Add to active toggle group*.
+3. **Rename a field** — In the same dialog, edit a field's
+   *Display name* (e.g. `FieldRecord` → `SP`). Apply. The new name now
+   appears in the command-bar dropdown, the info-track labels, and the
+   crosshair readout for this file.
 
-4. **Switch members** — Press `1` or `2` while the canvas has focus.
-   Enable *Auto* in the toggle bar to flicker between members
-   (or press `Space`).
+4. **Commit a shot-gather sort** — In the command-bar at the bottom of
+   the canvas, set the primary key to `SP` (or whichever field provides
+   shot), pick `Count = 1`, and click `☆` to commit. The display
+   re-renders one shot at a time; drag the scroll bar to page through
+   shots.
 
-5. **Compute A − B** — `Ctrl+click` two groups in the Viewport Manager
-   to mark them A and B, then press `Ctrl+D`.
-   The difference dataset appears in the catalog under *Derived* with a
-   blue name and opens in the active toggle group as a new member.
+5. **Switch to a channel gather** — Add a secondary row with `+`, set
+   it to `Channel`, swap primary/secondary with `⇅`, and commit.
+   You're now sorted by channel with each gather containing every shot.
 
-6. **Tune bandpass on member 1** — Hover the toolbar to reveal it,
-   switch to the *Processing* tab, and set edit target `[1]`.
-   Enable Bandpass and adjust the frequency range.
-   Switch edit target to `[2]` to verify that member 2 is unchanged.
+6. **Watch the info track update** — Above the plot, primary labels
+   reflect the new primary key (`Channel 12`, etc.) and a sub-label
+   under each one shows the secondary range (`SP 100–250`). Both lines
+   use whatever display name you set in step 3.
 
-7. **Close and reopen** — Quit the app (`Alt+F4` / File → Exit) and
-   relaunch. Window geometry and toolbar defaults are restored.
+7. **Close and reopen** — Quit (`Alt+F4` / File → Exit) and relaunch.
+   Window geometry, toolbar defaults, and the `.sv` sidecar's renames
+   and role mappings are restored. Sort itself starts fresh each
+   session — commit again to apply.
 
 ## Keyboard shortcuts
 

@@ -8,6 +8,8 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+CURRENT_SCHEMA_VERSION = 2
+
 
 def compute_sha1_prefix(path: Path, n_bytes: int = 3600) -> str:
     """Return SHA-1 hex digest of the first *n_bytes* of *path*."""
@@ -26,19 +28,18 @@ class SVSidecar:
     unmapped. ``display_names`` maps field names to user-visible labels.
     """
 
-    schema_version: int
-    segy_path: str
-    sha1_prefix: str
-    mtime: float
+    schema_version: int = CURRENT_SCHEMA_VERSION
+    segy_path: str = ""
+    sha1_prefix: str = ""
+    mtime: float = 0.0
     role_mappings: dict[str, str | None] = field(default_factory=dict)
     display_names: dict[str, str] = field(default_factory=dict)
-    last_sort: dict | None = None
 
     # --- serialisation ---
 
     def to_json(self, path: Path) -> None:
         data = {
-            "schema_version": self.schema_version,
+            "schema_version": CURRENT_SCHEMA_VERSION,
             "segy_path": self.segy_path,
             "sha1_prefix": self.sha1_prefix,
             "mtime": self.mtime,
@@ -47,7 +48,6 @@ class SVSidecar:
                 for role, f in self.role_mappings.items()
             },
             "display_names": self.display_names,
-            "last_sort": self.last_sort,
         }
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -55,8 +55,11 @@ class SVSidecar:
     def from_json(cls, path: Path) -> SVSidecar:
         raw = json.loads(path.read_text(encoding="utf-8"))
         version = int(raw.get("schema_version", 1))
-        if version > 1:
-            raise ValueError(f"Unsupported .sv schema version {version} (max supported: 1)")
+        if version > CURRENT_SCHEMA_VERSION:
+            raise ValueError(
+                f"Unsupported .sv schema version {version} "
+                f"(max supported: {CURRENT_SCHEMA_VERSION})"
+            )
         role_mappings: dict[str, str | None] = {}
         for role, val in raw.get("role_mappings", {}).items():
             if val is None:
@@ -72,7 +75,6 @@ class SVSidecar:
             mtime=float(raw.get("mtime", 0.0)),
             role_mappings=role_mappings,
             display_names=dict(raw.get("display_names", {})),
-            last_sort=raw.get("last_sort"),
         )
 
     # --- staleness ---
@@ -97,7 +99,7 @@ def build_sidecar_for(
     """Convenience constructor that fills ``sha1_prefix`` and ``mtime`` from disk."""
     stat = segy_path.stat()
     return SVSidecar(
-        schema_version=1,
+        schema_version=CURRENT_SCHEMA_VERSION,
         segy_path=str(segy_path),
         sha1_prefix=compute_sha1_prefix(segy_path),
         mtime=stat.st_mtime,
@@ -106,4 +108,4 @@ def build_sidecar_for(
     )
 
 
-__all__ = ["SVSidecar", "compute_sha1_prefix", "build_sidecar_for"]
+__all__ = ["SVSidecar", "compute_sha1_prefix", "build_sidecar_for", "CURRENT_SCHEMA_VERSION"]

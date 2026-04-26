@@ -1,5 +1,34 @@
 # Changelog
 
+## [v0.2.0] Header inspection, two-row sort, polish
+
+Consolidated release of the v2.x line. Highlights:
+
+- **Surange-equivalent header scanner** (v2.1) lets you see which
+  trace-header fields are populated in a file without a full scan.
+  Read-only Header Inspector dialog from the catalog context menu.
+- **`.sv` sidecar with header mapping + rename** (v2.2). Each SEG-Y
+  gets an optional JSON neighbour holding role mappings (which field
+  provides shot / inline / crossline) and per-file display-name
+  renames. Stale-detection via SHA-1 prefix + mtime.
+- **Two-row sort** (v2.3). Replaced the single mode dropdown with a
+  required primary row and an optional secondary row, both staged into
+  a draft `SortConfig` and committed together. Loose compatibility:
+  members whose secondary range only partially overlaps the group's
+  configured range are still accepted and render partially.
+- **v2.4 polish.**
+  - Catalog hint icon: rows whose surange scan finds no
+    FieldRecord / INLINE_3D / CROSSLINE_3D show a subtle info icon.
+    Tooltip explains the situation; click it to jump to Configure
+    Headers. Clears once any role is mapped.
+  - Sort uncommitted clarity: the command-bar status label renders
+    `(sort uncommitted)` in muted italics when a draft is pending.
+  - Sort commit failures now pop a modal explaining which member is
+    incompatible and why; the uncommitted state is preserved so the
+    user can fix it.
+  - `.sv` schema bumped to version 2 — drops the unused `last_sort`
+    field. v1 files still load (and rewrite as v2 on next save).
+
 ## [v2.3.1] Command-bar fixes
 
 Post-v2.3 fixes for two regressions surfaced in manual testing.
