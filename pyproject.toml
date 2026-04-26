@@ -1,6 +1,6 @@
 [project]
 name = "seismic-view"
-version = "0.1.0"
+version = "0.2.0"
 description = "Desktop application for loading, viewing, and comparing 2D/3D reflection seismic data"
 requires-python = ">=3.11"
 dependencies = [

@@ -46,7 +46,6 @@ def test_round_trip_json(tmp_path: Path) -> None:
     sv_path = tmp_path / "line.sv"
 
     original = SVSidecar(
-        schema_version=1,
         segy_path=str(segy),
         sha1_prefix=compute_sha1_prefix(segy),
         mtime=segy.stat().st_mtime,
@@ -56,33 +55,12 @@ def test_round_trip_json(tmp_path: Path) -> None:
     original.to_json(sv_path)
 
     loaded = SVSidecar.from_json(sv_path)
-    assert loaded.schema_version == 1
+    assert loaded.schema_version == 2
     assert loaded.segy_path == str(segy)
     assert loaded.sha1_prefix == original.sha1_prefix
     assert abs(loaded.mtime - original.mtime) < 1.0
     assert loaded.role_mappings == {"shot": "FieldRecord", "inline": None, "crossline": None}
     assert loaded.display_names == {"FieldRecord": "SP", "TraceNumber": "Channel"}
-    assert loaded.last_sort is None
-
-
-def test_round_trip_with_last_sort(tmp_path: Path) -> None:
-    segy = tmp_path / "line.sgy"
-    _make_fake_segy(segy)
-    sv_path = tmp_path / "line.sv"
-
-    sort_data = {"primary": {"field": "FieldRecord", "direction": "asc"}, "secondary": None}
-    original = SVSidecar(
-        schema_version=1,
-        segy_path=str(segy),
-        sha1_prefix=compute_sha1_prefix(segy),
-        mtime=segy.stat().st_mtime,
-        role_mappings={},
-        display_names={},
-        last_sort=sort_data,
-    )
-    original.to_json(sv_path)
-    loaded = SVSidecar.from_json(sv_path)
-    assert loaded.last_sort == sort_data
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +127,6 @@ def test_stale_when_sha1_differs(tmp_path: Path) -> None:
 def test_stale_when_file_missing(tmp_path: Path) -> None:
     segy = tmp_path / "gone.sgy"
     sv = SVSidecar(
-        schema_version=1,
         segy_path=str(segy),
         sha1_prefix="abc",
         mtime=0.0,
