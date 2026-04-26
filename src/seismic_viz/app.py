@@ -359,6 +359,17 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Loaded {dataset.name}", 3000)
         else:
             self.statusBar().showMessage(f"Loaded {dataset.name} ({self._pending_loads} pending)")
+        # Surange (~30k header probe) must run before the background full scan
+        # is dispatched: both touch the same segyio handle and segyio handles
+        # are not thread-safe. Per CLAUDE.md the surange scan is fast enough
+        # (~200 ms NVMe / ~1 s spinning) that running it on the GUI thread does
+        # not need a progress indicator. Without this, the command bar's
+        # secondary-key dropdown stays empty until the user opens the Configure
+        # Headers dialog.
+        try:
+            dataset.populate_surange()
+        except Exception:
+            log.exception("surange auto-scan failed for %s", dataset.name)
         self._start_header_scan(dataset)
 
     def _start_header_scan(self, dataset: Dataset) -> None:
@@ -376,18 +387,18 @@ class MainWindow(QMainWindow):
             )
         )
         worker.signals.finished.connect(
-            lambda fr, il, xl, ds=dataset: self._on_scan_finished(ds, fr, il, xl)
+            lambda fr, il, xl, tn, ds=dataset: self._on_scan_finished(ds, fr, il, xl, tn)
         )
         worker.signals.failed.connect(lambda msg, ds=dataset: self._on_scan_failed(ds, msg))
         log.info("dispatching header scan for %s (%d traces)", dataset.name, dataset.n_traces)
         self._pool.start(worker)
 
-    def _on_scan_finished(self, dataset: Dataset, fr, il, xl) -> None:  # noqa: ANN001
+    def _on_scan_finished(self, dataset: Dataset, fr, il, xl, tn) -> None:  # noqa: ANN001
         self._scan_cancel_flags.pop(dataset.id, None)
         self._scan_workers.pop(dataset.id, None)
         if dataset.is_closed or dataset.group_index is None:
             return
-        dataset.group_index.update_from_scan(fr, il, xl)
+        dataset.group_index.update_from_scan(fr, il, xl, tn)
         dataset.group_index_ready.emit()
         self.statusBar().showMessage(f"Indexed {dataset.name}", 3000)
         self._update_status_group_info()
@@ -397,7 +408,7 @@ class MainWindow(QMainWindow):
         self._scan_workers.pop(dataset.id, None)
         if dataset.is_closed or dataset.group_index is None:
             return
-        dataset.group_index.update_from_scan(None, None, None)
+        dataset.group_index.update_from_scan(None, None, None, None)
         dataset.group_index_ready.emit()
         self.statusBar().showMessage(f"Header scan failed for {dataset.name}: {message}", 5000)
         self._update_status_group_info()

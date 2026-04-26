@@ -269,7 +269,9 @@ class GroupCommandBar(QWidget):
         Always starts with ``TRACE_RANGE``. Adds populated SEG-Y fields
         (surange result) and any fields already materialized on the
         reference ``GroupIndex``. Falls back to the base set when neither
-        surange nor a scan has run yet.
+        surange nor a scan has produced any non-sentinel field yet — this
+        covers the brief window before surange completes on a freshly
+        loaded dataset.
         """
         fields: list[str] = [TRACE_RANGE_FIELD]
         seen: set[str] = {TRACE_RANGE_FIELD}
@@ -281,12 +283,16 @@ class GroupCommandBar(QWidget):
                     fields.append(name)
                     seen.add(name)
         gi = self._reference_index()
-        if gi is not None:
-            for name in gi.field_names_available:
-                if name not in seen:
-                    fields.append(name)
-                    seen.add(name)
-        if len(fields) == 1:  # nothing scanned yet — offer the base set.
+        gi_fields = gi.field_names_available if gi is not None else set()
+        for name in gi_fields:
+            if name not in seen:
+                fields.append(name)
+                seen.add(name)
+        # Fallback when nothing has surfaced any populated header field yet.
+        # surange is the source of truth once it has run; ``not isinstance(...)``
+        # covers both "never ran" and "ran but returned empty". gi_fields is
+        # checked the same way: empty means the full scan hasn't landed.
+        if not isinstance(surange, dict) and not gi_fields:
             for name in _BASE_FIELDS:
                 if name not in seen:
                     fields.append(name)

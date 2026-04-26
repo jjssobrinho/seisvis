@@ -1,5 +1,34 @@
 # Changelog
 
+## [v2.3.1] Command-bar fixes
+
+Post-v2.3 fixes for two regressions surfaced in manual testing.
+
+- `ui/widgets/scroll_bar_with_markers.py`: `mousePressEvent` now flips
+  `_dragging=True` and emits `drag_started` *before* the track-click
+  `_set_value_emit`. Previously the listener saw `_dragging=False` for
+  the initial value_changed and took the auto-commit path, which does
+  not refresh markers — markers stayed at the old position while the
+  handle jumped. Track-click now behaves identically to a drag step.
+- `workers/header_scan_worker.py`: full header scan now reads
+  `TraceNumber` in the same single-pass loop alongside FieldRecord /
+  INLINE_3D / CROSSLINE_3D. Without it, sorting on Channel was
+  structurally impossible because `GroupIndex.field_array("TraceNumber")`
+  returned None. `finished` signal is now `(fr, il, xl, tn)`.
+- `app.py`: `_on_load_finished` runs `dataset.populate_surange()`
+  synchronously before dispatching the full header scan, so the
+  command bar's secondary-key dropdown is populated as soon as the
+  dataset opens (previously surange only ran when the user opened
+  Configure Headers, leaving the `+` button silently unable to find
+  a candidate field).
+- `ui/widgets/group_command_bar.py`: `_available_fields` falls back to
+  `_BASE_FIELDS` whenever neither surange nor the GroupIndex has
+  produced a populated field, instead of only when the list contains
+  just the `TRACE_RANGE` sentinel.
+- Tests: `tests/test_header_scan_worker.py` updated to unpack the 4-arg
+  `finished` payload and assert `TraceNumber` lands in
+  `field_names_available`. Total suite 224 passing.
+
 ## [v2.3] Two-Row Sort & Command Bar
 
 Replaces the single mode dropdown with a two-row sort configuration.

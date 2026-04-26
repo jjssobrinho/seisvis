@@ -18,20 +18,21 @@ class HeaderScanWorkerSignals(QObject):
     """
 
     progress = Signal(float)  # percent complete in [0, 100]
-    finished = Signal(object, object, object)  # FieldRecord, INLINE_3D, CROSSLINE_3D arrays
+    # FieldRecord, INLINE_3D, CROSSLINE_3D, TraceNumber arrays.
+    finished = Signal(object, object, object, object)
     failed = Signal(str)
 
 
 class HeaderScanWorker(QRunnable):
     """Single-pass scan of a SEG-Y file's per-trace header fields.
 
-    Reads ``FieldRecord``, ``INLINE_3D``, and ``CROSSLINE_3D`` for every
-    trace in one loop, so each 240-byte header block is fetched from disk
-    once. Empirically this is cheaper than three separate
+    Reads ``FieldRecord``, ``INLINE_3D``, ``CROSSLINE_3D``, and ``TraceNumber``
+    for every trace in one loop, so each 240-byte header block is fetched from
+    disk once. Empirically this is cheaper than four separate
     ``handle.attributes(field)[:]`` calls on files that don't fit in OS
-    page cache, because the three-call form traverses the file
-    stride-by-stride three times — three times the disk I/O. On files
-    small enough to be fully page-cached the three-call form can be
+    page cache, because the per-call form traverses the file
+    stride-by-stride once per field — that many times the disk I/O. On files
+    small enough to be fully page-cached the per-call form can be
     faster due to vectorized reads in segyio, but the worst-case (cold
     multi-GB file) is what drives this choice.
     """
@@ -61,13 +62,14 @@ class HeaderScanWorker(QRunnable):
             # Empty file: emit empty arrays so the index flips to READY/FAILED
             # deterministically rather than leaving SCANNING.
             empty = np.empty(0, dtype=np.int32)
-            self.signals.finished.emit(empty, empty, empty)
+            self.signals.finished.emit(empty, empty, empty, empty)
             return
 
         try:
             fr = np.empty(n, dtype=np.int32)
             il = np.empty(n, dtype=np.int32)
             xl = np.empty(n, dtype=np.int32)
+            tn = np.empty(n, dtype=np.int32)
             report_every = max(1, n // 100)
             last_reported = -1
             for i, h in enumerate(handle.header):
@@ -77,6 +79,7 @@ class HeaderScanWorker(QRunnable):
                 fr[i] = h[segyio.TraceField.FieldRecord]
                 il[i] = h[segyio.TraceField.INLINE_3D]
                 xl[i] = h[segyio.TraceField.CROSSLINE_3D]
+                tn[i] = h[segyio.TraceField.TraceNumber]
                 if i % report_every == 0 and i != last_reported:
                     last_reported = i
                     self.signals.progress.emit(100.0 * i / n)
@@ -88,7 +91,7 @@ class HeaderScanWorker(QRunnable):
         if self._is_cancelled():
             return
         self.signals.progress.emit(100.0)
-        self.signals.finished.emit(fr, il, xl)
+        self.signals.finished.emit(fr, il, xl, tn)
 
 
 __all__ = ["HeaderScanWorker", "HeaderScanWorkerSignals"]
