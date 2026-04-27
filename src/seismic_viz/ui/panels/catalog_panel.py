@@ -96,7 +96,8 @@ class CatalogModel(QAbstractItemModel):
         if gi is not None and gi.has_pending_scan:
             self._scanning.add(dataset.id)
         dataset.group_index_ready.connect(lambda ds_id=dataset.id: self._on_scan_ready(ds_id))
-        dataset.sv_changed.connect(lambda ds_id=dataset.id: self._on_sv_changed(ds_id))
+        if hasattr(dataset, "sv_changed"):
+            dataset.sv_changed.connect(lambda ds_id=dataset.id: self._on_sv_changed(ds_id))
         if hasattr(dataset, "surange_ready"):
             dataset.surange_ready.connect(
                 lambda ds_id=dataset.id: self._emit_data_changed_for(ds_id)

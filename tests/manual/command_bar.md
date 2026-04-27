@@ -5,12 +5,12 @@ the dataset in a new toggle group so the canvas is visible.
 
 ## 1. Basic wiring
 
-- [ ] The bar at the bottom of the canvas shows, left→right:
+- [x] The bar at the bottom of the canvas shows, left→right:
   `Mode | First | scroll bar (stretched) | Count | Skip | status label`.
 - [ ] The status label reads `"{N} shots, showing 1"` (no "requested" suffix).
-- [ ] Incrementing "First" via the spinbox arrow moves the scroll-bar
+- [x] Incrementing "First" via the spinbox arrow moves the scroll-bar
   handle and the displayed shot.
-- [ ] Clicking on the scroll bar track jumps the handle and immediately
+- [x] Clicking on the scroll bar track jumps the handle and immediately
   triggers a render (no 150 ms delay).
 
 ## 2. Drag throttling
