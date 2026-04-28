@@ -82,7 +82,9 @@ class SliceWorker(QRunnable):
             )
         except Exception as exc:
             log.exception(
-                "slice worker failed for group=%s member=%d", self.group_id, self.member_index
+                "slice worker failed for group=%s member=%d",
+                self.group_id,
+                self.member_index,
             )
             if not self.is_cancelled:
                 self.signals.failed.emit(self.group_id, self.member_index, str(exc))

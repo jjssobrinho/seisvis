@@ -855,8 +855,7 @@ class SeismicView(QWidget):
         rect = QRectF(trace_range[0], t0, array.shape[0], t_extent)
         item = self._image_items[member_index]
         if array.size:
-            levels = self._levels_for_member(member, array)
-            item.setImage(array, autoLevels=False, levels=levels)
+            item.setImage(array, autoLevels=False, levels=self._levels_for_member(member, array))
             item.setLookupTable(get_colormap(member.display_state.colormap))
         else:
             item.clear()
