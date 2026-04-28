@@ -401,11 +401,12 @@ Fall back to the no-sort format when `group_for_trace` returns None.
 
 ## Derived Datasets (diff)
 
-- Viewport-level operation: selects two toggle groups from the
-  Viewport Manager and diffs each group's active member's raw
-  dataset.
-- Ctrl+left-click on a toggle group cycles `diff_a` / `diff_b`.
-- "Compute A − B" button at the bottom of the Viewport Manager.
+- Member-level operation: right-click a member row in the Viewport
+  Manager and pick "Compute Difference…" to open the diff dialog,
+  which prompts for the second member.
+- Compatibility check runs first; the menu item is disabled (with
+  a tooltip explaining the mismatch) when the two members aren't
+  compatible.
 - `DerivedDataset` lazy; `read_slice` = parent_a.read_slice −
   parent_b.read_slice with sign. `group_index` proxies parent A.
 - Parent removal → `parents_missing = True`, rendered with
@@ -420,8 +421,8 @@ Fall back to the no-sort format when `group_for_trace` returns None.
   AGC, edit-target selector `[1] [2] … [All]`.
 - **Top-left** (Catalog): loaded + derived datasets. Derived names
   render in blue.
-- **Bottom-left** (Viewport Manager): list of toggle groups with
-  Diff Selection bar at the bottom.
+- **Bottom-left** (Viewport Manager): list of toggle groups; diff
+  is launched per-member via the row's right-click menu.
 - **Right** (Display Canvas): `QTabWidget`, one tab per toggle group.
   Vertical stack per tab: toggle bar / info track / plot / group
   command bar.
@@ -533,7 +534,7 @@ preferences.
 
 ## UX Defaults
 
-Clip percentile 1–99. Default colormap "seismic". Bandpass off
+Clip percentile 1–99. Default colormap "gray". Bandpass off
 (5–80 Hz order 4 when on). AGC off (500 ms when on). Auto-flicker
 2 Hz. Scroll-bar drag throttle 150 ms. Scroll-bar markers blue.
 `groups_per_view=1`, `group_skip=1`. Fit-to-window on open, capped

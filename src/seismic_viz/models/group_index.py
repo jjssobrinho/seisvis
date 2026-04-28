@@ -373,9 +373,13 @@ class GroupIndex:
                 filtered = group_traces[mask]
                 if filtered.size == 0:
                     continue
-                order = np.argsort(sec_arr[filtered], kind="stable")
+                # Stable sort. For desc, sort -values stably so ties keep
+                # their original (asc-natural) order rather than the reversed
+                # order produced by `order[::-1]`.
+                keys = sec_arr[filtered]
                 if secondary.direction == "desc":
-                    order = order[::-1]
+                    keys = -keys
+                order = np.argsort(keys, kind="stable")
                 parts.append(filtered[order])
 
         if not parts:
@@ -497,6 +501,46 @@ class GroupIndex:
         # Position among same-group traces: count matching entries < t.
         ch = int(np.count_nonzero(arr[:t] == gid))
         return gid, ch
+
+    def field_group_for_trace(self, field: str, trace_index: int) -> tuple[int, int] | None:
+        """Return ``(group_id, index_within_group)`` for ``trace_index`` keyed
+        on an arbitrary header *field* (or the ``TRACE_RANGE`` sentinel).
+
+        The mode-based :meth:`group_for_trace` only resolves SHOT / INLINE /
+        CROSSLINE / TRACE_RANGE; this variant supports any populated field
+        the dataset has materialized (e.g. ``TraceNumber`` for channel
+        sorts), which is what the v2.3 SortConfig API needs from the UI.
+        """
+        t = int(trace_index)
+        if t < 0 or t >= self._n_traces:
+            return None
+        if field == TRACE_RANGE_FIELD:
+            size = self._trace_range_size
+            if size <= 0:
+                return None
+            gid = t // size
+            ch = t - gid * size
+            return int(gid), int(ch)
+        arr = self._field_arrays.get(field)
+        if arr is None:
+            return None
+        gid = int(arr[t])
+        ch = int(np.count_nonzero(arr[:t] == gid))
+        return gid, ch
+
+    def primary_groups_for(
+        self, field: str, first: int, count: int, skip: int
+    ) -> list[tuple[int, np.ndarray]]:
+        """Public wrapper around :meth:`_primary_groups`.
+
+        Returns selected ``(group_id, trace_indices)`` pairs in natural order
+        (no direction flip applied). UI layers use this to reason about
+        displayed groups for an arbitrary primary field — the mode-based
+        :attr:`_groups` map only carries the current mode's groups, so it
+        can't answer "what groups would TraceNumber produce" while the
+        index is in SHOT mode.
+        """
+        return self._primary_groups(field, first, count, skip)
 
     def _field_array_for(self, mode: GroupingMode) -> np.ndarray | None:
         name = MODE_TO_DEFAULT_FIELD.get(mode)

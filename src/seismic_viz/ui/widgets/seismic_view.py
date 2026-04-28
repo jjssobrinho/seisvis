@@ -23,9 +23,10 @@ log = logging.getLogger(__name__)
 
 
 # Map the ``sort_config.primary.field`` SEG-Y field name to the
-# ``GroupingMode`` whose labels the info track / crosshair already know how
-# to format. ``TRACE_RANGE`` is mapped separately so callers can distinguish
-# "no sort active" from "sorted by trace range".
+# ``GroupingMode`` whose mode-based readout adds a richer hierarchy
+# (Shot+Channel, IL+XL, XL+IL). Fields without an entry here still drive
+# the info track and crosshair — they just render with a single
+# ``{field} {gid}`` line keyed off the field directly.
 _PRIMARY_FIELD_TO_MODE: dict[str, GroupingMode] = {
     "FieldRecord": GroupingMode.SHOT,
     "INLINE_3D": GroupingMode.INLINE,
@@ -33,17 +34,16 @@ _PRIMARY_FIELD_TO_MODE: dict[str, GroupingMode] = {
 }
 
 
-def _primary_mode(sc: SortConfig) -> GroupingMode | None:
-    """Return the crosshair-facing mode for ``sc.primary.field``.
+def _primary_field(sc: SortConfig) -> str | None:
+    """Return the field driving the info track / crosshair, or ``None``.
 
-    Returns ``None`` when the primary field is ``TRACE_RANGE`` (the
-    no-grouping sort) or when it's an arbitrary field we don't have a
-    mode-based readout for. Callers fall back to the unmoded readout in
-    that case.
+    ``None`` means "no group-aware readout" — either the sort is
+    uncommitted or the primary is the ``TRACE_RANGE`` sentinel (for which
+    the legacy UX shows the bare ``Trace {n}`` readout).
     """
     if sc.primary.field == TRACE_RANGE_FIELD:
         return None
-    return _PRIMARY_FIELD_TO_MODE.get(sc.primary.field)
+    return sc.primary.field
 
 
 class _SeismicViewBox(pg.ViewBox):
@@ -156,6 +156,10 @@ class SeismicView(QWidget):
         view_box.invertY(True)
         view_box.sigRangeChanged.connect(self._on_view_range_changed)
         view_box.sigXRangeChanged.connect(self._on_view_x_range_changed)
+        # Y-range and viewbox-size changes can shift the data area horizontally
+        # (wider y-axis labels push the viewbox right), so re-align labels.
+        view_box.sigYRangeChanged.connect(self._on_view_y_range_changed)
+        view_box.sigResized.connect(self._on_view_box_resized)
 
         crosshair_pen = pg.mkPen((180, 180, 180), width=1)
         self._v_line = pg.InfiniteLine(angle=90, movable=False, pen=crosshair_pen)
@@ -334,6 +338,18 @@ class SeismicView(QWidget):
         for w in self._active_workers:
             if w.member_index == index:
                 w.is_cancelled = True
+        # Drop our sv_changed subscription on the removed dataset — otherwise
+        # later renames on a now-unrelated dataset still trigger info-track
+        # refreshes here, and the bound method leaks for the dataset's life.
+        try:
+            ds = self.group.members[index].dataset
+            if hasattr(ds, "sv_changed"):
+                try:
+                    ds.sv_changed.disconnect(self._on_sv_changed)
+                except (RuntimeError, TypeError):
+                    pass
+        except IndexError:
+            pass
         if 0 <= index < len(self._image_items):
             item = self._image_items.pop(index)
             self.plot_item.removeItem(item)
@@ -553,6 +569,16 @@ class SeismicView(QWidget):
         # (zoom, pan, programmatic setRange).
         self._refresh_info_track_with_x_range((float(x_range[0]), float(x_range[1])))
 
+    def _on_view_y_range_changed(self, _view_box, _y_range) -> None:
+        self._refresh_info_track()
+
+    def _on_view_box_resized(self, _view_box) -> None:
+        self._refresh_info_track()
+
+    def resizeEvent(self, event):  # noqa: D401 - Qt override
+        super().resizeEvent(event)
+        self._refresh_info_track()
+
     def _reset_zoom_to_commanded(self) -> None:
         self.group.reset_zoom()
 
@@ -576,24 +602,65 @@ class SeismicView(QWidget):
         state = self.group.shared_state
         ds = self._active_dataset()
         gi = getattr(ds, "group_index", None) if ds is not None else None
-        mode = _primary_mode(state.sort_config) if state.sort_config.committed else None
-        if mode is None or gi is None:
+        primary_field = _primary_field(state.sort_config) if state.sort_config.committed else None
+        if primary_field is None or gi is None:
             self.info_track.clear()
             return
-        if gi.current_mode != mode and mode in gi.available_modes:
+        # When the primary field corresponds to a legacy mode, point the
+        # group_index at it so cached `_groups` stays in sync — other
+        # call sites (e.g. group_for_trace fallbacks) still go through the
+        # mode-based path and rely on `current_mode`.
+        mode = _PRIMARY_FIELD_TO_MODE.get(primary_field)
+        if mode is not None and gi.current_mode != mode and mode in gi.available_modes:
             try:
                 gi.set_mode(mode)
             except ValueError:
-                self.info_track.clear()
-                return
-        names_fn = (
-            ds.display_name_for_mode
-            if ds is not None and hasattr(ds, "display_name_for_mode")
-            else default_display_names
-        )
-        group_x = self._build_group_x_positions(gi, mode)
+                pass
+        label_prefix = self._field_label_prefix(ds, primary_field, mode)
+        group_x = self._build_group_x_positions(gi, primary_field)
         secondary_text = self._format_secondary_label(ds, state.sort_config)
-        self.info_track.refresh(mode, gi, names_fn, x_range, group_x, secondary_text=secondary_text)
+        viewport_px_range = self._viewport_px_range_for_info_track()
+        self.info_track.refresh(
+            mode,
+            gi,
+            label_prefix=label_prefix,
+            x_range=x_range,
+            group_x_positions=group_x,
+            secondary_text=secondary_text,
+            viewport_px_range=viewport_px_range,
+        )
+
+    def _field_label_prefix(self, ds, primary_field: str, mode: GroupingMode | None) -> str:  # noqa: ANN001
+        """Display prefix to draw above the first numeric label."""
+        if ds is not None:
+            if mode is not None and hasattr(ds, "display_name_for_mode"):
+                return ds.display_name_for_mode(mode)
+            if hasattr(ds, "display_name_for"):
+                return ds.display_name_for(primary_field)
+        if mode is not None:
+            return default_display_names(mode)
+        return primary_field
+
+    def _viewport_px_range_for_info_track(self) -> tuple[int, int] | None:
+        """Return the plot's data-area pixel range expressed in info-track
+        widget x-coordinates.
+
+        The info track and plot widget share the same x-origin and width
+        because they sit in stacked rows that both reserve the same trailing
+        scale-bar spacer. The y-axis label column inside the plot widget,
+        however, pushes the actual ViewBox a few dozen pixels to the right —
+        labels need that offset to align with the trace columns they
+        describe.
+        """
+        vb = self.plot_item.getViewBox()
+        rect = vb.sceneBoundingRect()
+        if rect.isEmpty():
+            return None
+        left = self.plot_widget.mapFromScene(rect.topLeft()).x()
+        right = self.plot_widget.mapFromScene(rect.topRight()).x()
+        if right <= left:
+            return None
+        return int(left), int(right)
 
     def _format_secondary_label(self, ds, sort_config) -> str | None:
         sec = sort_config.secondary
@@ -639,12 +706,9 @@ class SeismicView(QWidget):
             time_range=(s0, s1),
             processing_hash=member.processing_chain.hash(),
         )
-        cached = self._cache.get(key)
-        if cached is not None:
-            self._apply_array(member_index, cached, (t0, t1), (s0, s1), member, show_loading=False)
-            return
-
-        # Cancel any prior in-flight worker for this member.
+        # Cancel any prior in-flight worker for this member before either
+        # serving from cache or dispatching a new worker — otherwise a stale
+        # worker's late `finished` callback would overwrite the fresh frame.
         for w in self._active_workers:
             if w.member_index == member_index:
                 w.is_cancelled = True
@@ -653,6 +717,16 @@ class SeismicView(QWidget):
             for w in self._active_workers
             if not (w.member_index == member_index and w.is_cancelled)
         ]
+
+        cached = self._cache.get(key)
+        if cached is not None:
+            self._apply_array(member_index, cached, (t0, t1), (s0, s1), member, show_loading=False)
+            # Cancelled workers drop their `finished` emission, so
+            # `_prune_finished_workers` never runs to hide the label that the
+            # prior dispatch turned on. Hide it here when nothing is left.
+            if not self._active_workers:
+                self.loading_label.setVisible(False)
+            return
         # Clear the stale image immediately so the old frame (e.g. skip=1 data)
         # doesn't persist alongside newly-updated tick labels until the worker
         # finishes. The loading label replaces it.
@@ -731,18 +805,35 @@ class SeismicView(QWidget):
         )
         self._cache.put(key, array)
         self._apply_array(member_index, array, trace_range, sample_range, member)
-        self._prune_finished_workers()
+        self._prune_finished_workers(finished_member_index=member_index)
 
     def _on_slice_failed(self, group_id: str, member_index: int, message: str) -> None:
         if group_id != self.group.id:
             return
         log.warning("slice failed for group=%s member=%d: %s", group_id, member_index, message)
         self.status_message.emit(f"Slice error: {message}")
-        self._prune_finished_workers()
+        self._prune_finished_workers(finished_member_index=member_index)
 
-    def _prune_finished_workers(self) -> None:
-        self._active_workers = [w for w in self._active_workers if not w.is_cancelled]
-        # If nothing active is left, hide the loading label.
+    def _prune_finished_workers(self, *, finished_member_index: int | None = None) -> None:
+        # Drop any cancelled workers (they've dropped their emission and won't
+        # be heard from), and — if invoked from a finished/failed callback —
+        # also drop the unique non-cancelled worker for that member, which is
+        # the one whose result we just consumed. Without this, a successful
+        # worker stays in _active_workers and the loading label never hides.
+        new_list = []
+        dropped_finished = False
+        for w in self._active_workers:
+            if w.is_cancelled:
+                continue
+            if (
+                finished_member_index is not None
+                and not dropped_finished
+                and w.member_index == finished_member_index
+            ):
+                dropped_finished = True
+                continue
+            new_list.append(w)
+        self._active_workers = new_list
         if not self._active_workers:
             self.loading_label.setVisible(False)
 
@@ -888,40 +979,35 @@ class SeismicView(QWidget):
     def _emit_status_for_cursor(self, trace: int, t_ms: float, amp: float | None) -> None:
         ds = self._active_dataset()
         state = self.group.shared_state
-        mode = _primary_mode(state.sort_config) if state.sort_config.committed else None
+        primary_field = _primary_field(state.sort_config) if state.sort_config.committed else None
         amp_str = f"{amp:.4g}" if amp is not None else "—"
         t_str = f"{t_ms:.2f}"
         readout = f"Trace {trace} | t = {t_str} ms | amp = {amp_str}"
-        if ds is not None and mode is not None:
+        if ds is not None and primary_field is not None:
             gi = getattr(ds, "group_index", None)
             if gi is not None:
                 # In packed multi-group layouts the x-axis starts at the first
                 # physical trace but display columns map to non-contiguous
-                # physical traces.  Translate before calling group_for_trace.
+                # physical traces.  Translate before resolving the group.
                 physical = self._display_x_to_physical_trace(trace)
-                g = gi.group_for_trace(mode, physical)
+                g = gi.field_group_for_trace(primary_field, physical)
                 if g is not None:
                     group_id, ch = g
-                    readout = self._format_mode_readout(
-                        ds, mode, group_id, ch, physical, t_str, amp_str
+                    readout = self._format_field_readout(
+                        ds, primary_field, group_id, ch, physical, t_str, amp_str
                     )
         self.status_message.emit(readout)
 
-    def _format_mode_readout(
+    def _format_field_readout(
         self,
         ds,  # noqa: ANN001 - dataset is a QObject with dynamic attrs
-        mode: GroupingMode,
+        field: str,
         group_id: int,
         ch: int,
         trace: int,
         t_str: str,
         amp_str: str,
     ) -> str:
-        def _mode_name(m: GroupingMode) -> str:
-            if hasattr(ds, "display_name_for_mode"):
-                return ds.display_name_for_mode(m)
-            return default_display_names(m)
-
         def _field_name(f: str) -> str:
             if hasattr(ds, "display_name_for"):
                 return ds.display_name_for(f)
@@ -929,34 +1015,44 @@ class SeismicView(QWidget):
 
             return _DEFAULT_FIELD_NAMES.get(f, f)
 
-        if mode is GroupingMode.SHOT:
-            name = _mode_name(mode)
+        primary_name = _field_name(field)
+        if field == "FieldRecord":
             ch_name = _field_name("TraceNumber")
-            return f"{name} {group_id}, {ch_name} {ch + 1} | t = {t_str} ms | amp = {amp_str}"
-        if mode is GroupingMode.INLINE:
-            xl = ds.crossline_at(trace)
-            il_name = _mode_name(GroupingMode.INLINE)
-            xl_name = _mode_name(GroupingMode.CROSSLINE)
+            return (
+                f"{primary_name} {group_id}, {ch_name} {ch + 1} | t = {t_str} ms | amp = {amp_str}"
+            )
+        if field == "INLINE_3D":
+            xl = ds.crossline_at(trace) if hasattr(ds, "crossline_at") else None
+            xl_name = _field_name("CROSSLINE_3D")
             if xl is not None:
-                return f"{il_name} {group_id}, {xl_name} {xl} | t = {t_str} ms | amp = {amp_str}"
-            return f"{il_name} {group_id} | t = {t_str} ms | amp = {amp_str}"
-        if mode is GroupingMode.CROSSLINE:
-            il = ds.inline_at(trace)
-            xl_name = _mode_name(GroupingMode.CROSSLINE)
-            il_name = _mode_name(GroupingMode.INLINE)
+                return (
+                    f"{primary_name} {group_id}, {xl_name} {xl} | t = {t_str} ms | amp = {amp_str}"
+                )
+            return f"{primary_name} {group_id} | t = {t_str} ms | amp = {amp_str}"
+        if field == "CROSSLINE_3D":
+            il = ds.inline_at(trace) if hasattr(ds, "inline_at") else None
+            il_name = _field_name("INLINE_3D")
             if il is not None:
-                return f"{xl_name} {group_id}, {il_name} {il} | t = {t_str} ms | amp = {amp_str}"
-            return f"{xl_name} {group_id} | t = {t_str} ms | amp = {amp_str}"
-        return f"Trace {trace} | t = {t_str} ms | amp = {amp_str}"
+                return (
+                    f"{primary_name} {group_id}, {il_name} {il} | t = {t_str} ms | amp = {amp_str}"
+                )
+            return f"{primary_name} {group_id} | t = {t_str} ms | amp = {amp_str}"
+        # Generic field: single-line readout keyed off the field's display
+        # name. Covers TraceNumber, CDP, offset, and any other populated
+        # primary the user picks.
+        return f"{primary_name} {group_id} | t = {t_str} ms | amp = {amp_str}"
 
     def _build_group_x_positions(
-        self, gi: GroupIndex | None, mode: GroupingMode | None
+        self, gi: GroupIndex | None, primary_field: str | None
     ) -> GroupXPositions | None:
         """Return display-x positions for each visible group in the packed layout.
 
-        When shots are packed side-by-side, the info-track ticks must use
+        When groups are packed side-by-side, the info-track ticks must use
         packed display coordinates (column offset from commanded_trace_range[0])
-        rather than physical trace positions.
+        rather than physical trace positions. ``primary_field`` may be any
+        populated header field, so we resolve groups via the field-aware
+        :meth:`GroupIndex.primary_groups_for` rather than the mode-bound
+        ``_groups`` cache (which only holds the current mode's groups).
         """
         indices = self._current_trace_indices
         state = self.group.shared_state
@@ -966,23 +1062,24 @@ class SeismicView(QWidget):
             or state.commanded_trace_range is None
             or not state.sort_config.committed
             or gi is None
-            or mode is None
+            or primary_field is None
         ):
             return None
         t0 = state.commanded_trace_range[0]
         primary = state.sort_config.primary
-        displayed_ids = gi.displayed_group_ids(
-            int(primary.first), int(primary.count), int(primary.skip)
+        groups = gi.primary_groups_for(
+            primary_field, int(primary.first), int(primary.count), int(primary.skip)
         )
+        if not groups:
+            return None
         positions: GroupXPositions = {}
-        for gid in displayed_ids:
-            group_arr = gi._groups.get(gid)
-            if group_arr is None or group_arr.size == 0:
+        for gid, group_arr in groups:
+            if group_arr.size == 0:
                 continue
             first_physical = int(group_arr[0])
             col = int(np.searchsorted(indices, first_physical))
             if col < indices.size and indices[col] == first_physical:
-                positions[gid] = t0 + col
+                positions[int(gid)] = t0 + col
         return positions or None
 
     def _display_x_to_physical_trace(self, display_x: float) -> int:

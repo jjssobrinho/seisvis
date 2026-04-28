@@ -349,7 +349,10 @@ class GroupCommandBar(QWidget):
             has_sec = self._draft.secondary is not None
             self._secondary_row.setVisible(has_sec)
             self._add_secondary_btn.setVisible(not has_sec)
+            # Swap is illegal when primary is TRACE_RANGE — secondary cannot
+            # hold the sentinel, so the swap would produce an invalid config.
             self._swap_btn.setVisible(has_sec)
+            self._swap_btn.setEnabled(has_sec and self._draft.primary.field != TRACE_RANGE_FIELD)
             if has_sec:
                 sec_fields = [
                     f for f in fields if f != self._draft.primary.field and f != TRACE_RANGE_FIELD
@@ -689,6 +692,10 @@ class GroupCommandBar(QWidget):
     def _on_swap_clicked(self) -> None:
         sec = self._draft.secondary
         if sec is None:
+            return
+        # Secondary cannot hold the TRACE_RANGE sentinel; the button should
+        # already be disabled in this case, but guard regardless.
+        if self._draft.primary.field == TRACE_RANGE_FIELD:
             return
         gi = self._reference_index()
         new_primary = PrimarySelection(

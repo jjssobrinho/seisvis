@@ -89,9 +89,15 @@ class ScrollBarWithMarkers(QWidget):
         if new_max == self._range_max:
             return
         self._range_max = new_max
+        clamped_value = False
         if self._value > self._range_max:
             self._value = self._range_max
+            clamped_value = True
         self.update()
+        # Notify listeners so bound state (e.g. SortConfig.primary.first)
+        # follows the clamp instead of silently drifting out of sync.
+        if clamped_value:
+            self.value_changed.emit(self._value)
 
     def set_value(self, group_id: int) -> None:
         clamped = max(0, min(self._range_max, int(group_id)))

@@ -8,8 +8,8 @@ import numpy as np
 from PySide6.QtCore import QObject, Signal
 
 if TYPE_CHECKING:
-    from seismic_viz.models.dataset import Dataset
-    from seismic_viz.models.group_index import GroupIndex
+    from seismic_viz.models.dataset import Dataset, FieldSample
+    from seismic_viz.models.group_index import GroupIndex, GroupingMode
 
 
 class ParentMissingError(RuntimeError):
@@ -25,6 +25,11 @@ class DerivedDataset(QObject):
     """
 
     group_index_ready = Signal()
+    # Mirror Dataset's lifecycle signals so subscribers (catalog, info track,
+    # crosshair) can connect uniformly via duck-typing rather than special-
+    # casing DerivedDataset.
+    surange_ready = Signal()
+    sv_changed = Signal()
 
     def __init__(
         self,
@@ -60,12 +65,39 @@ class DerivedDataset(QObject):
 
         # Forward parent A's group_index_ready so downstream widgets update.
         parent_a.group_index_ready.connect(self.group_index_ready)
+        # Forward header-availability + sidecar-rename notifications, gated on
+        # parent_a actually defining them (Dataset always does; this keeps the
+        # model layer testable with duck-typed parents).
+        if hasattr(parent_a, "surange_ready"):
+            parent_a.surange_ready.connect(self.surange_ready)
+        if hasattr(parent_a, "sv_changed"):
+            parent_a.sv_changed.connect(self.sv_changed)
 
     # --- Dataset interface ---
 
     @property
     def group_index(self) -> GroupIndex | None:
         return self.parent_a.group_index
+
+    # The header surface of a derivative is exactly parent_a's: the trace
+    # layout (and therefore the per-trace header values) is inherited from A.
+    # Code paths like ``compatibility._fields_populated_on`` and the header
+    # inspector dialog reach through these directly, so we proxy rather than
+    # re-implement.
+
+    @property
+    def header_fields_available(self) -> dict[str, FieldSample] | None:
+        return self.parent_a.header_fields_available
+
+    @property
+    def sv(self):  # noqa: ANN201 - SVSidecar | None, but kept loose for tests
+        return getattr(self.parent_a, "sv", None)
+
+    def display_name_for(self, field: str) -> str:
+        return self.parent_a.display_name_for(field)
+
+    def display_name_for_mode(self, mode: GroupingMode) -> str:
+        return self.parent_a.display_name_for_mode(mode)
 
     @property
     def is_3d(self) -> bool:

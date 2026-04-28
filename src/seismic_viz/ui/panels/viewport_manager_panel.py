@@ -5,11 +5,9 @@ M5 grows this panel from a flat QTreeWidget into a scrollable stack of
 an ordered list of member rows (Reference radio, name, compatibility
 badge, Remove button, up/down reorder buttons), and a summary line.
 
-M6 adds:
-- Ctrl+left-click on a card header cycles diff_a / diff_b via DiffSelection.
-- A/B badge labels appear on cards that are in the current diff selection.
-- A DiffSelectionBar sits below the scroll area with A/B labels, Swap,
-  Clear, and "Compute A − B" buttons.
+Diff is launched per-member: right-click a member row → "Compute
+Difference…" opens the diff dialog (compatibility-checked before
+the menu is enabled).
 
 Drag-and-drop and button-based reordering both route through
 ``ToggleGroup.move_member`` — the widget is a projection of the model,
@@ -50,17 +48,25 @@ QToolButton {
     color: black;
     background-color: #dcdcdc;
     border: 1px solid #888;
-    padding: 0px 2px;
-    min-width: 14px;
-    max-width: 22px;
+    padding: 0px;
     font-weight: bold;
+    font-size: 11px;
 }
 QToolButton:checked {
     color: black;
     background-color: #ffcc33;
     border: 1px solid #b38600;
+    padding: 0px;
+    font-weight: bold;
+    font-size: 11px;
 }
 """
+
+# Active-member buttons render the same digit at the same metrics in every
+# state (active, selected for diff, plain). We pin the box size so neither
+# the :checked branch nor a parent-frame stylesheet (e.g. the diff-selection
+# highlight) can drift the rendered glyph size.
+_ACTIVE_BUTTON_SIZE = (22, 18)
 
 
 class _MemberRow(QFrame):
@@ -113,6 +119,7 @@ class _MemberRow(QFrame):
         self._active_btn.setAutoRaise(False)
         self._active_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._active_btn.setStyleSheet(_ACTIVE_BUTTON_STYLE)
+        self._active_btn.setFixedSize(*_ACTIVE_BUTTON_SIZE)
         self._active_btn.clicked.connect(self._on_active_clicked)
         self.active_button = self._active_btn
 

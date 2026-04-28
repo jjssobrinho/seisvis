@@ -79,9 +79,14 @@ class RangeTrackWithMarkers(QWidget):
             return
         self._domain_min = lo
         self._domain_max = hi
+        prev_min, prev_max = self._range_min, self._range_max
         self._range_min = max(lo, min(hi, self._range_min))
         self._range_max = max(self._range_min, min(hi, self._range_max))
         self.update()
+        # If the domain shrunk and forced a selection clamp, notify listeners
+        # so the bound SecondarySelection follows instead of silently desyncing.
+        if self._range_min != prev_min or self._range_max != prev_max:
+            self.range_changed.emit(self._range_min, self._range_max)
 
     def set_range(self, range_min: int, range_max: int) -> None:
         """Set the currently-selected range. Clamped to the domain, and

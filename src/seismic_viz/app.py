@@ -110,6 +110,10 @@ class MainWindow(QMainWindow):
         self._pending_loads = 0
         self._scan_cancel_flags: dict[str, dict[str, bool]] = {}
         self._scan_workers: dict[str, HeaderScanWorker] = {}
+        # Track which toggle-group ids we've wired status-bar signals to,
+        # so we don't accumulate duplicate handlers when the active group
+        # is revisited.
+        self._status_wired_groups: set[str] = set()
 
         # Persisted defaults applied to new groups.
         self._last_opened_folder: Path | None = None
@@ -134,8 +138,7 @@ class MainWindow(QMainWindow):
 
         # Wire status-bar updates.
         project.active_toggle_group_changed.connect(self._on_active_group_changed_for_status)
-        project.toggle_group_removed.connect(lambda _: self._update_status_group_info())
-        project.group_index_scan_started = None  # not a signal; updated via dataset callbacks
+        project.toggle_group_removed.connect(self._on_toggle_group_removed_for_status)
 
         self._update_status_group_info()
         log.info("MainWindow created")
@@ -291,13 +294,26 @@ class MainWindow(QMainWindow):
                 self._connect_group_status_signals(group)
 
     def _connect_group_status_signals(self, group: ToggleGroup) -> None:
+        # Idempotent: only wire each group once. Previously every active-group
+        # change re-bound four lambdas, so revisiting a group caused the
+        # status-bar handler to fire N× per event.
+        if group.id in self._status_wired_groups:
+            return
+        self._status_wired_groups.add(group.id)
         for sig in (
             group.active_index_changed,
             group.member_added,
             group.member_removed,
             group.name_changed,
         ):
-            sig.connect(lambda *_: self._update_status_group_info())
+            sig.connect(self._on_group_status_signal)
+
+    def _on_group_status_signal(self, *_: object) -> None:
+        self._update_status_group_info()
+
+    def _on_toggle_group_removed_for_status(self, group_id: str) -> None:
+        self._status_wired_groups.discard(group_id)
+        self._update_status_group_info()
 
     def _update_status_group_info(self) -> None:
         group = self.project.active_toggle_group()
