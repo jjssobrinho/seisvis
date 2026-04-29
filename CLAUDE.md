@@ -28,21 +28,26 @@ data. Current capabilities:
 
 ## Milestones
 
-### Shipped (v0.1.0)
+### Shipped
 
-| #    | Name                                          | Tag              |
-|------|-----------------------------------------------|------------------|
+| #     | Name                                          | Tag              |
+|-------|-----------------------------------------------|------------------|
 | M1–M8 (incl. M4.1, M4.2, M4.3)                         | `m*-done` ✅     |
-| v0.1.0 release                                | `v0.1.0` ✅      |
+| v0.1.0 release                                         | `v0.1.0` ✅      |
+| v2.1  | Header Scanner (inspection only)              | `v21-done` ✅    |
+| v2.2  | Header Mapping + Rename                       | `v22-done` ✅    |
+| v2.3  | Two-Row Sort & Command Bar                    | `v23-done` ✅    |
+| v2.4  | v2 Polish & `.sv` schema cleanup              | `v24-done` ✅    |
+| v0.2.0 release                                         | `v0.2.0` ✅      |
 
-### v0.2.0 roadmap
+### v0.3.0 roadmap
 
-| #    | Name                                          | Tag              |
-|------|-----------------------------------------------|------------------|
-| v2.1 | Header Scanner (inspection only)              | `v21-done`       |
-| v2.2 | Header Mapping + Rename                       | `v22-done`       |
-| v2.3 | Two-Key Sort                                  | `v23-done`       |
-| v2.4 | v2 Polish & Release                           | `v24-done`       |
+| #     | Name                                          | Tag              |
+|-------|-----------------------------------------------|------------------|
+| v3.1  | Row Types Architecture (Value/Range/List)     | `v31-done`       |
+| v3.2  | List Polish (parsing, errors, soft cap)       | `v32-done`       |
+| v3.3  | Validation Tightening                         | `v33-done`       |
+| v3.4  | v0.3.0 Release                                | `v34-done`       |
 
 Milestones are sequential; each in its own session. Finish, commit,
 tag, stop. **Let tests run to completion** before tagging. Check
@@ -170,99 +175,162 @@ toggle group, shared by all members. Members cannot disagree.
 
 The sort configuration is expressed as up to two **key rows** in
 the group command bar — a required primary row and an optional
-secondary row. Each row owns its own **selection control** for
-what to display along that key's axis.
+secondary row. Each row owns a **selection control** that may take
+one of three forms (Value / Range / List), chosen per-row by the
+user. Both rows can independently use any of the three types.
 
 ### Structure
 
 ```
 SortConfig
-  primary     PrimarySelection                # required, never None
-  secondary   Optional[SecondarySelection]    # None when only primary is active
+  primary     RowSelection                    # required, never None
+  secondary   Optional[RowSelection]          # None when only primary is active
   committed   bool                            # True when live; False while editing
 
-PrimarySelection
+RowSelection
   field       str                             # field name; "TRACE_RANGE" is a sentinel
   direction   "asc" | "desc"
+  type        "value" | "range" | "list"
+  value       Optional[ValueParams]           # populated iff type == "value"
+  range_      Optional[RangeParams]           # populated iff type == "range"
+  list_       Optional[ListParams]            # populated iff type == "list"
+
+ValueParams
   first       int                             # first group to display
   count       int                             # how many groups
   skip        int                             # stride between groups
-  # (same semantics as the M4.1 scroll-bar-with-markers; the
-  #  widget for this row is the existing scroll-bar-with-markers.)
 
-SecondarySelection
-  field       str
-  direction   "asc" | "desc"
-  range_min   int                             # lowest secondary key value to include
+RangeParams
+  range_min   int                             # lowest key value to include
   range_max   int                             # highest (inclusive)
-  # (the widget for this row is a dual-handle range track —
-  #  see Secondary Range Widget.)
+
+ListParams
+  group_ids   tuple[int, ...]                 # explicit, possibly non-contiguous
+                                              # (sorted before render per direction)
 ```
+
+`RowSelection` is a frozen dataclass; only one of `value`, `range_`,
+`list_` is non-None depending on `type`. Hashable for cache keying.
+
+### Row types
+
+- **Value**: an arithmetic-progression selection. Widget is the
+  M4.1 scroll-bar-with-markers (First spinbox + scroll bar with blue
+  markers + Count spinbox + Skip spinbox).
+- **Range**: a contiguous bounded selection. Widget is
+  `RangeTrackWithMarkers` (dual-handle track with selected band).
+- **List**: an explicit enumeration. Widget is a text field that
+  parses the list grammar (see List Input Grammar).
+
+### Type translation rules
+
+When the user changes a row's type, the previous selection is
+translated to the new type per this table. Lossless translations
+happen silently; lossy translations produce a status-bar warning
+naming what was lost. Translations *to* List always produce an
+empty list (the user must enter values explicitly).
+
+| From → To       | Behavior                                                   |
+|-----------------|------------------------------------------------------------|
+| Value → Range   | `min=F, max=F+(C-1)*S`. Silent if `S==1`; warn if `S>1`.   |
+| Value → List    | **Empty list.**                                            |
+| Range → Value   | `First=L, Count=H-L+1, Skip=1`. Silent.                    |
+| Range → List    | **Empty list.**                                            |
+| List → Value    | If list is arithmetic progression: silent. Else: convert to closest progression hitting first/last; warn that gaps are lost. |
+| List → Range    | `min=min(list), max=max(list)`. Silent if list was contiguous; warn if gaps existed. |
+| same → same     | Identity, no-op.                                           |
 
 ### Semantics
 
-- **Primary row** selects which groups of the primary key to
-  display, and their order along the x-axis.
+- **Primary row** selects which groups of the primary key to display
+  and their left-to-right order on the x-axis.
 - **Secondary row** selects which values of the secondary key to
-  include within each primary group, and their order within each
-  group's image.
+  include within each primary group and their top-to-bottom order
+  within each group's image.
 - When secondary is `None`: each primary group contains every trace
-  that belongs to it, in the file's natural intra-group order. No
-  secondary selection, no intra-group sort.
-- **Primary direction** flips the order of the selected primary
-  groups across the x-axis. The set of displayed groups does not
-  change — only their left-to-right order.
-- **Secondary direction** flips the order of traces within each
-  primary group (visually flips each group upside-down). The set
-  of displayed channels does not change — only their top-to-bottom
-  order.
-- `committed == False` → display shows the last committed sort (or
-  natural file order if never committed). Editing any row's widgets
-  does not re-render until commit.
+  belonging to it, in natural intra-group file order.
+- **Direction arrow** on a row flips the order — primary's flips
+  group order across x-axis; secondary's flips trace order within
+  each group.
+- `committed == False` → display shows the last committed config
+  (or natural file order if never committed). Widget edits do not
+  re-render until commit.
+- A row whose List is empty produces no traces for that level: a
+  primary-row empty list shows nothing; a secondary-row empty list
+  shows nothing per primary group.
 
 ### Default state on new toggle group
 
-- Primary: `field = "TRACE_RANGE"`, `direction = "asc"`, existing
-  M4.1 defaults for first/count/skip.
+- Primary: `RowSelection(field="TRACE_RANGE", direction="asc",
+  type="value", value=ValueParams(first=0, count=1, skip=1))`.
 - Secondary: None.
 - `committed = False`.
 
-TRACE_RANGE is always the default — consistent across all file
-types. The user explicitly switches to SHOT or another key.
+When the user adds a secondary row via `+`, the default is type
+`Range` covering the full domain (full coverage; no display change
+until the user narrows or flips).
 
-### Compatibility (loose)
+TRACE_RANGE is always the default primary key — consistent across
+all file types. The user explicitly switches to a different key.
 
-- A dataset can be added to a toggle group only if it supports the
-  group's `SortConfig` keys (the keys' fields are populated in the
-  dataset's `header_fields_available`).
-- The **currently configured ranges** must be within each member's
-  supported range. A member with channels 1–96 can participate when
-  the group's secondary range is [20, 100]: it renders partially
-  (channels 20–96) and leaves 97–100 blank for that member.
-- Members within a group share `SortConfig` exactly; the group
-  owns it.
-- `are_toggle_compatible(a, b, sort_config)` checks field
-  availability and range coverage in both datasets.
+### Compatibility (loose, per-row)
+
+- A dataset can be added to a toggle group only if its
+  `header_fields_available` covers each row's key field.
+- For Value-type rows: any group ID range is acceptable; the
+  dataset just renders blank for IDs it doesn't have.
+- For Range-type rows: the configured `[min, max]` should overlap
+  the dataset's coverage of that field. Disjoint ranges fail
+  compatibility.
+- For List-type rows: any list is acceptable; entries the dataset
+  doesn't have render blank for that member.
+- Members within a group share `SortConfig` exactly; the group owns
+  it.
+- `are_toggle_compatible(a, b, sort_config)` checks per-row.
+
+### Invalid input handling (List rows)
+
+While the text field contains an unparseable value:
+
+- The row's *committed* `RowSelection` keeps its last successfully
+  parsed list — display does not update.
+- The text field shows an inline error indicator under the input.
+- Pressing commit refuses if any row's text input is currently
+  unparseable; the status bar reports which row.
 
 ### Diff semantics
 
-- `DerivedDataset` has no sort of its own; it inherits display
+- `DerivedDataset` has no sort of its own; it inherits the display
   config from whichever toggle group it's in.
-- If A's group re-sorts, D (in the same group) re-sorts with it —
-  automatic, via shared `SortConfig`.
-- D opened in a different group takes that group's config.
-- D opened in a *different* group takes that group's sort, same
-  as any other dataset.
+- If A's group re-sorts, D (in the same group) re-sorts with it.
+- D opened in a *different* group takes that group's config.
+
+### List input grammar
+
+Comma-separated entries. Each entry is either an integer or
+`int-int` for an inclusive range. Whitespace permitted. Trailing
+comma allowed. Examples that parse: `1`, `1, 2, 3`, `1-10`,
+`1, 5-7, 12`, `1-3, 7, 10-15`. Duplicates are deduplicated.
+Out-of-domain entries (key values not present in the dataset) are
+kept in the list but render blank for that member — they don't
+fail validation.
+
+### List size cap
+
+- Soft warning at 1,000 entries: status bar shows
+  "displaying 1,000+ groups; performance may degrade".
+- No hard cap in v0.3.0. The widget tolerates any size; the
+  rendering pipeline reads however many group IDs it's given.
 
 ---
 
-## `.sv` Sidecar (v2.2)
+## `.sv` Sidecar
 
-JSON file `<segy_name>.sv` next to the SEG-Y. Minimal in v2:
+JSON file `<segy_name>.sv` next to the SEG-Y:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "segy_path": "shot_line_07.segy",
   "sha1_prefix": "9a3f2b...",
   "mtime": 1738473829.0,
@@ -368,12 +436,19 @@ aligned via `sigXRangeChanged`.
 ### Secondary annotation line
 
 Rendered only when the group's `SortConfig.secondary` is present.
+The annotation format depends on the secondary row's type:
 
-- Small sub-label under each primary label showing the configured
-  secondary range: e.g. `CH 20–100` or `IL 1000–2000`.
-- Uses the secondary field's display name.
-- Same thinning rule as primary — sub-labels are hidden where the
-  primary above is hidden.
+- **Range**: `{name} {min}–{max}` (e.g. `CH 20–100`).
+- **Value**: `{name} {first}…{first+(count-1)*skip}` if Skip=1,
+  else `{name} {first}, {first+skip}, …` truncated to fit
+  (e.g. `CH 1, 5, 9, …`).
+- **List**: comma-separated entries, truncated to fit
+  (e.g. `CH 1, 5, 47` or `CH 1, 5, 47, …` when more entries
+  exist than fit in the label width).
+
+In all cases, uses the secondary field's display name.
+Same thinning rule as primary — sub-labels are hidden where the
+primary above is hidden.
 
 ### Behavior
 
@@ -401,12 +476,11 @@ Fall back to the no-sort format when `group_for_trace` returns None.
 
 ## Derived Datasets (diff)
 
-- Member-level operation: right-click a member row in the Viewport
-  Manager and pick "Compute Difference…" to open the diff dialog,
-  which prompts for the second member.
-- Compatibility check runs first; the menu item is disabled (with
-  a tooltip explaining the mismatch) when the two members aren't
-  compatible.
+- Viewport-level operation: selects two toggle groups from the
+  Viewport Manager and diffs each group's active member's raw
+  dataset.
+- Ctrl+left-click on a toggle group cycles `diff_a` / `diff_b`.
+- "Compute A − B" button at the bottom of the Viewport Manager.
 - `DerivedDataset` lazy; `read_slice` = parent_a.read_slice −
   parent_b.read_slice with sign. `group_index` proxies parent A.
 - Parent removal → `parents_missing = True`, rendered with
@@ -421,8 +495,8 @@ Fall back to the no-sort format when `group_for_trace` returns None.
   AGC, edit-target selector `[1] [2] … [All]`.
 - **Top-left** (Catalog): loaded + derived datasets. Derived names
   render in blue.
-- **Bottom-left** (Viewport Manager): list of toggle groups; diff
-  is launched per-member via the row's right-click menu.
+- **Bottom-left** (Viewport Manager): list of toggle groups with
+  Diff Selection bar at the bottom.
 - **Right** (Display Canvas): `QTabWidget`, one tab per toggle group.
   Vertical stack per tab: toggle bar / info track / plot / group
   command bar.
@@ -434,68 +508,82 @@ Fall back to the no-sort format when `group_for_trace` returns None.
 One per toggle group, at the bottom of the plot. Has two rows of
 sort-key controls plus a commit button and status label.
 
-### Primary row (always present)
+Each row has identical chrome (key dropdown, direction arrow, type
+dropdown) and a type-specific selection widget that swaps based on
+the row's chosen type.
+
+### Row chrome (both rows)
 
 - **Key dropdown**: populated from the active member's
-  `header_fields_available`, plus the TRACE_RANGE sentinel. Uses
-  `display_name_for(field)` for labels.
-- **Direction arrow**: toggles asc/desc for this key.
-- **Scroll-bar-with-markers widget** (the M4.1 widget, unchanged):
-  First spinbox + scroll bar with blue markers + Count spinbox +
-  Skip spinbox.
-- **`+` button**: appears only when no secondary row exists. Adds
-  a secondary row (starts with the first populated non-primary key
-  and full range).
-- **⇅ swap button**: appears only when a secondary row exists.
-  Swaps keys between primary and secondary, preserving each row's
-  range-control **widget model** but resetting secondary selection
-  to full range.
+  `header_fields_available`, plus the `TRACE_RANGE` sentinel for
+  the primary row. Uses `display_name_for(field)` for labels.
+  Secondary row's dropdown excludes the primary's current key and
+  cannot select TRACE_RANGE.
+- **Type dropdown**: `Value` / `Range` / `List`. Sits immediately
+  after the key dropdown (tightly coupled — type is a property of
+  this row's view of this key).
+- **Direction arrow**: `↑` (asc) / `↓` (desc). Toggles direction
+  for this row.
 
-### Secondary row (optional, added via `+`)
+### Type-specific widgets (in a `QStackedWidget`)
 
-- **Key dropdown**: populated the same way as primary, minus the
-  current primary.
-- **Direction arrow**: toggles asc/desc for this key.
-- **Range track widget** (new in v2.3; see Secondary Range Widget):
-  dual-handle selector showing the [min, max] of included values.
-- **`×` button**: removes the secondary row. Primary row stays as
-  is; secondary's state is forgotten.
+- **Value**: the M4.1 scroll-bar-with-markers (First spinbox +
+  scroll bar with blue markers + Count spinbox + Skip spinbox).
+- **Range**: `RangeTrackWithMarkers` (dual-handle track with
+  selected band in M4.1 marker blue).
+- **List**: a text input for the list grammar (see Sort section)
+  with an inline error indicator and a parsed-summary label
+  ("3 entries, 8 groups").
+
+### Primary row buttons
+
+- **`+`**: appears only when no secondary row exists. Adds a
+  secondary row with default key (first populated non-primary
+  field), default type Range, full-range coverage.
+- **`⇅` swap**: appears only when a secondary row exists. Swaps
+  keys and types between primary and secondary; resets secondary
+  selection to full range.
+
+### Secondary row button
+
+- **`×`**: removes the secondary row. Primary row stays as is.
+  Secondary state is forgotten.
 
 ### Unified commit button
 
-- One `★` (committed) / `☆` (uncommitted) button sitting above or
-  beside the key rows. Controls both rows together.
-- Editing any widget in either row does not re-render — it only
-  marks the config uncommitted.
-- Pressing commit validates compatibility across all group members
-  for the new config, dispatches a full scan if any required field
-  isn't populated yet, and re-renders on success. On failure, the
-  status bar shows the reason and the uncommitted state persists.
+- `★` committed / `☆` uncommitted. Sits beside the rows.
+- Editing any widget in either row marks config uncommitted; does
+  not re-render.
+- Press commits both rows together. Validates compatibility across
+  all group members; dispatches a full scan if any required field
+  isn't populated yet; re-renders on success.
+- Refuses commit if any List-type row's text input is currently
+  unparseable; status bar names which row.
 
 ### Status label
 
-- Shows the active configuration succinctly — e.g.
-  `Shot 10/1202 · CH 1–120` when sorting shots primary with all
-  channels, or `(sort uncommitted)` during edits.
+- When committed: succinct config summary, e.g.
+  `Shot 10/1202 · CH 1–120` (Value + Range) or
+  `Shot 5 entries · CH 1, 5, 47` (List + List).
+- When uncommitted: `(sort uncommitted)` in italic.
+- When a List row contains 1,000+ entries: appended note
+  `displaying 1,000+ groups; performance may degrade`.
 
 ---
 
-## Secondary Range Widget
+## RangeTrackWithMarkers Widget
 
-A new widget `RangeTrackWithMarkers` mirrors the M4.1 scroll-bar's
-visual language but represents a contiguous range:
+Mirrors the M4.1 scroll-bar's visual language but represents a
+contiguous range. Used by Range-type rows in either position.
 
-- A horizontal track spanning the secondary key's full extent
-  (from reference member's min to max value of that key).
-- Two draggable handles bounding the [min, max] selection.
-- The selected band between handles renders in the M4.1 marker blue
-  (matching the existing scroll-bar markers so the two widgets feel
-  coherent).
-- Min-handle clamped to not pass max-handle (and vice versa).
-- Keyboard: optional; not required for v2.3.
-
-Initial state when a secondary row is added: min = minimum value
-present, max = maximum value present (full range).
+- Horizontal track spanning the row's key field domain (from the
+  reference member's min to max value of that field).
+- Two draggable handles bounding the `[min, max]` selection.
+- Selected band between handles renders in M4.1 marker blue.
+- Min-handle clamped to not pass max-handle (and vice versa);
+  coalescing allowed (min == max is valid).
+- Initial state when entering Range type via dropdown: min/max
+  reset to full domain.
 
 ---
 
