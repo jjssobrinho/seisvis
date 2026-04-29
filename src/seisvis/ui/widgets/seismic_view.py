@@ -1052,6 +1052,13 @@ class SeismicView(QWidget):
         populated header field, so we resolve groups via the field-aware
         :meth:`GroupIndex.primary_groups_for` rather than the mode-bound
         ``_groups`` cache (which only holds the current mode's groups).
+
+        Column positions are computed by mirroring the order/filter logic of
+        :meth:`GroupIndex._trace_indices_for_sort` and accumulating each
+        group's displayed size — searching for ``group_arr[0]`` in
+        ``_current_trace_indices`` would assume monotonic ascending order,
+        which doesn't hold for primaries like Channel/TraceNumber whose groups
+        interleave physical trace ranges.
         """
         indices = self._current_trace_indices
         state = self.group.shared_state
@@ -1066,19 +1073,32 @@ class SeismicView(QWidget):
             return None
         t0 = state.commanded_trace_range[0]
         primary = state.sort_config.primary
+        secondary = state.sort_config.secondary
         groups = gi.primary_groups_for(
             primary_field, int(primary.first), int(primary.count), int(primary.skip)
         )
         if not groups:
             return None
+        if primary.direction == "desc":
+            groups = list(reversed(groups))
+        sec_arr = gi.field_array(secondary.field) if secondary is not None else None
         positions: GroupXPositions = {}
+        col = 0
         for gid, group_arr in groups:
             if group_arr.size == 0:
                 continue
-            first_physical = int(group_arr[0])
-            col = int(np.searchsorted(indices, first_physical))
-            if col < indices.size and indices[col] == first_physical:
-                positions[int(gid)] = t0 + col
+            if secondary is not None:
+                if sec_arr is None:
+                    continue
+                sec_vals = sec_arr[group_arr]
+                mask = (sec_vals >= secondary.range_min) & (sec_vals <= secondary.range_max)
+                size = int(np.count_nonzero(mask))
+            else:
+                size = int(group_arr.size)
+            if size == 0:
+                continue
+            positions[int(gid)] = t0 + col
+            col += size
         return positions or None
 
     def _display_x_to_physical_trace(self, display_x: float) -> int:
