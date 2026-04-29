@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from seismic_viz.ui.widgets.scroll_bar_with_markers import ScrollBarWithMarkers
+from seisvis.ui.widgets.scroll_bar_with_markers import ScrollBarWithMarkers
 
 
 def main() -> int:

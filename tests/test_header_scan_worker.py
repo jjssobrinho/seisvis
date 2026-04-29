@@ -4,9 +4,9 @@ from pathlib import Path
 
 import numpy as np
 
-from seismic_viz.io.segy_loader import load_segy
-from seismic_viz.models.group_index import GroupingMode
-from seismic_viz.workers.header_scan_worker import HeaderScanWorker
+from seisvis.io.segy_loader import load_segy
+from seisvis.models.group_index import GroupingMode
+from seisvis.workers.header_scan_worker import HeaderScanWorker
 
 
 class _Collector:

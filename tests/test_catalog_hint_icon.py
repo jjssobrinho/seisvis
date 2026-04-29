@@ -13,11 +13,11 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import Qt
 
-from seismic_viz.io.segy_loader import load_segy
-from seismic_viz.io.surange import FieldSample
-from seismic_viz.models.project import Project
-from seismic_viz.models.sv_sidecar import build_sidecar_for
-from seismic_viz.ui.panels.catalog_panel import (
+from seisvis.io.segy_loader import load_segy
+from seisvis.io.surange import FieldSample
+from seisvis.models.project import Project
+from seisvis.models.sv_sidecar import build_sidecar_for
+from seisvis.ui.panels.catalog_panel import (
     GROUP_LOADED,
     CatalogModel,
     _shows_trace_range_hint,

@@ -7,7 +7,7 @@ endpoints, and the coalescence threshold without a Qt event loop.
 
 from __future__ import annotations
 
-from seismic_viz.ui.widgets.scroll_bar_with_markers import (
+from seisvis.ui.widgets.scroll_bar_with_markers import (
     MARKER_COALESCENCE_THRESHOLD,
     compute_marker_pixels,
 )

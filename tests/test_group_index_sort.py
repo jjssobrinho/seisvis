@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from seismic_viz.models.group_index import GroupIndex, GroupingMode
-from seismic_viz.models.sort_config import (
+from seisvis.models.group_index import GroupIndex, GroupingMode
+from seisvis.models.sort_config import (
     TRACE_RANGE_FIELD,
     PrimarySelection,
     SecondarySelection,

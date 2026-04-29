@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from seismic_viz.io.segy_loader import load_segy
+from seisvis.io.segy_loader import load_segy
 
 
 def test_load_3d_metadata(segy_3d: Path) -> None:

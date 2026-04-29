@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from seismic_viz.models.group_index import GroupIndex, GroupingMode, ModeState
+from seisvis.models.group_index import GroupIndex, GroupingMode, ModeState
 
 
 def test_from_metadata_structured_initial_state() -> None:

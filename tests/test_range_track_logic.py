@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from seismic_viz.ui.widgets.range_track_with_markers import (
+from seisvis.ui.widgets.range_track_with_markers import (
     RangeTrackWithMarkers,
     _value_to_x,
     _x_to_value,

@@ -7,8 +7,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from seismic_viz.io.segy_loader import load_segy
-from seismic_viz.models.derived_dataset import DerivedDataset, ParentMissingError
+from seisvis.io.segy_loader import load_segy
+from seisvis.models.derived_dataset import DerivedDataset, ParentMissingError
 
 
 def _make_pair(segy_path: Path) -> tuple:

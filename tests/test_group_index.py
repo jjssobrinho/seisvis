@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 import segyio
 
-from seismic_viz.io.segy_loader import load_segy
-from seismic_viz.models.group_index import GroupIndex, GroupingMode
+from seisvis.io.segy_loader import load_segy
+from seisvis.models.group_index import GroupIndex, GroupingMode
 
 
 def _scan_headers_sync(ds) -> tuple[np.ndarray, np.ndarray, np.ndarray]:  # noqa: ANN001

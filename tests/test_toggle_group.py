@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from seismic_viz.io.segy_loader import load_segy
-from seismic_viz.models.toggle_group import ToggleGroup
+from seisvis.io.segy_loader import load_segy
+from seisvis.models.toggle_group import ToggleGroup
 
 
 @pytest.fixture

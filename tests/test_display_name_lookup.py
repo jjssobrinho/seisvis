@@ -4,9 +4,9 @@ from pathlib import Path
 
 import segyio
 
-from seismic_viz.models.dataset import Dataset
-from seismic_viz.models.group_index import GroupIndex, GroupingMode
-from seismic_viz.models.sv_sidecar import SVSidecar
+from seisvis.models.dataset import Dataset
+from seisvis.models.group_index import GroupIndex, GroupingMode
+from seisvis.models.sv_sidecar import SVSidecar
 
 
 def _make_dataset(tmp_path: Path, sv: SVSidecar | None = None) -> Dataset:
@@ -149,7 +149,7 @@ def test_display_name_for_mode_uses_sv_role_mapping(tmp_path: Path) -> None:
 
 
 def test_persist_sv_emits_signal(tmp_path: Path) -> None:
-    from seismic_viz.models.sv_sidecar import build_sidecar_for
+    from seisvis.models.sv_sidecar import build_sidecar_for
 
     p = tmp_path / "t.sgy"
     from tests.conftest import _make_segy

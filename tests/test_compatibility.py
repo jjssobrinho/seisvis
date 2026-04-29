@@ -5,8 +5,8 @@ from pathlib import Path
 import numpy as np
 import segyio
 
-from seismic_viz.io.segy_loader import load_segy
-from seismic_viz.models.compatibility import are_toggle_compatible
+from seisvis.io.segy_loader import load_segy
+from seisvis.models.compatibility import are_toggle_compatible
 
 
 def _make_segy(

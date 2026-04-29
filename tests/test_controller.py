@@ -10,11 +10,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from seismic_viz.controllers.active_group_controller import ActiveGroupController  # noqa: E402
-from seismic_viz.io.segy_loader import load_segy  # noqa: E402
-from seismic_viz.models.project import Project  # noqa: E402
-from seismic_viz.models.toggle_group import ToggleGroup  # noqa: E402
-from seismic_viz.ui.toolbar.global_toolbar import GlobalToolbar  # noqa: E402
+from seisvis.controllers.active_group_controller import ActiveGroupController  # noqa: E402
+from seisvis.io.segy_loader import load_segy  # noqa: E402
+from seisvis.models.project import Project  # noqa: E402
+from seisvis.models.toggle_group import ToggleGroup  # noqa: E402
+from seisvis.ui.toolbar.global_toolbar import GlobalToolbar  # noqa: E402
 
 
 @pytest.fixture(scope="module")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from seismic_viz.models.sort_config import (
+from seisvis.models.sort_config import (
     TRACE_RANGE_FIELD,
     PrimarySelection,
     SecondarySelection,

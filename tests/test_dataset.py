@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from seismic_viz.io.segy_loader import load_segy
+from seisvis.io.segy_loader import load_segy
 
 
 def _expected(trace_idx: int, s0: int, s1: int) -> np.ndarray:

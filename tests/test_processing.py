@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from seismic_viz.models.processing_chain import ProcessingChain
-from seismic_viz.processing.agc import AGC
-from seismic_viz.processing.filters import Bandpass
-from seismic_viz.processing.gain import ConstantGain
+from seisvis.models.processing_chain import ProcessingChain
+from seisvis.processing.agc import AGC
+from seisvis.processing.filters import Bandpass
+from seisvis.processing.gain import ConstantGain
 
 
 def test_constant_gain_scales_by_decibels() -> None:

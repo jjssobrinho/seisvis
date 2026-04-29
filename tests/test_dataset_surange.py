@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import segyio
 
-from seismic_viz.io.segy_loader import load_segy
+from seisvis.io.segy_loader import load_segy
 
 
 @pytest.fixture

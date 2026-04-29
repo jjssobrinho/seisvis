@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from seismic_viz.models.sv_sidecar import CURRENT_SCHEMA_VERSION, SVSidecar
+from seisvis.models.sv_sidecar import CURRENT_SCHEMA_VERSION, SVSidecar
 
 
 def _v1_payload(segy: Path) -> dict:

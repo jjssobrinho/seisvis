@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from seismic_viz.io.segy_loader import load_segy
-from seismic_viz.models.derived_dataset import DerivedDataset
-from seismic_viz.models.project import Project
-from seismic_viz.services.derivation import IncompatibleDatasetsError, compute_difference
+from seisvis.io.segy_loader import load_segy
+from seisvis.models.derived_dataset import DerivedDataset
+from seisvis.models.project import Project
+from seisvis.services.derivation import IncompatibleDatasetsError, compute_difference
 
 
 def test_compute_difference_creates_derived_dataset(segy_3d: Path) -> None:

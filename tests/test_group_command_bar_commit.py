@@ -6,15 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from seismic_viz.io.segy_loader import load_segy
-from seismic_viz.models.compatibility import CompatResult
-from seismic_viz.models.sort_config import (
+from seisvis.io.segy_loader import load_segy
+from seisvis.models.compatibility import CompatResult
+from seisvis.models.sort_config import (
     TRACE_RANGE_FIELD,
     PrimarySelection,
     SortConfig,
 )
-from seismic_viz.models.toggle_group import ToggleGroup
-from seismic_viz.ui.widgets.group_command_bar import GroupCommandBar
+from seisvis.models.toggle_group import ToggleGroup
+from seisvis.ui.widgets.group_command_bar import GroupCommandBar
 
 
 @pytest.fixture
@@ -48,7 +48,7 @@ def test_commit_failure_pops_modal_and_preserves_draft(
         return 0
 
     monkeypatch.setattr(
-        "seismic_viz.models.compatibility.are_toggle_compatible",
+        "seisvis.models.compatibility.are_toggle_compatible",
         lambda *_a, **_k: CompatResult(ok=False, reason="forced incompat for test"),
     )
     monkeypatch.setattr(
@@ -82,7 +82,7 @@ def test_commit_success_no_modal(two_member_bar, monkeypatch: pytest.MonkeyPatch
         calls.append((title, msg))
 
     monkeypatch.setattr(
-        "seismic_viz.models.compatibility.are_toggle_compatible",
+        "seisvis.models.compatibility.are_toggle_compatible",
         lambda *_a, **_k: CompatResult(ok=True, reason=""),
     )
     monkeypatch.setattr(

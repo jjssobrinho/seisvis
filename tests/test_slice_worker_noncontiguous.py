@@ -14,9 +14,9 @@ from pathlib import Path
 
 import numpy as np
 
-from seismic_viz.io.segy_loader import load_segy
-from seismic_viz.models.processing_chain import ProcessingChain
-from seismic_viz.workers.slice_worker import SliceWorker
+from seisvis.io.segy_loader import load_segy
+from seisvis.models.processing_chain import ProcessingChain
+from seisvis.workers.slice_worker import SliceWorker
 
 # ---------------------------------------------------------------------------
 # helpers

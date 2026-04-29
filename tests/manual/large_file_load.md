@@ -6,7 +6,7 @@ with TRACE_RANGE rendering immediately available. SHOT / INLINE /
 CROSSLINE modes may arrive later as the background header scan
 completes.
 
-Run the app with `uv run python -m seismic_viz`.
+Run the app with `uv run python -m seisvis`.
 
 ## 1. Small file — immediate catalog row + mode unlock
 
@@ -54,7 +54,7 @@ Run the app with `uv run python -m seismic_viz`.
 2. While its scan is still running (status bar shows partial
    percentage), right-click the catalog row → Remove.
 3. **Expected**: the dataset disappears from the catalog. The log
-   (`logs/seismic_viz.log`) contains
+   (`logs/seisvis.log`) contains
    `header scan cancelled for … at N/M`. Resources are released;
    the scan does not continue in the background.
 

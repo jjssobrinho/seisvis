@@ -1,4 +1,4 @@
-# Seismic View
+# SeisVis
 
 Desktop viewer for 2D/3D SEG-Y reflection seismic data.
 
@@ -24,7 +24,7 @@ uv sync
 ## Run
 
 ```bash
-uv run python -m seismic_viz
+uv run python -m seisvis
 ```
 
 ## First steps

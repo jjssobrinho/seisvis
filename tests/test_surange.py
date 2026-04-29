@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import segyio
 
-from seismic_viz.io.surange import scan_populated_fields
+from seisvis.io.surange import scan_populated_fields
 
 
 @pytest.fixture

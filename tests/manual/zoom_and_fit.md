@@ -4,7 +4,7 @@ Prereqs: a SEG-Y file with SHOT mode available (the M4.2 test file works).
 
 ## Setup
 
-1. `uv run -m seismic_viz` — launch the app.
+1. `uv run -m seisvis` — launch the app.
 2. Open the SEG-Y via File → Open. Wait for the header scan to finish
    (catalog shows Shot mode available).
 3. Double-click the dataset to create a toggle group with the file.

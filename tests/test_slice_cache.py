@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from seismic_viz.io.slice_cache import SliceCache, SliceKey
+from seisvis.io.slice_cache import SliceCache, SliceKey
 
 
 def _key(

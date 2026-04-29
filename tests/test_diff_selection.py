@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
-from seismic_viz.models.diff_selection import DiffSelection
-from seismic_viz.models.project import Project
-from seismic_viz.models.toggle_group import ToggleGroup
+from seisvis.models.diff_selection import DiffSelection
+from seisvis.models.project import Project
+from seisvis.models.toggle_group import ToggleGroup
 
 
 def _stub_dataset(name: str = "stub") -> Any:
@@ -120,7 +120,7 @@ def test_clear_noop_when_empty() -> None:
 
 
 def test_resolve_datasets_returns_pair(segy_3d: Path) -> None:
-    from seismic_viz.io.segy_loader import load_segy
+    from seisvis.io.segy_loader import load_segy
 
     project = Project()
     a_ds = load_segy(segy_3d)

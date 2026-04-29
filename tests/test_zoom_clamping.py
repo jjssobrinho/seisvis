@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from seismic_viz.models.toggle_group import ToggleGroup
+from seisvis.models.toggle_group import ToggleGroup
 
 
 @pytest.fixture

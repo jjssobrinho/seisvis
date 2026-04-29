@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from seismic_viz.models.group_index import GroupIndex, GroupingMode, ModeState
+from seisvis.models.group_index import GroupIndex, GroupingMode, ModeState
 
 
 def _scanned_index() -> GroupIndex:

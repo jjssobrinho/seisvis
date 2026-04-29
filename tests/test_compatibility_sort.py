@@ -12,9 +12,9 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from seismic_viz.models.compatibility import are_toggle_compatible
-from seismic_viz.models.group_index import GroupIndex
-from seismic_viz.models.sort_config import (
+from seisvis.models.compatibility import are_toggle_compatible
+from seisvis.models.group_index import GroupIndex
+from seisvis.models.sort_config import (
     TRACE_RANGE_FIELD,
     PrimarySelection,
     SecondarySelection,

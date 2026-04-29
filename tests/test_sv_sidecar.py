@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from seismic_viz.models.sv_sidecar import SVSidecar, build_sidecar_for, compute_sha1_prefix
+from seisvis.models.sv_sidecar import SVSidecar, build_sidecar_for, compute_sha1_prefix
 
 # ---------------------------------------------------------------------------
 # Helpers
