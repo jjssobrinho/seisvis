@@ -5,11 +5,11 @@ viewport without any axis reconfiguration. Incompatible members are still
 allowed to coexist in a toggle group (M5), but switching to one forces the
 canvas to reconfigure its axes and show an "Independent axes" badge.
 
-v2.3 adds an optional ``sort_config`` parameter: when supplied, the check
-additionally verifies that both datasets have the config's required fields
-populated and that each dataset's coverage of the secondary field overlaps
-the configured ``[range_min, range_max]``. Loose compat — partial overlap
-counts as OK; the renderer will simply leave gaps for uncovered values.
+v0.3.0 (per-row): when a ``SortConfig`` is supplied, each row is checked
+independently against both datasets. Field-presence is required on every
+row; ``Range``-typed rows additionally require the configured ``[min, max]``
+to overlap each dataset's coverage of that field. ``Value`` and ``List``
+rows render blank for missing ids — they don't fail compatibility.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import numpy as np
 
 from seisvis.models.dataset import Dataset
 from seisvis.models.group_index import GroupIndex, GroupingMode
-from seisvis.models.sort_config import TRACE_RANGE_FIELD, SortConfig
+from seisvis.models.sort_config import TRACE_RANGE_FIELD, RowSelection, SortConfig
 
 
 @dataclass(frozen=True)
@@ -68,11 +68,14 @@ def _fields_populated_on(ds: Dataset, fields: set[str]) -> set[str]:
     return present
 
 
-def _secondary_coverage_ok(ds: Dataset, field: str, lo: int, hi: int) -> bool:
+def _range_coverage_ok(ds: Dataset, field: str, lo: int, hi: int) -> bool:
     """Return True if *ds* has at least one trace whose *field* value lies in
     ``[lo, hi]``. Unknown fields or empty arrays return False — the caller
-    reports a clearer reason when required.
+    reports a clearer reason when required. ``TRACE_RANGE`` rows always
+    cover the synthetic id space, so they short-circuit to True.
     """
+    if field == TRACE_RANGE_FIELD:
+        return True
     gi = ds.group_index
     if gi is None:
         return False
@@ -80,6 +83,34 @@ def _secondary_coverage_ok(ds: Dataset, field: str, lo: int, hi: int) -> bool:
     if arr is None or arr.size == 0:
         return False
     return bool(np.any((arr >= lo) & (arr <= hi)))
+
+
+def _row_compat(
+    a: Dataset,
+    b: Dataset,
+    row: RowSelection,
+    *,
+    label: str,
+) -> CompatResult:
+    """Per-row compatibility — field presence + (Range only) coverage."""
+    required = {row.field} if row.field else set()
+    for ds, ds_label in ((a, "a"), (b, "b")):
+        if required - _fields_populated_on(ds, required):
+            return CompatResult(
+                False,
+                f"{label} sort field {row.field!r} not populated on {ds.name!r}",
+            )
+        del ds_label
+    if row.type == "range":
+        assert row.range_ is not None
+        lo, hi = row.range_.range_min, row.range_.range_max
+        for ds in (a, b):
+            if not _range_coverage_ok(ds, row.field, lo, hi):
+                return CompatResult(
+                    False,
+                    f"{row.field} range [{lo}, {hi}] does not overlap {ds.name!r}'s values",
+                )
+    return CompatResult(True, "")
 
 
 def are_toggle_compatible(
@@ -132,24 +163,13 @@ def are_toggle_compatible(
             return CompatResult(False, f"group ids differ for mode {mode}")
 
     if sort_config is not None:
-        required = sort_config.required_fields()
-        missing_a = required - _fields_populated_on(a, required)
-        missing_b = required - _fields_populated_on(b, required)
-        if missing_a or missing_b:
-            missing = sorted(missing_a | missing_b)
-            return CompatResult(
-                False,
-                f"required sort field(s) not populated: {', '.join(missing)}",
-            )
-        sec = sort_config.secondary
-        if sec is not None:
-            for ds, label in ((a, "a"), (b, "b")):
-                if not _secondary_coverage_ok(ds, sec.field, sec.range_min, sec.range_max):
-                    return CompatResult(
-                        False,
-                        f"{ds.name!r} has no {sec.field} values in "
-                        f"[{sec.range_min}, {sec.range_max}]",
-                    )
+        primary_result = _row_compat(a, b, sort_config.primary, label="primary")
+        if not primary_result.ok:
+            return primary_result
+        if sort_config.secondary is not None:
+            secondary_result = _row_compat(a, b, sort_config.secondary, label="secondary")
+            if not secondary_result.ok:
+                return secondary_result
 
     return CompatResult(True, "")
 

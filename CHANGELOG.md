@@ -1,5 +1,39 @@
 # Changelog
 
+## [Unreleased] v3.1 — Row Types Architecture
+
+- **Per-row selector type.** Each command-bar row (primary and
+  secondary) now carries a Type dropdown — Value / Range / List —
+  alongside the existing Field and Direction controls. Both rows can
+  independently use any of the three types.
+- **Value** keeps the M4.1 scroll-bar-with-markers (First / Count /
+  Skip), positional over ordered group ids on the primary, value-based
+  arithmetic progression on the secondary.
+- **Range** uses a dual-handle band selector over the field's value
+  domain.
+- **List** uses a text input that parses
+  `"1, 5-7, 12"`-style grammar (deduped, sorted; trailing comma
+  allowed; empty input valid). Out-of-domain entries render blank
+  rather than failing.
+- **Type translation** is lossless when possible and produces a status
+  bar warning when not (e.g. `value→range` with skip>1 warns
+  `skip discarded`; `list→value` over a non-progression warns
+  `list gaps lost`).
+- **Compatibility checks** are now per-row. Range-typed rows still
+  require value-domain overlap on each member; Value/List rows
+  require only field presence (gaps render blank).
+- **Info-track sub-label** renders per type:
+  Range `{name} {min}–{max}`, Value `{name} {first}, {first+skip}, …`,
+  List `{name} a, b, c, …`.
+- **Status label** reflects each row's type
+  (`Shot 1/600` / `CH 1–120` / `CH 3 entries`).
+
+Tests: `test_row_selection.py`, `test_translation.py`,
+`test_get_trace_indices_v3.py`, `test_list_parser_basic.py` cover the
+new surface; existing `test_sort_config.py`,
+`test_compatibility_sort.py`, `test_group_index_sort.py`, and
+`test_group_command_bar_commit.py` are migrated to the new model.
+
 ## [v0.2.0] Header inspection, two-row sort, polish
 
 Consolidated release of the v2.x line. Highlights:

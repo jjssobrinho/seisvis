@@ -1,10 +1,4 @@
-"""Sort-aware compatibility checks.
-
-Uses lightweight stand-in datasets so the tests exercise
-``are_toggle_compatible(a, b, sort_config)`` without needing a SEG-Y file
-on disk. The real `Dataset` class is heavy (segyio handle) and already
-covered by shape-check tests in ``test_compatibility.py``.
-"""
+"""Per-row sort-aware compatibility checks (v3 API)."""
 
 from __future__ import annotations
 
@@ -16,16 +10,14 @@ from seisvis.models.compatibility import are_toggle_compatible
 from seisvis.models.group_index import GroupIndex
 from seisvis.models.sort_config import (
     TRACE_RANGE_FIELD,
-    PrimarySelection,
-    SecondarySelection,
+    ListParams,
+    RowSelection,
     SortConfig,
 )
 
 
 @dataclass
 class _FakeDataset:
-    """Minimal dataset stand-in exposing the attributes compatibility reads."""
-
     n_traces: int
     n_samples: int = 16
     sample_interval_ms: float = 4.0
@@ -34,9 +26,6 @@ class _FakeDataset:
     group_index: GroupIndex | None = None
     header_fields_available: dict[str, object] | None = None
     name: str = "fake"
-
-    # ``are_toggle_compatible`` short-circuits on identity, not equality.
-    # Give each fake its own identity by default.
     _identity: object = field(default_factory=object)
 
 
@@ -55,9 +44,7 @@ def _gi(
 
 def _cfg_trace_range() -> SortConfig:
     return SortConfig(
-        primary=PrimarySelection(
-            field=TRACE_RANGE_FIELD, direction="asc", first=0, count=1, skip=1
-        ),
+        primary=RowSelection.value_default(TRACE_RANGE_FIELD, "asc"),
         secondary=None,
         committed=True,
     )
@@ -65,9 +52,20 @@ def _cfg_trace_range() -> SortConfig:
 
 def _cfg_shot_with_channel_range(lo: int, hi: int) -> SortConfig:
     return SortConfig(
-        primary=PrimarySelection(field="FieldRecord", direction="asc", first=0, count=2, skip=1),
-        secondary=SecondarySelection(
-            field="TraceNumber", direction="asc", range_min=lo, range_max=hi
+        primary=RowSelection.value_default("FieldRecord", "asc", count=2),
+        secondary=RowSelection.range_default("TraceNumber", "asc", domain=(lo, hi)),
+        committed=True,
+    )
+
+
+def _cfg_shot_with_channel_list(ids: tuple[int, ...]) -> SortConfig:
+    return SortConfig(
+        primary=RowSelection.value_default("FieldRecord", "asc", count=2),
+        secondary=RowSelection(
+            field="TraceNumber",
+            direction="asc",
+            type="list",
+            list_=ListParams(group_ids=ids),
         ),
         committed=True,
     )
@@ -82,8 +80,6 @@ def test_trace_range_config_requires_no_fields() -> None:
 
 
 def test_missing_secondary_field_fails() -> None:
-    # Both have FieldRecord so available_modes agree (SHOT is READY on both).
-    # b is missing TraceNumber — the sort config's secondary field.
     fr = np.repeat([10, 20], 3)
     tn = np.tile([1, 2, 3], 2)
     a = _FakeDataset(n_traces=6, group_index=_gi(field_records=fr, trace_numbers=tn))
@@ -103,9 +99,6 @@ def test_secondary_range_fully_covered() -> None:
 
 
 def test_secondary_range_partial_overlap_is_loose_ok() -> None:
-    # a has channels 1..3, b has channels 2..4 — group config asks for
-    # [1, 4]. Both datasets have at least one trace in that range, so loose
-    # compat accepts the pair.
     fr = np.repeat([10, 20], 3)
     tn_a = np.tile([1, 2, 3], 2)
     tn_b = np.tile([2, 3, 4], 2)
@@ -116,7 +109,6 @@ def test_secondary_range_partial_overlap_is_loose_ok() -> None:
 
 
 def test_secondary_range_disjoint_fails() -> None:
-    # b's channel range 10..12 doesn't intersect the group's [1, 3].
     fr = np.repeat([10, 20], 3)
     tn_a = np.tile([1, 2, 3], 2)
     tn_b = np.tile([10, 11, 12], 2)
@@ -130,6 +122,41 @@ def test_secondary_range_disjoint_fails() -> None:
     assert not result.ok
     assert "'B'" in result.reason
     assert "TraceNumber" in result.reason
+
+
+def test_secondary_list_does_not_check_overlap() -> None:
+    """List rows: presence-only. Disjoint values render blank but pass compat."""
+    fr = np.repeat([10, 20], 3)
+    tn_a = np.tile([1, 2, 3], 2)
+    tn_b = np.tile([10, 11, 12], 2)
+    a = _FakeDataset(n_traces=6, group_index=_gi(field_records=fr, trace_numbers=tn_a))
+    b = _FakeDataset(n_traces=6, group_index=_gi(field_records=fr, trace_numbers=tn_b))
+    result = are_toggle_compatible(a, b, _cfg_shot_with_channel_list((100, 200)))
+    assert result.ok, result.reason
+
+
+def test_primary_range_disjoint_fails() -> None:
+    """Range-typed primary on a non-mode field — only the per-row check
+    catches a disjoint value space (the structural mode-based group-id
+    check ignores TraceNumber)."""
+    fr = np.repeat([10, 20], 3)
+    tn_a = np.tile([1, 2, 3], 2)
+    tn_b = np.tile([100, 101, 102], 2)
+    a = _FakeDataset(n_traces=6, group_index=_gi(field_records=fr, trace_numbers=tn_a))
+    b = _FakeDataset(
+        n_traces=6,
+        group_index=_gi(field_records=fr, trace_numbers=tn_b),
+        name="B",
+    )
+    cfg = SortConfig(
+        primary=RowSelection.range_default("TraceNumber", "asc", domain=(1, 5)),
+        secondary=None,
+        committed=True,
+    )
+    result = are_toggle_compatible(a, b, cfg)
+    assert not result.ok
+    assert "TraceNumber" in result.reason
+    assert "'B'" in result.reason
 
 
 def test_shape_mismatch_reports_before_sort_check() -> None:

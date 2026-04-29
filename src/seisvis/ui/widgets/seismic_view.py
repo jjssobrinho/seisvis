@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from seisvis.io.slice_cache import SliceCache, SliceKey
 from seisvis.models.group_index import GroupIndex, GroupingMode
-from seisvis.models.sort_config import TRACE_RANGE_FIELD, SortConfig
+from seisvis.models.sort_config import TRACE_RANGE_FIELD, RowSelection, SortConfig
 from seisvis.models.toggle_group import Member, ToggleGroup
 from seisvis.ui.widgets.group_command_bar import GroupCommandBar
 from seisvis.ui.widgets.info_track import GroupXPositions, InfoTrack, default_display_names
@@ -32,6 +32,66 @@ _PRIMARY_FIELD_TO_MODE: dict[str, GroupingMode] = {
     "INLINE_3D": GroupingMode.INLINE,
     "CROSSLINE_3D": GroupingMode.CROSSLINE,
 }
+
+
+def _count_secondary_matches(
+    sec_arr: np.ndarray, group_arr: np.ndarray, secondary: RowSelection
+) -> int:
+    """Count traces in *group_arr* whose secondary key value satisfies *secondary*."""
+    sec_vals = sec_arr[group_arr]
+    if secondary.type == "range":
+        assert secondary.range_ is not None
+        r = secondary.range_
+        mask = (sec_vals >= r.range_min) & (sec_vals <= r.range_max)
+        return int(np.count_nonzero(mask))
+    if secondary.type == "value":
+        assert secondary.value is not None
+        v = secondary.value
+        wanted = np.fromiter(
+            ((int(v.first) + i * int(v.skip)) for i in range(int(v.count))),
+            dtype=np.int64,
+            count=int(v.count),
+        )
+        return int(np.count_nonzero(np.isin(sec_vals, wanted)))
+    if secondary.type == "list":
+        assert secondary.list_ is not None
+        ids = secondary.list_.group_ids
+        if not ids:
+            return 0
+        wanted = np.fromiter(ids, dtype=np.int64, count=len(ids))
+        return int(np.count_nonzero(np.isin(sec_vals, wanted)))
+    return 0
+
+
+def _format_secondary_text(name: str, secondary: RowSelection) -> str:
+    """Render the info-track sub-label for a secondary row of any type."""
+    if secondary.type == "range":
+        assert secondary.range_ is not None
+        r = secondary.range_
+        return f"{name} {r.range_min}–{r.range_max}"
+    if secondary.type == "value":
+        assert secondary.value is not None
+        v = secondary.value
+        if int(v.skip) == 1:
+            last = int(v.first) + max(0, int(v.count) - 1)
+            return f"{name} {v.first}…{last}"
+        # Show up to four progression entries before truncating.
+        head = [int(v.first) + i * int(v.skip) for i in range(min(4, int(v.count)))]
+        text = ", ".join(str(x) for x in head)
+        if int(v.count) > len(head):
+            text += ", …"
+        return f"{name} {text}"
+    if secondary.type == "list":
+        assert secondary.list_ is not None
+        ids = secondary.list_.group_ids
+        if not ids:
+            return f"{name} (empty)"
+        head = list(ids[:6])
+        text = ", ".join(str(x) for x in head)
+        if len(ids) > len(head):
+            text += ", …"
+        return f"{name} {text}"
+    return name
 
 
 def _primary_field(sc: SortConfig) -> str | None:
@@ -671,7 +731,7 @@ class SeismicView(QWidget):
             if ds is not None and hasattr(ds, "display_name_for")
             else sec.field
         )
-        return f"{name} {sec.range_min}\u2013{sec.range_max}"
+        return _format_secondary_text(name, sec)
 
     # --- Slice requests ---
 
@@ -1074,9 +1134,7 @@ class SeismicView(QWidget):
         t0 = state.commanded_trace_range[0]
         primary = state.sort_config.primary
         secondary = state.sort_config.secondary
-        groups = gi.primary_groups_for(
-            primary_field, int(primary.first), int(primary.count), int(primary.skip)
-        )
+        groups = gi.primary_groups_for(primary)
         if not groups:
             return None
         if primary.direction == "desc":
@@ -1090,9 +1148,7 @@ class SeismicView(QWidget):
             if secondary is not None:
                 if sec_arr is None:
                     continue
-                sec_vals = sec_arr[group_arr]
-                mask = (sec_vals >= secondary.range_min) & (sec_vals <= secondary.range_max)
-                size = int(np.count_nonzero(mask))
+                size = _count_secondary_matches(sec_arr, group_arr, secondary)
             else:
                 size = int(group_arr.size)
             if size == 0:

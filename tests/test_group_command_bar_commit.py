@@ -10,7 +10,7 @@ from seisvis.io.segy_loader import load_segy
 from seisvis.models.compatibility import CompatResult
 from seisvis.models.sort_config import (
     TRACE_RANGE_FIELD,
-    PrimarySelection,
+    RowSelection,
     SortConfig,
 )
 from seisvis.models.toggle_group import ToggleGroup
@@ -34,9 +34,7 @@ def test_commit_failure_pops_modal_and_preserves_draft(
     bar, _ = two_member_bar
 
     bar._draft = SortConfig(
-        primary=PrimarySelection(
-            field=TRACE_RANGE_FIELD, direction="asc", first=0, count=1, skip=1
-        ),
+        primary=RowSelection.value_default(TRACE_RANGE_FIELD, "asc"),
         secondary=None,
         committed=False,
     )
@@ -69,9 +67,7 @@ def test_commit_success_no_modal(two_member_bar, monkeypatch: pytest.MonkeyPatch
     bar, group = two_member_bar
 
     bar._draft = SortConfig(
-        primary=PrimarySelection(
-            field=TRACE_RANGE_FIELD, direction="asc", first=0, count=1, skip=1
-        ),
+        primary=RowSelection.value_default(TRACE_RANGE_FIELD, "asc"),
         secondary=None,
         committed=False,
     )
@@ -95,3 +91,31 @@ def test_commit_success_no_modal(two_member_bar, monkeypatch: pytest.MonkeyPatch
     assert calls == []
     assert bar._draft.committed is True
     assert group.shared_state.sort_config.committed is True
+
+
+def test_commit_refused_when_list_unparseable(
+    two_member_bar, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v0.3.0: a List-typed row with currently-unparseable text input
+    blocks commit and surfaces a status message."""
+    bar, _ = two_member_bar
+
+    bar._draft = SortConfig(
+        primary=RowSelection.value_default(TRACE_RANGE_FIELD, "asc"),
+        secondary=None,
+        committed=False,
+    )
+    bar._primary_list_error = "invalid integer 'abc'"
+
+    statuses: list[str] = []
+    bar.status_message.connect(statuses.append)
+
+    monkeypatch.setattr(
+        "PySide6.QtWidgets.QMessageBox.warning",
+        staticmethod(lambda *_a, **_k: 0),
+    )
+
+    bar._on_commit_clicked()
+
+    assert any("primary list" in s for s in statuses)
+    assert bar._draft.committed is False

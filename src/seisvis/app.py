@@ -26,7 +26,7 @@ from seisvis.controllers.active_group_controller import ActiveGroupController
 from seisvis.io.slice_cache import SliceCache
 from seisvis.models.dataset import Dataset
 from seisvis.models.project import Project
-from seisvis.models.sort_config import PrimarySelection, SortConfig
+from seisvis.models.sort_config import RowSelection, SortConfig
 from seisvis.models.toggle_group import ToggleGroup
 from seisvis.ui.dialogs.dataset_properties_dialog import DatasetPropertiesDialog
 from seisvis.ui.panels.catalog_panel import CatalogPanel
@@ -491,17 +491,22 @@ class MainWindow(QMainWindow):
         # until the user explicitly commits a sort.
         if self._default_groups_per_view != 1 or self._default_group_skip != 1:
             sc = group.shared_state.sort_config
-            group.shared_state.sort_config = SortConfig(
-                primary=PrimarySelection(
-                    field=sc.primary.field,
-                    direction=sc.primary.direction,
-                    first=sc.primary.first,
+            primary = sc.primary
+            # Only Value-typed primaries carry count/skip; the default config
+            # is always Value over TRACE_RANGE so this branch lands there.
+            if primary.type == "value" and primary.value is not None:
+                new_primary = RowSelection.value_default(
+                    primary.field,
+                    primary.direction,
+                    first=primary.value.first,
                     count=int(self._default_groups_per_view),
                     skip=int(self._default_group_skip),
-                ),
-                secondary=sc.secondary,
-                committed=sc.committed,
-            )
+                )
+                group.shared_state.sort_config = SortConfig(
+                    primary=new_primary,
+                    secondary=sc.secondary,
+                    committed=sc.committed,
+                )
         self.project.add_toggle_group(group)
         return group
 

@@ -6,7 +6,7 @@ from typing import overload
 
 import numpy as np
 
-from seisvis.models.sort_config import TRACE_RANGE_FIELD, SortConfig
+from seisvis.models.sort_config import TRACE_RANGE_FIELD, RowSelection, SortConfig
 
 log = logging.getLogger(__name__)
 
@@ -353,11 +353,10 @@ class GroupIndex:
         if cached is not None:
             return cached
         primary = config.primary
-        # Step 1: resolve the sequence of primary groups (by positional first/
-        # count/skip), reversing if direction is desc.
-        primary_groups = self._primary_groups(
-            primary.field, primary.first, primary.count, primary.skip
-        )
+        # Step 1: resolve the sequence of primary groups for the row's type
+        # (positional Value vs. value-based Range/List), reversing if
+        # direction is desc.
+        primary_groups = self._resolve_primary_groups(primary)
         if primary.direction == "desc":
             primary_groups = list(reversed(primary_groups))
 
@@ -366,28 +365,7 @@ class GroupIndex:
         if secondary is None:
             parts = [arr for _, arr in primary_groups if arr.size]
         else:
-            sec_arr = self._field_arrays.get(secondary.field)
-            parts = []
-            for _, group_traces in primary_groups:
-                if group_traces.size == 0:
-                    continue
-                if sec_arr is None:
-                    # Secondary field missing on this dataset — render nothing
-                    # for this primary group (loose compat: member renders blank).
-                    continue
-                sec_vals = sec_arr[group_traces]
-                mask = (sec_vals >= secondary.range_min) & (sec_vals <= secondary.range_max)
-                filtered = group_traces[mask]
-                if filtered.size == 0:
-                    continue
-                # Stable sort. For desc, sort -values stably so ties keep
-                # their original (asc-natural) order rather than the reversed
-                # order produced by `order[::-1]`.
-                keys = sec_arr[filtered]
-                if secondary.direction == "desc":
-                    keys = -keys
-                order = np.argsort(keys, kind="stable")
-                parts.append(filtered[order])
+            parts = self._apply_secondary(primary_groups, secondary)
 
         if not parts:
             result = np.empty(0, dtype=np.int64)
@@ -396,33 +374,113 @@ class GroupIndex:
         self._sort_cache[config] = result
         return result
 
-    def _primary_groups(
-        self, field: str, first: int, count: int, skip: int
-    ) -> list[tuple[int, np.ndarray]]:
-        """Return a list of ``(group_id, trace_indices)`` in natural order for
-        the configured primary field, before applying primary direction.
+    def _resolve_primary_groups(self, row: RowSelection) -> list[tuple[int, np.ndarray]]:
+        """Return ``(group_id, trace_indices)`` pairs for *row* in natural order
+        (before direction is applied).
 
-        Uses the mode-based ``_groups`` map when *field* matches the current
-        mode; otherwise computes groups on the fly from ``_field_arrays``.
-        For ``TRACE_RANGE`` the group membership is arithmetic over
-        ``_trace_range_size``.
+        - ``value`` rows use M4.1 positional first/count/skip over ``ordered_ids``.
+        - ``range`` rows return all groups whose id lies in ``[min, max]``.
+        - ``list`` rows return groups whose id appears in the list.
         """
+        field = row.field
         if field == TRACE_RANGE_FIELD:
             groups, ordered_ids = self._build_trace_range(self._trace_range_size)
         else:
             groups, ordered_ids = self._groups_for_field(field)
             if not ordered_ids:
                 return []
+        if row.type == "value":
+            assert row.value is not None
+            return self._select_by_position(groups, ordered_ids, row.value)
+        if row.type == "range":
+            assert row.range_ is not None
+            lo, hi = row.range_.range_min, row.range_.range_max
+            return [(gid, groups[gid]) for gid in ordered_ids if lo <= gid <= hi]
+        if row.type == "list":
+            assert row.list_ is not None
+            wanted = sorted({int(g) for g in row.list_.group_ids})
+            return [(gid, groups[gid]) for gid in wanted if gid in groups]
+        raise ValueError(f"unknown row type {row.type!r}")
+
+    def _select_by_position(
+        self,
+        groups: dict[int, np.ndarray],
+        ordered_ids: list[int],
+        v,  # ValueParams (kept loose to avoid a circular import-time annotation)
+    ) -> list[tuple[int, np.ndarray]]:
         if not ordered_ids:
             return []
         selected: list[tuple[int, np.ndarray]] = []
         n = len(ordered_ids)
-        for i in range(int(count)):
-            pos = int(first) + i * int(skip)
+        for i in range(int(v.count)):
+            pos = int(v.first) + i * int(v.skip)
             if 0 <= pos < n:
                 gid = ordered_ids[pos]
                 selected.append((gid, groups[gid]))
         return selected
+
+    def _apply_secondary(
+        self,
+        primary_groups: list[tuple[int, np.ndarray]],
+        secondary: RowSelection,
+    ) -> list[np.ndarray]:
+        """Filter and order traces within each primary group by *secondary*.
+
+        Returns a list of arrays — one per surviving primary group — already
+        sorted by the secondary direction. An empty list collapses to no
+        output for that primary group (loose compat: members without the
+        secondary field render blank).
+        """
+        sec_arr = self._field_arrays.get(secondary.field)
+        if sec_arr is None:
+            return []
+        wanted_set = self._secondary_wanted_set(secondary)
+        # ``range``-type secondary uses (lo, hi); the mask is computed on the
+        # fly to avoid materializing a possibly enormous integer set.
+        range_bounds: tuple[int, int] | None = None
+        if secondary.type == "range":
+            assert secondary.range_ is not None
+            range_bounds = (secondary.range_.range_min, secondary.range_.range_max)
+
+        parts: list[np.ndarray] = []
+        for _, group_traces in primary_groups:
+            if group_traces.size == 0:
+                continue
+            sec_vals = sec_arr[group_traces]
+            if range_bounds is not None:
+                lo, hi = range_bounds
+                mask = (sec_vals >= lo) & (sec_vals <= hi)
+            elif wanted_set is None:
+                continue
+            elif len(wanted_set) == 0:
+                continue
+            else:
+                mask = np.isin(sec_vals, np.fromiter(wanted_set, dtype=np.int64))
+            filtered = group_traces[mask]
+            if filtered.size == 0:
+                continue
+            # Stable sort. For desc, sort -values stably so ties keep
+            # their original (asc-natural) order rather than the reversed
+            # order produced by `order[::-1]`.
+            keys = sec_arr[filtered]
+            if secondary.direction == "desc":
+                keys = -keys
+            order = np.argsort(keys, kind="stable")
+            parts.append(filtered[order])
+        return parts
+
+    @staticmethod
+    def _secondary_wanted_set(row: RowSelection) -> set[int] | None:
+        """Concrete set of secondary values to include, or ``None`` for range
+        (which uses bounds, not a materialized set)."""
+        if row.type == "value":
+            assert row.value is not None
+            v = row.value
+            return {int(v.first) + i * int(v.skip) for i in range(int(v.count))}
+        if row.type == "list":
+            assert row.list_ is not None
+            return {int(g) for g in row.list_.group_ids}
+        return None
 
     def _groups_for_field(self, field: str) -> tuple[dict[int, np.ndarray], list[int]]:
         """Memoized per-field grouping. _group_by is the slowest call on
@@ -548,10 +606,8 @@ class GroupIndex:
         ch = int(np.count_nonzero(arr[:t] == gid))
         return gid, ch
 
-    def primary_groups_for(
-        self, field: str, first: int, count: int, skip: int
-    ) -> list[tuple[int, np.ndarray]]:
-        """Public wrapper around :meth:`_primary_groups`.
+    def primary_groups_for(self, row: RowSelection) -> list[tuple[int, np.ndarray]]:
+        """Public wrapper around :meth:`_resolve_primary_groups`.
 
         Returns selected ``(group_id, trace_indices)`` pairs in natural order
         (no direction flip applied). UI layers use this to reason about
@@ -560,7 +616,7 @@ class GroupIndex:
         can't answer "what groups would TraceNumber produce" while the
         index is in SHOT mode.
         """
-        return self._primary_groups(field, first, count, skip)
+        return self._resolve_primary_groups(row)
 
     def _field_array_for(self, mode: GroupingMode) -> np.ndarray | None:
         name = MODE_TO_DEFAULT_FIELD.get(mode)

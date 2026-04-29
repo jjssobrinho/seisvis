@@ -1,48 +1,59 @@
-"""v2.3 two-row group command bar.
+"""v0.3.0 two-row group command bar with per-row selector types.
 
-Replaces the v2.2 single mode dropdown with:
+Each row contains:
 
-- **Primary row** (always present): field dropdown, direction arrow, the
-  existing :class:`ScrollBarWithMarkers` block (First / handle / Count /
-  Skip), and a ``+`` / ``⇅`` button that either adds or swaps with the
-  secondary row.
-- **Secondary row** (optional): field dropdown, direction arrow, a
-  :class:`RangeTrackWithMarkers`, and a ``×`` remove button.
-- A single ``★`` (committed) / ``☆`` (uncommitted) button on the right
-  commits both rows together.
-- Status label below.
+- Field dropdown (key).
+- Type dropdown (Value / Range / List).
+- Direction arrow (↑ asc / ↓ desc).
+- A type-specific selector inside a :class:`QStackedWidget`:
+  * Value: the M4.1 scroll-bar-with-markers (First / handle / Count / Skip).
+  * Range: a :class:`RangeTrackWithMarkers` dual-handle band selector.
+  * List:  a :class:`QLineEdit` that accepts ``"1, 5-7, 12"`` style
+    grammar; a parsed-summary label sits below the input.
+
+A ``★`` commit button sits beside the rows and a status label below.
 
 Edit semantics:
 
-- Scroll-bar / First / Count / Skip changes auto-commit ``primary.first``,
-  ``primary.count``, ``primary.skip`` so navigation feels direct.
-- Field dropdowns, direction arrows, secondary range track, and the
-  ``+``/``⇅``/``×`` structural buttons stage into a local *draft*
-  :class:`SortConfig` and flip ``committed=False``. The draft applies only
-  when the user clicks ``★``.
+- Switching the type dropdown calls
+  :meth:`RowSelection.translate_to` and surfaces any returned warning on
+  the status bar; the draft stays uncommitted regardless.
+- Value-page navigation (scroll-bar / First / Count / Skip) on the
+  *primary* row auto-commits so the M4.1 step-through UX still feels
+  direct. Every other widget change marks the draft uncommitted; the
+  user must press ``★`` to render.
+- Commit is refused while any List-typed row's text input is currently
+  unparseable.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QSpinBox,
+    QStackedWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from seisvis.models.group_index import GroupIndex, GroupingMode
+from seisvis.models.list_parser import parse_list
 from seisvis.models.sort_config import (
     TRACE_RANGE_FIELD,
-    PrimarySelection,
-    SecondarySelection,
+    ListParams,
+    RangeParams,
+    RowSelection,
+    RowType,
     SortConfig,
+    ValueParams,
 )
 from seisvis.models.toggle_group import ToggleGroup
 from seisvis.ui.widgets.range_track_with_markers import RangeTrackWithMarkers
@@ -66,14 +77,48 @@ _BASE_FIELDS: tuple[str, ...] = (
 )
 
 # Map a field name to the GroupingMode the dataset can natively group by.
-# When the primary field matches one of these, the dataset's group_index
-# provides a ready-to-render mode; otherwise primary selections over a
-# non-mode field run through the SortConfig path in GroupIndex.
 _FIELD_TO_MODE: dict[str, GroupingMode] = {
     "FieldRecord": GroupingMode.SHOT,
     "INLINE_3D": GroupingMode.INLINE,
     "CROSSLINE_3D": GroupingMode.CROSSLINE,
 }
+
+# Order in which the type dropdown lists row types.
+_TYPE_ITEMS: tuple[tuple[str, RowType], ...] = (
+    ("Value", "value"),
+    ("Range", "range"),
+    ("List", "list"),
+)
+
+
+@dataclass
+class _RowWidgets:
+    """Bundled handles for the widgets making up a single row.
+
+    Keeping these in one struct makes the per-row sync routines compact
+    without forcing a full Qt subclass per row.
+    """
+
+    container: QWidget
+    field_combo: QComboBox
+    type_combo: QComboBox
+    dir_btn: QToolButton
+    selector_stack: QStackedWidget
+    # Value page widgets:
+    first_spin: QSpinBox
+    scroll_bar: ScrollBarWithMarkers
+    count_spin: QSpinBox
+    skip_spin: QSpinBox
+    # Range page widgets:
+    range_track: RangeTrackWithMarkers
+    range_label: QLabel
+    # List page widgets:
+    list_edit: QLineEdit
+    list_summary: QLabel
+    # Page indices into selector_stack:
+    value_page: int
+    range_page: int
+    list_page: int
 
 
 class GroupCommandBar(QWidget):
@@ -87,42 +132,21 @@ class GroupCommandBar(QWidget):
         self._rebuilding = False
         self._dragging = False
         self._subscribed_dataset = None
-        # Staged (uncommitted) config; flushed to the group on ★ click.
         self._draft: SortConfig = group.shared_state.sort_config
 
-        # --- primary row widgets ---
-        self._primary_field_combo = QComboBox(self)
-        self._primary_dir_btn = self._make_tool_btn("↑", tooltip="Primary direction")
-        self._primary_dir_btn.setCheckable(True)
-        self._first_spin = QSpinBox(self)
-        self._first_spin.setMinimum(1)
-        self._first_spin.setMaximum(1)
-        self._scroll_bar = ScrollBarWithMarkers(self)
-        self._count_spin = QSpinBox(self)
-        self._count_spin.setRange(1, 100000)
-        self._count_spin.setValue(1)
-        self._skip_spin = QSpinBox(self)
-        self._skip_spin.setRange(1, 100000)
-        self._skip_spin.setValue(1)
+        # Per-row latest text-input state (parse errors keep the draft's
+        # last good ListParams; we surface a warning on commit if needed).
+        self._primary_list_error: str | None = None
+        self._secondary_list_error: str | None = None
+
+        # Build the two row panels and the structural buttons / commit / status.
+        self._primary = self._build_row("Primary:")
+        self._secondary = self._build_row("Secondary:")
+
         self._add_secondary_btn = self._make_tool_btn("+", tooltip="Add secondary key")
         self._swap_btn = self._make_tool_btn("⇅", tooltip="Swap primary and secondary")
-
-        # --- secondary row widgets (hidden by default) ---
-        self._secondary_row = QWidget(self)
-        self._secondary_field_combo = QComboBox(self._secondary_row)
-        self._secondary_dir_btn = self._make_tool_btn(
-            "↑", tooltip="Secondary direction", parent=self._secondary_row
-        )
-        self._secondary_dir_btn.setCheckable(True)
-        self._range_track = RangeTrackWithMarkers(self._secondary_row)
-        self._range_label = QLabel("—", self._secondary_row)
-        self._remove_secondary_btn = self._make_tool_btn(
-            "×", tooltip="Remove secondary key", parent=self._secondary_row
-        )
-
-        # --- commit button + status ---
+        self._remove_secondary_btn = self._make_tool_btn("×", tooltip="Remove secondary key")
         self._commit_btn = self._make_tool_btn("☆", tooltip="Commit sort")
-        self._commit_btn.setCheckable(False)
         self._status_label = QLabel("—", self)
 
         self._throttle_timer = QTimer(self)
@@ -152,45 +176,119 @@ class GroupCommandBar(QWidget):
         btn.setFocusPolicy(btn.focusPolicy().NoFocus)
         return btn
 
+    def _build_row(self, label_text: str) -> _RowWidgets:
+        container = QWidget(self)
+        field_combo = QComboBox(container)
+        type_combo = QComboBox(container)
+        for label, _ in _TYPE_ITEMS:
+            type_combo.addItem(label)
+        dir_btn = self._make_tool_btn("↑", tooltip="Direction", parent=container)
+        dir_btn.setCheckable(True)
+
+        selector_stack = QStackedWidget(container)
+
+        # Value page: First spin + scroll bar + Count spin + Skip spin.
+        value_page = QWidget(selector_stack)
+        first_spin = QSpinBox(value_page)
+        first_spin.setMinimum(1)
+        first_spin.setMaximum(1)
+        scroll_bar = ScrollBarWithMarkers(value_page)
+        count_spin = QSpinBox(value_page)
+        count_spin.setRange(1, 100000)
+        count_spin.setValue(1)
+        skip_spin = QSpinBox(value_page)
+        skip_spin.setRange(1, 100000)
+        skip_spin.setValue(1)
+        v_layout = QHBoxLayout(value_page)
+        v_layout.setContentsMargins(0, 0, 0, 0)
+        v_layout.setSpacing(6)
+        v_layout.addWidget(QLabel("First:", value_page))
+        v_layout.addWidget(first_spin)
+        v_layout.addWidget(scroll_bar, stretch=1)
+        v_layout.addWidget(QLabel("Count:", value_page))
+        v_layout.addWidget(count_spin)
+        v_layout.addWidget(QLabel("Skip:", value_page))
+        v_layout.addWidget(skip_spin)
+
+        # Range page: dual-handle track + min–max readout.
+        range_page = QWidget(selector_stack)
+        range_track = RangeTrackWithMarkers(range_page)
+        range_label = QLabel("—", range_page)
+        r_layout = QHBoxLayout(range_page)
+        r_layout.setContentsMargins(0, 0, 0, 0)
+        r_layout.setSpacing(6)
+        r_layout.addWidget(range_track, stretch=1)
+        r_layout.addWidget(range_label)
+
+        # List page: text input + parsed-summary label.
+        list_page = QWidget(selector_stack)
+        list_edit = QLineEdit(list_page)
+        list_edit.setPlaceholderText("e.g. 1-10, 15, 20-30")
+        list_summary = QLabel("—", list_page)
+        l_layout = QHBoxLayout(list_page)
+        l_layout.setContentsMargins(0, 0, 0, 0)
+        l_layout.setSpacing(6)
+        l_layout.addWidget(list_edit, stretch=1)
+        l_layout.addWidget(list_summary)
+
+        v_idx = selector_stack.addWidget(value_page)
+        r_idx = selector_stack.addWidget(range_page)
+        l_idx = selector_stack.addWidget(list_page)
+
+        row_layout = QHBoxLayout(container)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+        row_layout.addWidget(QLabel(label_text, container))
+        row_layout.addWidget(field_combo)
+        row_layout.addWidget(type_combo)
+        row_layout.addWidget(dir_btn)
+        row_layout.addWidget(selector_stack, stretch=1)
+
+        return _RowWidgets(
+            container=container,
+            field_combo=field_combo,
+            type_combo=type_combo,
+            dir_btn=dir_btn,
+            selector_stack=selector_stack,
+            first_spin=first_spin,
+            scroll_bar=scroll_bar,
+            count_spin=count_spin,
+            skip_spin=skip_spin,
+            range_track=range_track,
+            range_label=range_label,
+            list_edit=list_edit,
+            list_summary=list_summary,
+            value_page=v_idx,
+            range_page=r_idx,
+            list_page=l_idx,
+        )
+
     def _build_layout(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(6, 4, 6, 4)
         root.setSpacing(2)
 
-        # Row 1: primary controls + commit on the far right.
-        primary_row = QHBoxLayout()
-        primary_row.setContentsMargins(0, 0, 0, 0)
-        primary_row.setSpacing(6)
-        primary_row.addWidget(QLabel("Primary:", self))
-        primary_row.addWidget(self._primary_field_combo)
-        primary_row.addWidget(self._primary_dir_btn)
-        primary_row.addSpacing(4)
-        primary_row.addWidget(QLabel("First:", self))
-        primary_row.addWidget(self._first_spin)
-        primary_row.addWidget(self._scroll_bar, stretch=1)
-        primary_row.addWidget(QLabel("Count:", self))
-        primary_row.addWidget(self._count_spin)
-        primary_row.addWidget(QLabel("Skip:", self))
-        primary_row.addWidget(self._skip_spin)
-        primary_row.addSpacing(4)
-        primary_row.addWidget(self._add_secondary_btn)
-        primary_row.addWidget(self._swap_btn)
-        primary_row.addSpacing(8)
-        primary_row.addWidget(self._commit_btn)
-        root.addLayout(primary_row)
+        # Row 1: primary + structural / commit buttons.
+        primary_outer = QHBoxLayout()
+        primary_outer.setContentsMargins(0, 0, 0, 0)
+        primary_outer.setSpacing(6)
+        primary_outer.addWidget(self._primary.container, stretch=1)
+        primary_outer.addWidget(self._add_secondary_btn)
+        primary_outer.addWidget(self._swap_btn)
+        primary_outer.addSpacing(8)
+        primary_outer.addWidget(self._commit_btn)
+        root.addLayout(primary_outer)
 
-        # Row 2: secondary controls. Hidden unless secondary is present.
-        sec_layout = QHBoxLayout(self._secondary_row)
-        sec_layout.setContentsMargins(0, 0, 0, 0)
-        sec_layout.setSpacing(6)
-        sec_layout.addWidget(QLabel("Secondary:", self._secondary_row))
-        sec_layout.addWidget(self._secondary_field_combo)
-        sec_layout.addWidget(self._secondary_dir_btn)
-        sec_layout.addWidget(self._range_track, stretch=1)
-        sec_layout.addWidget(self._range_label)
-        sec_layout.addWidget(self._remove_secondary_btn)
-        root.addWidget(self._secondary_row)
-        self._secondary_row.setVisible(False)
+        # Row 2: secondary + remove button.
+        secondary_outer = QHBoxLayout()
+        secondary_outer.setContentsMargins(0, 0, 0, 0)
+        secondary_outer.setSpacing(6)
+        secondary_outer.addWidget(self._secondary.container, stretch=1)
+        secondary_outer.addWidget(self._remove_secondary_btn)
+        secondary_holder = QWidget(self)
+        secondary_holder.setLayout(secondary_outer)
+        self._secondary_holder = secondary_holder
+        root.addWidget(secondary_holder)
 
         # Row 3: status label.
         status_row = QHBoxLayout()
@@ -200,22 +298,68 @@ class GroupCommandBar(QWidget):
         root.addLayout(status_row)
 
     def _wire_signals(self) -> None:
-        self._primary_field_combo.currentIndexChanged.connect(self._on_primary_field_changed)
-        self._primary_dir_btn.toggled.connect(self._on_primary_dir_toggled)
-        self._first_spin.valueChanged.connect(self._on_first_spin_changed)
-        self._count_spin.valueChanged.connect(self._on_count_changed)
-        self._skip_spin.valueChanged.connect(self._on_skip_changed)
-        self._scroll_bar.value_changed.connect(self._on_scroll_value_changed)
-        self._scroll_bar.drag_started.connect(self._on_drag_started)
-        self._scroll_bar.drag_released.connect(self._on_drag_released)
+        # Primary row:
+        p = self._primary
+        p.field_combo.currentIndexChanged.connect(
+            lambda _i: self._on_field_changed(is_primary=True)
+        )
+        p.type_combo.currentIndexChanged.connect(lambda _i: self._on_type_changed(is_primary=True))
+        p.dir_btn.toggled.connect(
+            lambda checked: self._on_dir_toggled(is_primary=True, checked=checked)
+        )
+        p.first_spin.valueChanged.connect(
+            lambda v: self._on_value_first_changed(is_primary=True, value=int(v))
+        )
+        p.count_spin.valueChanged.connect(
+            lambda v: self._on_value_count_changed(is_primary=True, value=int(v))
+        )
+        p.skip_spin.valueChanged.connect(
+            lambda v: self._on_value_skip_changed(is_primary=True, value=int(v))
+        )
+        p.scroll_bar.value_changed.connect(
+            lambda v: self._on_scroll_value_changed(is_primary=True, value=int(v))
+        )
+        p.scroll_bar.drag_started.connect(self._on_drag_started)
+        p.scroll_bar.drag_released.connect(self._on_drag_released)
+        p.range_track.range_changed.connect(
+            lambda lo, hi: self._on_range_changed(is_primary=True, lo=int(lo), hi=int(hi))
+        )
+        p.list_edit.textEdited.connect(
+            lambda text: self._on_list_text_changed(is_primary=True, text=text)
+        )
+
+        # Secondary row:
+        s = self._secondary
+        s.field_combo.currentIndexChanged.connect(
+            lambda _i: self._on_field_changed(is_primary=False)
+        )
+        s.type_combo.currentIndexChanged.connect(lambda _i: self._on_type_changed(is_primary=False))
+        s.dir_btn.toggled.connect(
+            lambda checked: self._on_dir_toggled(is_primary=False, checked=checked)
+        )
+        s.first_spin.valueChanged.connect(
+            lambda v: self._on_value_first_changed(is_primary=False, value=int(v))
+        )
+        s.count_spin.valueChanged.connect(
+            lambda v: self._on_value_count_changed(is_primary=False, value=int(v))
+        )
+        s.skip_spin.valueChanged.connect(
+            lambda v: self._on_value_skip_changed(is_primary=False, value=int(v))
+        )
+        s.scroll_bar.value_changed.connect(
+            lambda v: self._on_scroll_value_changed(is_primary=False, value=int(v))
+        )
+        s.range_track.range_changed.connect(
+            lambda lo, hi: self._on_range_changed(is_primary=False, lo=int(lo), hi=int(hi))
+        )
+        s.list_edit.textEdited.connect(
+            lambda text: self._on_list_text_changed(is_primary=False, text=text)
+        )
+
+        # Structural buttons:
         self._add_secondary_btn.clicked.connect(self._on_add_secondary_clicked)
         self._swap_btn.clicked.connect(self._on_swap_clicked)
-
-        self._secondary_field_combo.currentIndexChanged.connect(self._on_secondary_field_changed)
-        self._secondary_dir_btn.toggled.connect(self._on_secondary_dir_toggled)
-        self._range_track.range_changed.connect(self._on_range_changed)
         self._remove_secondary_btn.clicked.connect(self._on_remove_secondary_clicked)
-
         self._commit_btn.clicked.connect(self._on_commit_clicked)
 
     # --- reference-dataset subscription ---
@@ -264,15 +408,6 @@ class GroupCommandBar(QWidget):
     # --- field-list helpers ---
 
     def _available_fields(self) -> list[str]:
-        """Ordered list of fields offered as primary/secondary keys.
-
-        Always starts with ``TRACE_RANGE``. Adds populated SEG-Y fields
-        (surange result) and any fields already materialized on the
-        reference ``GroupIndex``. Falls back to the base set when neither
-        surange nor a scan has produced any non-sentinel field yet — this
-        covers the brief window before surange completes on a freshly
-        loaded dataset.
-        """
         fields: list[str] = [TRACE_RANGE_FIELD]
         seen: set[str] = {TRACE_RANGE_FIELD}
         ds = self._reference_dataset()
@@ -288,10 +423,6 @@ class GroupCommandBar(QWidget):
             if name not in seen:
                 fields.append(name)
                 seen.add(name)
-        # Fallback when nothing has surfaced any populated header field yet.
-        # surange is the source of truth once it has run; ``not isinstance(...)``
-        # covers both "never ran" and "ran but returned empty". gi_fields is
-        # checked the same way: empty means the full scan hasn't landed.
         if not isinstance(surange, dict) and not gi_fields:
             for name in _BASE_FIELDS:
                 if name not in seen:
@@ -313,58 +444,46 @@ class GroupCommandBar(QWidget):
     # --- rebuild + sync ---
 
     def _rebuild(self, *_args) -> None:
-        """Resync from the group's committed state — discards any draft edits.
-
-        Called when the group itself changes (members, reference index,
-        shared state) or when the reference dataset emits a signal that
-        changes the available field list (``surange_ready``, ``sv_changed``,
-        ``group_index_ready``). Staging handlers must use
-        :meth:`_resync_widgets` instead so their staged edits survive.
-        """
         self._draft = self.group.shared_state.sort_config
+        self._primary_list_error = None
+        self._secondary_list_error = None
         self._resync_widgets()
 
     def _resync_widgets(self) -> None:
-        """Redraw widgets from the current ``self._draft`` without touching it."""
         self._subscribe_to_reference()
         self._rebuilding = True
         try:
             gi = self._reference_index()
             if gi is None:
                 self.setEnabled(False)
-                self._first_spin.setRange(1, 1)
-                self._scroll_bar.set_range(0)
-                self._scroll_bar.set_markers([])
                 self._status_label.setText("—")
                 return
             self.setEnabled(True)
 
             fields = self._available_fields()
-            self._populate_field_combo(self._primary_field_combo, fields, self._draft.primary.field)
+            # Primary field combo includes TRACE_RANGE.
+            self._populate_field_combo(self._primary.field_combo, fields, self._draft.primary.field)
 
-            # Seed direction arrow from the draft.
-            self._apply_dir_btn(self._primary_dir_btn, self._draft.primary.direction)
-
-            # Secondary row visibility and contents.
+            # Secondary visibility / contents.
             has_sec = self._draft.secondary is not None
-            self._secondary_row.setVisible(has_sec)
+            self._secondary_holder.setVisible(has_sec)
             self._add_secondary_btn.setVisible(not has_sec)
-            # Swap is illegal when primary is TRACE_RANGE — secondary cannot
-            # hold the sentinel, so the swap would produce an invalid config.
             self._swap_btn.setVisible(has_sec)
             self._swap_btn.setEnabled(has_sec and self._draft.primary.field != TRACE_RANGE_FIELD)
+
+            self._sync_row_to_selection(self._primary, self._draft.primary, gi, is_primary=True)
+
             if has_sec:
                 sec_fields = [
                     f for f in fields if f != self._draft.primary.field and f != TRACE_RANGE_FIELD
                 ]
                 self._populate_field_combo(
-                    self._secondary_field_combo, sec_fields, self._draft.secondary.field
+                    self._secondary.field_combo, sec_fields, self._draft.secondary.field
                 )
-                self._apply_dir_btn(self._secondary_dir_btn, self._draft.secondary.direction)
-                self._sync_range_track(gi)
+                self._sync_row_to_selection(
+                    self._secondary, self._draft.secondary, gi, is_primary=False
+                )
 
-            # Primary scroll-bar range: tied to the primary field's group count.
-            self._sync_primary_navigation(gi)
             self._update_commit_icon()
             self._update_status()
         finally:
@@ -375,8 +494,6 @@ class GroupCommandBar(QWidget):
         combo.clear()
         for f in fields:
             combo.addItem(self._field_label(f), userData=f)
-        # Select the field if present; otherwise insert it at top so the draft
-        # value is still visible.
         found = False
         for i in range(combo.count()):
             if combo.itemData(i) == current:
@@ -394,38 +511,142 @@ class GroupCommandBar(QWidget):
         btn.setText("↓" if direction == "desc" else "↑")
         btn.blockSignals(False)
 
-    def _sync_primary_navigation(self, gi: GroupIndex) -> None:
-        """Align the scroll-bar, first-spin, count-spin, skip-spin with the
-        draft's primary selection and the reference's group count for the
-        primary field.
+    def _apply_type_combo(self, combo: QComboBox, row_type: RowType) -> None:
+        combo.blockSignals(True)
+        for idx, (_, code) in enumerate(_TYPE_ITEMS):
+            if code == row_type:
+                combo.setCurrentIndex(idx)
+                break
+        combo.blockSignals(False)
+
+    def _sync_row_to_selection(
+        self,
+        row: _RowWidgets,
+        sel: RowSelection,
+        gi: GroupIndex,
+        *,
+        is_primary: bool,
+    ) -> None:
+        """Drive *row*'s widgets from a :class:`RowSelection`. Called during a
+        rebuild when ``self._rebuilding`` is True so emitted signals are
+        suppressed on the caller side too.
         """
-        n = self._primary_group_count(gi, self._draft.primary.field)
-        self._scroll_bar.blockSignals(True)
-        self._scroll_bar.set_range(n)
-        first = int(self._draft.primary.first)
-        first = max(0, min(max(0, n - 1), first))
-        self._scroll_bar.set_value(first)
-        self._scroll_bar.blockSignals(False)
+        self._apply_dir_btn(row.dir_btn, sel.direction)
+        self._apply_type_combo(row.type_combo, sel.type)
 
-        self._first_spin.blockSignals(True)
-        self._first_spin.setRange(1, max(1, n))
-        self._first_spin.setValue(first + 1)
-        self._first_spin.blockSignals(False)
+        # Switch the selector stack page first so subsequent widget updates
+        # land on the right page.
+        page_idx = {
+            "value": row.value_page,
+            "range": row.range_page,
+            "list": row.list_page,
+        }[sel.type]
+        row.selector_stack.setCurrentIndex(page_idx)
 
-        self._count_spin.blockSignals(True)
-        self._count_spin.setValue(int(self._draft.primary.count))
-        self._count_spin.blockSignals(False)
+        if sel.type == "value":
+            assert sel.value is not None
+            self._sync_value_page(row, sel.field, sel.value, gi, is_primary=is_primary)
+        elif sel.type == "range":
+            assert sel.range_ is not None
+            self._sync_range_page(row, sel.field, sel.range_, gi)
+        else:  # list
+            assert sel.list_ is not None
+            self._sync_list_page(row, sel.list_, is_primary=is_primary)
 
-        self._skip_spin.blockSignals(True)
-        self._skip_spin.setValue(int(self._draft.primary.skip))
-        self._skip_spin.blockSignals(False)
+    def _sync_value_page(
+        self,
+        row: _RowWidgets,
+        field: str,
+        value: ValueParams,
+        gi: GroupIndex,
+        *,
+        is_primary: bool,
+    ) -> None:
+        n = self._group_count_for_field(gi, field)
+        first = max(0, min(max(0, n - 1), int(value.first)))
 
-        self._update_markers(
-            first, int(self._draft.primary.count), int(self._draft.primary.skip), n
-        )
+        row.scroll_bar.blockSignals(True)
+        row.scroll_bar.set_range(n)
+        row.scroll_bar.set_value(first)
+        row.scroll_bar.blockSignals(False)
 
-    def _primary_group_count(self, gi: GroupIndex, field: str) -> int:
-        """Number of distinct groups that ``gi`` would produce for *field*."""
+        row.first_spin.blockSignals(True)
+        row.first_spin.setRange(1, max(1, n))
+        row.first_spin.setValue(first + 1)
+        row.first_spin.blockSignals(False)
+
+        row.count_spin.blockSignals(True)
+        row.count_spin.setValue(int(value.count))
+        row.count_spin.blockSignals(False)
+
+        row.skip_spin.blockSignals(True)
+        row.skip_spin.setValue(int(value.skip))
+        row.skip_spin.blockSignals(False)
+
+        positions = [
+            first + i * int(value.skip)
+            for i in range(int(value.count))
+            if 0 <= first + i * int(value.skip) < n
+        ]
+        row.scroll_bar.set_markers(positions)
+
+    def _sync_range_page(
+        self,
+        row: _RowWidgets,
+        field: str,
+        range_: RangeParams,
+        gi: GroupIndex,
+    ) -> None:
+        domain = self._field_domain(gi, field) or (0, 0)
+        lo, hi = domain
+        row.range_track.blockSignals(True)
+        row.range_track.set_domain(lo, hi)
+        r_lo = max(lo, min(hi, range_.range_min))
+        r_hi = max(r_lo, min(hi, range_.range_max))
+        row.range_track.set_range(r_lo, r_hi)
+        row.range_track.blockSignals(False)
+        row.range_label.setText(f"{r_lo}–{r_hi}")
+
+    def _sync_list_page(
+        self,
+        row: _RowWidgets,
+        list_: ListParams,
+        *,
+        is_primary: bool,
+    ) -> None:
+        row.list_edit.blockSignals(True)
+        row.list_edit.setText(_format_list_for_input(list_.group_ids))
+        row.list_edit.blockSignals(False)
+        # Clear any cached parse error since the text now reflects a valid
+        # ListParams.
+        if is_primary:
+            self._primary_list_error = None
+        else:
+            self._secondary_list_error = None
+        self._update_list_summary(row, list_.group_ids, error=None)
+
+    def _update_list_summary(
+        self,
+        row: _RowWidgets,
+        ids: tuple[int, ...] | list[int],
+        *,
+        error: str | None,
+    ) -> None:
+        if error is not None:
+            row.list_summary.setText(f"⚠ {error}")
+            row.list_summary.setStyleSheet("color: #DC2626;")
+            return
+        n = len(ids)
+        row.list_summary.setStyleSheet("")
+        row.list_summary.setText(f"{n} entries")
+
+    def _field_domain(self, gi: GroupIndex, field: str) -> tuple[int, int] | None:
+        if field == TRACE_RANGE_FIELD:
+            n = self._group_count_for_field(gi, field)
+            return (0, max(0, n - 1))
+        return gi.field_value_range(field)
+
+    def _group_count_for_field(self, gi: GroupIndex, field: str) -> int:
         if field == TRACE_RANGE_FIELD:
             return max(
                 0,
@@ -446,35 +667,14 @@ class GroupCommandBar(QWidget):
                 except ValueError:
                     pass
             return n
-        # Non-mode field (e.g. TraceNumber). Count distinct values if the
-        # array is present.
         arr = gi.field_array(field)
         if arr is None:
             return 0
-        import numpy as np  # deferred so type check stays light
+        import numpy as np
 
         return int(np.unique(arr).size)
 
-    def _sync_range_track(self, gi: GroupIndex) -> None:
-        sec = self._draft.secondary
-        if sec is None:
-            return
-        domain = gi.field_value_range(sec.field)
-        if domain is None:
-            # Unknown field — fall back to a trivial 0..0 domain so the widget
-            # still renders something predictable.
-            domain = (0, 0)
-        lo, hi = domain
-        self._range_track.blockSignals(True)
-        self._range_track.set_domain(lo, hi)
-        r_lo = max(lo, min(hi, sec.range_min))
-        r_hi = max(r_lo, min(hi, sec.range_max))
-        self._range_track.set_range(r_lo, r_hi)
-        self._range_track.blockSignals(False)
-        self._range_label.setText(f"{r_lo}–{r_hi}")
-
     def _sync_from_state(self) -> None:
-        """React to shared_state_changed by re-reading the committed config."""
         if self._rebuilding:
             return
         sc = self.group.shared_state.sort_config
@@ -482,27 +682,17 @@ class GroupCommandBar(QWidget):
             self._update_status()
             self._update_commit_icon()
             return
-        # External update (e.g. a different bar or controller wrote the
-        # group). Reset local draft to match and rebuild.
         self._rebuild()
-
-    def _update_markers(self, first: int, count: int, skip: int, n: int) -> None:
-        positions = [first + i * skip for i in range(count) if 0 <= first + i * skip < n]
-        self._scroll_bar.set_markers(positions)
 
     def _update_status(self) -> None:
         sc = self._draft
         primary_label = self._field_label(sc.primary.field)
         gi = self._reference_index()
-        n = self._primary_group_count(gi, sc.primary.field) if gi is not None else 0
-        pieces: list[str] = []
-        if n > 0:
-            pieces.append(f"{primary_label} {sc.primary.first + 1}/{n}")
-        else:
-            pieces.append(f"{primary_label} — ")
+        n = self._group_count_for_field(gi, sc.primary.field) if gi is not None else 0
+        pieces: list[str] = [_status_fragment(primary_label, sc.primary, n)]
         if sc.secondary is not None:
             sec_label = self._field_label(sc.secondary.field)
-            pieces.append(f"{sec_label} {sc.secondary.range_min}–{sc.secondary.range_max}")
+            pieces.append(_status_fragment(sec_label, sc.secondary, None))
         text = " · ".join(pieces)
         if not sc.committed:
             text = f"{text}  (sort uncommitted)"
@@ -516,151 +706,255 @@ class GroupCommandBar(QWidget):
 
     # --- draft mutators ---
 
-    def _stage_primary(self, **kwargs) -> None:
-        p = self._draft.primary
-        new_primary = PrimarySelection(
-            field=kwargs.get("field", p.field),
-            direction=kwargs.get("direction", p.direction),
-            first=int(kwargs.get("first", p.first)),
-            count=int(kwargs.get("count", p.count)),
-            skip=int(kwargs.get("skip", p.skip)),
-        )
-        self._draft = SortConfig(
-            primary=new_primary, secondary=self._draft.secondary, committed=False
-        )
+    def _stage_primary(self, new_primary: RowSelection) -> None:
+        # If the secondary's field collides with the new primary, drop secondary.
+        sec = self._draft.secondary
+        if sec is not None and sec.field == new_primary.field:
+            sec = None
+        self._draft = SortConfig(primary=new_primary, secondary=sec, committed=False)
 
-    def _stage_secondary(self, sec: SecondarySelection | None) -> None:
+    def _stage_secondary(self, sec: RowSelection | None) -> None:
         self._draft = SortConfig(primary=self._draft.primary, secondary=sec, committed=False)
 
-    def _autocommit_primary_nav(self, **kwargs) -> None:
-        """Update navigation fields and push immediately.
+    def _replace_row(self, *, is_primary: bool, new_row: RowSelection) -> None:
+        if is_primary:
+            self._stage_primary(new_row)
+        else:
+            self._stage_secondary(new_row)
 
-        Scroll bar / first spin / count / skip changes are considered
-        navigation, not structural edits — they auto-commit so the user sees
-        the render update without having to press ★ every time.
-        """
-        p = self._draft.primary
-        new_primary = PrimarySelection(
-            field=p.field,
-            direction=p.direction,
-            first=int(kwargs.get("first", p.first)),
-            count=int(kwargs.get("count", p.count)),
-            skip=int(kwargs.get("skip", p.skip)),
+    # --- field/type/direction handlers ---
+
+    def _on_field_changed(self, *, is_primary: bool) -> None:
+        if self._rebuilding:
+            return
+        row = self._primary if is_primary else self._secondary
+        new_field = row.field_combo.currentData()
+        if new_field is None:
+            return
+        current = self._draft.primary if is_primary else self._draft.secondary
+        if current is None or current.field == new_field:
+            return
+        # Field change resets the row to a sensible default for its current type:
+        # Value: position 0, count 1, skip 1.
+        # Range: full domain.
+        # List:  empty (the user must re-enter).
+        new_row = self._row_default_for_type(
+            field=new_field, direction=current.direction, type_=current.type
         )
-        new_committed = self._draft.committed
-        # Only auto-commit if the rest of the config was already committed or
-        # if the only staged change was navigation. If the user was midway
-        # through editing a field or direction, scroll-bar stepping does not
-        # implicitly commit those structural changes.
-        if (
-            self._draft.committed
-            or self._draft.primary.field == self.group.shared_state.sort_config.primary.field
+        self._replace_row(is_primary=is_primary, new_row=new_row)
+        self._resync_widgets()
+
+    def _on_type_changed(self, *, is_primary: bool) -> None:
+        if self._rebuilding:
+            return
+        row = self._primary if is_primary else self._secondary
+        idx = row.type_combo.currentIndex()
+        if idx < 0 or idx >= len(_TYPE_ITEMS):
+            return
+        new_type: RowType = _TYPE_ITEMS[idx][1]
+        current = self._draft.primary if is_primary else self._draft.secondary
+        if current is None or current.type == new_type:
+            return
+        gi = self._reference_index()
+        domain = self._field_domain(gi, current.field) if gi is not None else None
+        new_row, warn = current.translate_to(new_type, domain)
+        self._replace_row(is_primary=is_primary, new_row=new_row)
+        if warn:
+            who = "primary" if is_primary else "secondary"
+            self.status_message.emit(f"{who} row: {warn}")
+        self._resync_widgets()
+
+    def _on_dir_toggled(self, *, is_primary: bool, checked: bool) -> None:
+        if self._rebuilding:
+            return
+        row = self._primary if is_primary else self._secondary
+        direction = "desc" if checked else "asc"
+        row.dir_btn.setText("↓" if checked else "↑")
+        current = self._draft.primary if is_primary else self._draft.secondary
+        if current is None:
+            return
+        self._replace_row(is_primary=is_primary, new_row=current.with_direction(direction))
+        self._update_commit_icon()
+        self._update_status()
+
+    # --- value-page handlers ---
+
+    def _value_with_overrides(self, sel: RowSelection, **overrides) -> RowSelection:
+        assert sel.value is not None
+        v = sel.value
+        new_v = ValueParams(
+            first=int(overrides.get("first", v.first)),
+            count=int(overrides.get("count", v.count)),
+            skip=int(overrides.get("skip", v.skip)),
+        )
+        return RowSelection(
+            field=sel.field,
+            direction=sel.direction,
+            type="value",
+            value=new_v,
+        )
+
+    def _on_value_first_changed(self, *, is_primary: bool, value: int) -> None:
+        if self._rebuilding:
+            return
+        current = self._draft.primary if is_primary else self._draft.secondary
+        if current is None or current.type != "value":
+            return
+        new_row = self._value_with_overrides(current, first=value - 1)
+        if is_primary:
+            self._autocommit_primary_value(new_row)
+        else:
+            self._replace_row(is_primary=False, new_row=new_row)
+            self._update_commit_icon()
+            self._update_status()
+
+    def _on_value_count_changed(self, *, is_primary: bool, value: int) -> None:
+        if self._rebuilding:
+            return
+        current = self._draft.primary if is_primary else self._draft.secondary
+        if current is None or current.type != "value":
+            return
+        new_row = self._value_with_overrides(current, count=value)
+        if is_primary:
+            self._autocommit_primary_value(new_row)
+        else:
+            self._replace_row(is_primary=False, new_row=new_row)
+            self._update_commit_icon()
+            self._update_status()
+
+    def _on_value_skip_changed(self, *, is_primary: bool, value: int) -> None:
+        if self._rebuilding:
+            return
+        current = self._draft.primary if is_primary else self._draft.secondary
+        if current is None or current.type != "value":
+            return
+        new_row = self._value_with_overrides(current, skip=value)
+        if is_primary:
+            self._autocommit_primary_value(new_row)
+        else:
+            self._replace_row(is_primary=False, new_row=new_row)
+            self._update_commit_icon()
+            self._update_status()
+
+    def _on_scroll_value_changed(self, *, is_primary: bool, value: int) -> None:
+        if self._rebuilding:
+            return
+        current = self._draft.primary if is_primary else self._draft.secondary
+        if current is None or current.type != "value":
+            return
+        gi = self._reference_index()
+        n = self._group_count_for_field(gi, current.field) if gi is not None else 0
+        new_row = self._value_with_overrides(current, first=int(value))
+        row = self._primary if is_primary else self._secondary
+        row.first_spin.blockSignals(True)
+        row.first_spin.setValue(int(value) + 1)
+        row.first_spin.blockSignals(False)
+        positions = [
+            int(value) + i * int(new_row.value.skip)  # type: ignore[union-attr]
+            for i in range(int(new_row.value.count))  # type: ignore[union-attr]
+            if 0 <= int(value) + i * int(new_row.value.skip) < n  # type: ignore[union-attr]
+        ]
+        row.scroll_bar.set_markers(positions)
+
+        if is_primary:
+            if self._dragging:
+                self._stage_primary(new_row)
+                self._throttle_timer.start(DRAG_THROTTLE_MS)
+                return
+            self._autocommit_primary_value(new_row)
+        else:
+            self._replace_row(is_primary=False, new_row=new_row)
+            self._update_commit_icon()
+            self._update_status()
+
+    def _autocommit_primary_value(self, new_row: RowSelection) -> None:
+        """Stage a Value-mode primary edit and auto-push if appropriate.
+
+        Mirrors v2.3 navigation auto-commit: scrollbar / first / count /
+        skip changes auto-commit so the M4.1 step-through UX still applies.
+        Other staged changes (field, type, direction, list edits) require ★.
+        """
+        committed = self.group.shared_state.sort_config
+        same_field = committed.primary.field == new_row.field and committed.primary.type == "value"
+        # Auto-commit only when the structural state of the rest of the
+        # config matches the committed one — otherwise the user has staged
+        # other changes that they probably don't want flushed by a stray
+        # scroll-bar drag.
+        if self._draft.committed or (
+            same_field
+            and self._draft.primary.field == committed.primary.field
+            and self._draft.primary.type == committed.primary.type
+            and self._draft.secondary == committed.secondary
         ):
             new_committed = True
+        else:
+            new_committed = False
         self._draft = SortConfig(
-            primary=new_primary, secondary=self._draft.secondary, committed=new_committed
+            primary=new_row, secondary=self._draft.secondary, committed=new_committed
         )
         if new_committed:
             self.group.update_sort_config(self._draft)
         self._update_commit_icon()
         self._update_status()
 
-    # --- slot handlers ---
+    # --- range-page handlers ---
 
-    def _on_primary_field_changed(self, _index: int) -> None:
+    def _on_range_changed(self, *, is_primary: bool, lo: int, hi: int) -> None:
         if self._rebuilding:
             return
-        field = self._primary_field_combo.currentData()
-        if field is None:
+        current = self._draft.primary if is_primary else self._draft.secondary
+        if current is None or current.type != "range":
             return
-        self._stage_primary(field=field, first=0)
-        # If the secondary field matches the new primary, drop secondary.
-        if self._draft.secondary is not None and self._draft.secondary.field == field:
-            self._stage_secondary(None)
-            self._resync_widgets()
-            return
-        gi = self._reference_index()
-        if gi is not None:
-            self._sync_primary_navigation(gi)
-        self._update_commit_icon()
-        self._update_status()
-
-    def _on_primary_dir_toggled(self, checked: bool) -> None:
-        if self._rebuilding:
-            return
-        direction = "desc" if checked else "asc"
-        self._primary_dir_btn.setText("↓" if checked else "↑")
-        self._stage_primary(direction=direction)
-        self._update_commit_icon()
-        self._update_status()
-
-    def _on_first_spin_changed(self, value: int) -> None:
-        if self._rebuilding:
-            return
-        self._autocommit_primary_nav(first=int(value) - 1)
-        gi = self._reference_index()
-        if gi is not None:
-            n = self._primary_group_count(gi, self._draft.primary.field)
-            self._scroll_bar.blockSignals(True)
-            self._scroll_bar.set_value(self._draft.primary.first)
-            self._scroll_bar.blockSignals(False)
-            self._update_markers(
-                self._draft.primary.first,
-                self._draft.primary.count,
-                self._draft.primary.skip,
-                n,
-            )
-
-    def _on_count_changed(self, value: int) -> None:
-        if self._rebuilding:
-            return
-        self._autocommit_primary_nav(count=int(value))
-
-    def _on_skip_changed(self, value: int) -> None:
-        if self._rebuilding:
-            return
-        self._autocommit_primary_nav(skip=int(value))
-
-    def _on_scroll_value_changed(self, value: int) -> None:
-        if self._rebuilding:
-            return
-        gi = self._reference_index()
-        n = self._primary_group_count(gi, self._draft.primary.field) if gi is not None else 0
-        if self._dragging:
-            # Silent-update path: stage the value and let the throttle timer
-            # dispatch the render.
-            self._stage_primary(first=int(value))
-            self._first_spin.blockSignals(True)
-            self._first_spin.setValue(int(value) + 1)
-            self._first_spin.blockSignals(False)
-            self._update_markers(int(value), self._draft.primary.count, self._draft.primary.skip, n)
-            self._throttle_timer.start(DRAG_THROTTLE_MS)
-            return
-        self._autocommit_primary_nav(first=int(value))
-
-    def _on_drag_started(self) -> None:
-        self._dragging = True
-
-    def _on_drag_released(self) -> None:
-        self._dragging = False
-        self._throttle_timer.stop()
-        # Push the final dragged value as a commit.
-        sc = SortConfig(
-            primary=self._draft.primary, secondary=self._draft.secondary, committed=True
+        new_row = RowSelection(
+            field=current.field,
+            direction=current.direction,
+            type="range",
+            range_=RangeParams(range_min=int(lo), range_max=int(hi)),
         )
-        self._draft = sc
-        self.group.update_sort_config(sc)
+        row = self._primary if is_primary else self._secondary
+        row.range_label.setText(f"{lo}–{hi}")
+        self._replace_row(is_primary=is_primary, new_row=new_row)
         self._update_commit_icon()
         self._update_status()
 
-    def _on_throttle_timeout(self) -> None:
-        # Mid-drag: push an intermediate committed config so the canvas
-        # refreshes at the current scroll position.
-        sc = SortConfig(
-            primary=self._draft.primary, secondary=self._draft.secondary, committed=True
+    # --- list-page handlers ---
+
+    def _on_list_text_changed(self, *, is_primary: bool, text: str) -> None:
+        if self._rebuilding:
+            return
+        current = self._draft.primary if is_primary else self._draft.secondary
+        if current is None or current.type != "list":
+            return
+        ids, error = parse_list(text)
+        row = self._primary if is_primary else self._secondary
+        if error is not None:
+            # Keep the draft's last-good list intact; flag the parse error so
+            # commit refuses.
+            if is_primary:
+                self._primary_list_error = error
+            else:
+                self._secondary_list_error = error
+            ids = current.list_.group_ids if current.list_ else ()
+            self._update_list_summary(row, ids, error=error)
+            self._update_commit_icon()
+            self._update_status()
+            return
+        if is_primary:
+            self._primary_list_error = None
+        else:
+            self._secondary_list_error = None
+        new_row = RowSelection(
+            field=current.field,
+            direction=current.direction,
+            type="list",
+            list_=ListParams(group_ids=tuple(ids)),
         )
-        self._draft = sc
-        self.group.update_sort_config(sc)
+        self._replace_row(is_primary=is_primary, new_row=new_row)
+        self._update_list_summary(row, ids, error=None)
+        self._update_commit_icon()
+        self._update_status()
+
+    # --- structural button handlers ---
 
     def _on_add_secondary_clicked(self) -> None:
         gi = self._reference_index()
@@ -676,108 +970,94 @@ class GroupCommandBar(QWidget):
             return
         field = fields[0]
         domain = gi.field_value_range(field) or (0, 0)
-        sec = SecondarySelection(
-            field=field,
-            direction="asc",
-            range_min=int(domain[0]),
-            range_max=int(domain[1]),
-        )
+        sec = RowSelection.range_default(field, "asc", domain=domain)
         self._stage_secondary(sec)
         self._resync_widgets()
 
     def _on_remove_secondary_clicked(self) -> None:
         self._stage_secondary(None)
+        self._secondary_list_error = None
         self._resync_widgets()
 
     def _on_swap_clicked(self) -> None:
         sec = self._draft.secondary
         if sec is None:
             return
-        # Secondary cannot hold the TRACE_RANGE sentinel; the button should
-        # already be disabled in this case, but guard regardless.
         if self._draft.primary.field == TRACE_RANGE_FIELD:
             return
-        gi = self._reference_index()
-        new_primary = PrimarySelection(
-            field=sec.field,
-            direction=sec.direction,
-            first=0,
-            count=1,
-            skip=1,
-        )
         old_primary = self._draft.primary
-        # The new secondary inherits the old primary's field & direction,
-        # but its range defaults back to full (per spec).
-        if gi is not None and old_primary.field != TRACE_RANGE_FIELD:
-            domain = gi.field_value_range(old_primary.field) or (0, 0)
-        else:
-            domain = (0, 0)
-        new_secondary = SecondarySelection(
-            field=old_primary.field,
-            direction=old_primary.direction,
-            range_min=int(domain[0]),
-            range_max=int(domain[1]),
+        gi = self._reference_index()
+
+        # Promote the secondary's field/direction/type to primary, with a
+        # default selection appropriate to that type. The new secondary
+        # inherits the old primary's field/direction; its selection resets
+        # to type-Range with full domain (per spec).
+        new_primary = self._row_default_for_type(
+            field=sec.field, direction=sec.direction, type_=sec.type
+        )
+        domain = (
+            gi.field_value_range(old_primary.field)
+            if gi is not None and old_primary.field != TRACE_RANGE_FIELD
+            else None
+        ) or (0, 0)
+        new_secondary = RowSelection.range_default(
+            old_primary.field, old_primary.direction, domain=domain
         )
         self._draft = SortConfig(primary=new_primary, secondary=new_secondary, committed=False)
+        self._primary_list_error = None
+        self._secondary_list_error = None
         self._resync_widgets()
 
-    def _on_secondary_field_changed(self, _index: int) -> None:
-        if self._rebuilding or self._draft.secondary is None:
-            return
-        field = self._secondary_field_combo.currentData()
-        if field is None:
-            return
+    def _row_default_for_type(self, *, field: str, direction: str, type_: RowType) -> RowSelection:
         gi = self._reference_index()
-        domain = gi.field_value_range(field) if gi is not None else None
-        if domain is None:
-            domain = (0, 0)
-        new_sec = SecondarySelection(
-            field=field,
-            direction=self._draft.secondary.direction,
-            range_min=int(domain[0]),
-            range_max=int(domain[1]),
+        if type_ == "value":
+            return RowSelection.value_default(field, direction)  # type: ignore[arg-type]
+        if type_ == "range":
+            domain = self._field_domain(gi, field) if gi is not None else None
+            return RowSelection.range_default(field, direction, domain=domain or (0, 0))  # type: ignore[arg-type]
+        return RowSelection.list_empty(field, direction)  # type: ignore[arg-type]
+
+    # --- drag throttling ---
+
+    def _on_drag_started(self) -> None:
+        self._dragging = True
+
+    def _on_drag_released(self) -> None:
+        self._dragging = False
+        self._throttle_timer.stop()
+        sc = SortConfig(
+            primary=self._draft.primary, secondary=self._draft.secondary, committed=True
         )
-        self._stage_secondary(new_sec)
-        if gi is not None:
-            self._sync_range_track(gi)
+        self._draft = sc
+        self.group.update_sort_config(sc)
         self._update_commit_icon()
         self._update_status()
 
-    def _on_secondary_dir_toggled(self, checked: bool) -> None:
-        if self._rebuilding or self._draft.secondary is None:
-            return
-        direction = "desc" if checked else "asc"
-        self._secondary_dir_btn.setText("↓" if checked else "↑")
-        new_sec = SecondarySelection(
-            field=self._draft.secondary.field,
-            direction=direction,
-            range_min=self._draft.secondary.range_min,
-            range_max=self._draft.secondary.range_max,
+    def _on_throttle_timeout(self) -> None:
+        sc = SortConfig(
+            primary=self._draft.primary, secondary=self._draft.secondary, committed=True
         )
-        self._stage_secondary(new_sec)
-        self._update_commit_icon()
-        self._update_status()
+        self._draft = sc
+        self.group.update_sort_config(sc)
 
-    def _on_range_changed(self, lo: int, hi: int) -> None:
-        if self._rebuilding or self._draft.secondary is None:
-            return
-        new_sec = SecondarySelection(
-            field=self._draft.secondary.field,
-            direction=self._draft.secondary.direction,
-            range_min=int(lo),
-            range_max=int(hi),
-        )
-        self._stage_secondary(new_sec)
-        self._range_label.setText(f"{lo}–{hi}")
-        self._update_commit_icon()
-        self._update_status()
+    # --- commit ---
 
     def _on_commit_clicked(self) -> None:
-        # Validate against all current group members. Loose compat: partial
-        # overlap counts.
         from PySide6.QtWidgets import QMessageBox
 
         from seisvis.models.compatibility import are_toggle_compatible
+
+        # Refuse commit if any List row's text input is currently unparseable.
+        if self._primary_list_error is not None:
+            self.status_message.emit(
+                f"Cannot commit sort: primary list — {self._primary_list_error}"
+            )
+            return
+        if self._secondary_list_error is not None:
+            self.status_message.emit(
+                f"Cannot commit sort: secondary list — {self._secondary_list_error}"
+            )
+            return
 
         ref_ds = self._reference_dataset()
         if ref_ds is None:
@@ -813,55 +1093,62 @@ class GroupCommandBar(QWidget):
         self._step_by(self._window_span())
 
     def go_first(self) -> None:
-        self._autocommit_primary_nav(first=0)
-        gi = self._reference_index()
-        if gi is not None:
-            n = self._primary_group_count(gi, self._draft.primary.field)
-            self._scroll_bar.blockSignals(True)
-            self._scroll_bar.set_value(0)
-            self._scroll_bar.blockSignals(False)
-            self._first_spin.blockSignals(True)
-            self._first_spin.setValue(1)
-            self._first_spin.blockSignals(False)
-            self._update_markers(0, self._draft.primary.count, self._draft.primary.skip, n)
+        self._jump_primary_first(0)
 
     def go_last(self) -> None:
+        primary = self._draft.primary
+        if primary.type != "value" or primary.value is None:
+            return
         gi = self._reference_index()
         if gi is None:
             return
-        n = self._primary_group_count(gi, self._draft.primary.field)
-        count = int(self._draft.primary.count)
+        n = self._group_count_for_field(gi, primary.field)
+        count = int(primary.value.count)
         first = max(0, n - count)
-        self._autocommit_primary_nav(first=first)
-        self._scroll_bar.blockSignals(True)
-        self._scroll_bar.set_value(first)
-        self._scroll_bar.blockSignals(False)
-        self._first_spin.blockSignals(True)
-        self._first_spin.setValue(first + 1)
-        self._first_spin.blockSignals(False)
-        self._update_markers(first, count, int(self._draft.primary.skip), n)
+        self._jump_primary_first(first)
+
+    def _jump_primary_first(self, first: int) -> None:
+        primary = self._draft.primary
+        if primary.type != "value" or primary.value is None:
+            return
+        new_row = self._value_with_overrides(primary, first=first)
+        self._autocommit_primary_value(new_row)
+        # Force the widget back in sync since auto-commit doesn't itself
+        # rebuild the widget tree.
+        gi = self._reference_index()
+        if gi is not None:
+            self._rebuilding = True
+            try:
+                self._sync_value_page(
+                    self._primary,
+                    new_row.field,
+                    new_row.value,
+                    gi,
+                    is_primary=True,  # type: ignore[arg-type]
+                )
+            finally:
+                self._rebuilding = False
 
     def _window_span(self) -> int:
-        return max(1, int(self._draft.primary.count))
+        primary = self._draft.primary
+        if primary.type != "value" or primary.value is None:
+            return 1
+        return max(1, int(primary.value.count))
 
     def _step_by(self, delta: int) -> None:
+        primary = self._draft.primary
+        if primary.type != "value" or primary.value is None:
+            return
         gi = self._reference_index()
         if gi is None:
             return
-        n = self._primary_group_count(gi, self._draft.primary.field)
+        n = self._group_count_for_field(gi, primary.field)
         upper = max(0, n - 1)
-        cur = int(self._draft.primary.first)
+        cur = int(primary.value.first)
         new_val = max(0, min(upper, cur + delta))
         if new_val == cur:
             return
-        self._autocommit_primary_nav(first=new_val)
-        self._scroll_bar.blockSignals(True)
-        self._scroll_bar.set_value(new_val)
-        self._scroll_bar.blockSignals(False)
-        self._first_spin.blockSignals(True)
-        self._first_spin.setValue(new_val + 1)
-        self._first_spin.blockSignals(False)
-        self._update_markers(new_val, self._draft.primary.count, self._draft.primary.skip, n)
+        self._jump_primary_first(new_val)
 
     # --- focus pass-through ---
 
@@ -872,6 +1159,51 @@ class GroupCommandBar(QWidget):
 
     def is_dragging(self) -> bool:
         return self._dragging
+
+
+def _format_list_for_input(ids: tuple[int, ...]) -> str:
+    """Render ``ids`` back into compact list-input grammar.
+
+    Contiguous runs of length ≥ 3 collapse to ``a-b``; everything else is a
+    plain comma-separated entry. Used to repopulate the line edit when the
+    draft's ListParams changes outside the user's typing.
+    """
+    if not ids:
+        return ""
+    sorted_ids = sorted(set(int(g) for g in ids))
+    chunks: list[str] = []
+    i = 0
+    while i < len(sorted_ids):
+        j = i
+        while j + 1 < len(sorted_ids) and sorted_ids[j + 1] == sorted_ids[j] + 1:
+            j += 1
+        if j - i >= 2:
+            chunks.append(f"{sorted_ids[i]}-{sorted_ids[j]}")
+        else:
+            chunks.extend(str(sorted_ids[k]) for k in range(i, j + 1))
+        i = j + 1
+    return ", ".join(chunks)
+
+
+def _status_fragment(label: str, sel: RowSelection, n_groups: int | None) -> str:
+    """Per-type status label fragment (used inline by :meth:`_update_status`)."""
+    if sel.type == "value" and sel.value is not None:
+        v = sel.value
+        if n_groups is not None and n_groups > 0:
+            base = f"{label} {v.first + 1}/{n_groups}"
+        else:
+            base = f"{label} {v.first + 1}"
+        if int(v.skip) != 1:
+            base += f" · skip {v.skip}"
+        if int(v.count) > 1:
+            base += f" × {v.count}"
+        return base
+    if sel.type == "range" and sel.range_ is not None:
+        r = sel.range_
+        return f"{label} {r.range_min}–{r.range_max}"
+    if sel.type == "list" and sel.list_ is not None:
+        return f"{label} {len(sel.list_.group_ids)} entries"
+    return label
 
 
 __all__ = ["GroupCommandBar", "DRAG_THROTTLE_MS"]

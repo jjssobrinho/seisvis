@@ -1,15 +1,20 @@
 """Sort configuration for toggle groups.
 
 A :class:`SortConfig` captures the group-level two-row key selection: a
-required primary row (with a scroll-bar-with-markers selector) and an
-optional secondary row (with a dual-handle range track). Frozen
-dataclasses so instances are hashable and usable as cache keys for
-``GroupIndex.get_trace_indices``.
+required primary row and an optional secondary row. Each row is a
+:class:`RowSelection` carrying a *type* (Value / Range / List) plus the
+type-specific parameters. Frozen dataclasses so instances are hashable
+and usable as cache keys for ``GroupIndex.get_trace_indices``.
+
+v0.3.0: replaces v2.3's ``PrimarySelection`` / ``SecondarySelection``
+with a unified row model. Both rows can independently use any of the
+three types; the command bar swaps the underlying selector widget per
+type.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 # Sentinel primary-key field meaning "natural trace range — no field
@@ -18,29 +23,252 @@ from typing import Literal
 TRACE_RANGE_FIELD = "TRACE_RANGE"
 
 Direction = Literal["asc", "desc"]
+RowType = Literal["value", "range", "list"]
 
 
 @dataclass(frozen=True)
-class PrimarySelection:
-    field: str
-    direction: Direction
+class ValueParams:
     first: int
     count: int
     skip: int
 
 
 @dataclass(frozen=True)
-class SecondarySelection:
-    field: str
-    direction: Direction
+class RangeParams:
     range_min: int
     range_max: int
 
 
 @dataclass(frozen=True)
+class ListParams:
+    group_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class RowSelection:
+    field: str
+    direction: Direction
+    type: RowType
+    value: ValueParams | None = None
+    range_: RangeParams | None = None
+    list_: ListParams | None = None
+
+    def __post_init__(self) -> None:
+        # Exactly one of (value, range_, list_) must be populated and it must
+        # match ``type``. Everything else routes through helper constructors so
+        # this invariant is preserved.
+        slots = (
+            ("value", self.value, "value"),
+            ("range_", self.range_, "range"),
+            ("list_", self.list_, "list"),
+        )
+        populated = [name for name, val, _ in slots if val is not None]
+        if len(populated) != 1:
+            raise ValueError(
+                f"RowSelection requires exactly one of value/range_/list_ "
+                f"populated; got {populated or 'none'}"
+            )
+        for name, val, expected_type in slots:
+            if val is not None and self.type != expected_type:
+                raise ValueError(
+                    f"RowSelection type {self.type!r} does not match populated "
+                    f"slot {name!r} (expected type={expected_type!r})"
+                )
+
+    # --- constructors ---
+
+    @classmethod
+    def value_default(
+        cls,
+        field: str,
+        direction: Direction = "asc",
+        *,
+        first: int = 0,
+        count: int = 1,
+        skip: int = 1,
+    ) -> RowSelection:
+        return cls(
+            field=field,
+            direction=direction,
+            type="value",
+            value=ValueParams(first=int(first), count=int(count), skip=int(skip)),
+        )
+
+    @classmethod
+    def range_default(
+        cls,
+        field: str,
+        direction: Direction = "asc",
+        *,
+        domain: tuple[int, int],
+    ) -> RowSelection:
+        lo, hi = int(domain[0]), int(domain[1])
+        if hi < lo:
+            lo, hi = hi, lo
+        return cls(
+            field=field,
+            direction=direction,
+            type="range",
+            range_=RangeParams(range_min=lo, range_max=hi),
+        )
+
+    @classmethod
+    def list_empty(cls, field: str, direction: Direction = "asc") -> RowSelection:
+        return cls(
+            field=field,
+            direction=direction,
+            type="list",
+            list_=ListParams(group_ids=()),
+        )
+
+    # --- type translation ---
+
+    def translate_to(
+        self,
+        new_type: RowType,
+        domain: tuple[int, int] | None = None,
+    ) -> tuple[RowSelection, str | None]:
+        """Translate this row's selection to *new_type*.
+
+        Returns ``(new_selection, optional_warning_text)``. ``domain`` is the
+        full ``(min, max)`` of the row's field's value space, used only for
+        the empty-list → Range fallback. Translation rules mirror the table
+        in CLAUDE.md.
+        """
+        if new_type == self.type:
+            return self, None
+
+        # Value → Range
+        if self.type == "value" and new_type == "range":
+            assert self.value is not None
+            v = self.value
+            lo = v.first
+            hi = v.first + (v.count - 1) * v.skip
+            if hi < lo:
+                lo, hi = hi, lo
+            new = RowSelection(
+                field=self.field,
+                direction=self.direction,
+                type="range",
+                range_=RangeParams(range_min=lo, range_max=hi),
+            )
+            warn = "skip discarded" if v.skip > 1 else None
+            return new, warn
+
+        # Value → List
+        if self.type == "value" and new_type == "list":
+            return RowSelection.list_empty(self.field, self.direction), None
+
+        # Range → Value
+        if self.type == "range" and new_type == "value":
+            assert self.range_ is not None
+            r = self.range_
+            new = RowSelection.value_default(
+                self.field,
+                self.direction,
+                first=r.range_min,
+                count=max(1, r.range_max - r.range_min + 1),
+                skip=1,
+            )
+            return new, None
+
+        # Range → List
+        if self.type == "range" and new_type == "list":
+            return RowSelection.list_empty(self.field, self.direction), None
+
+        # List → Value
+        if self.type == "list" and new_type == "value":
+            assert self.list_ is not None
+            ids = self.list_.group_ids
+            if not ids:
+                # Empty list → default Value.
+                return (
+                    RowSelection.value_default(self.field, self.direction),
+                    "list was empty",
+                )
+            sorted_ids = sorted(ids)
+            if _is_arithmetic_progression(sorted_ids):
+                first = sorted_ids[0]
+                step = sorted_ids[1] - sorted_ids[0] if len(sorted_ids) > 1 else 1
+                new = RowSelection.value_default(
+                    self.field,
+                    self.direction,
+                    first=first,
+                    count=len(sorted_ids),
+                    skip=max(1, step),
+                )
+                return new, None
+            # Non-AP: keep first/last, drop gaps.
+            first = sorted_ids[0]
+            last = sorted_ids[-1]
+            new = RowSelection.value_default(
+                self.field,
+                self.direction,
+                first=first,
+                count=last - first + 1,
+                skip=1,
+            )
+            return new, "list gaps lost"
+
+        # List → Range
+        if self.type == "list" and new_type == "range":
+            assert self.list_ is not None
+            ids = self.list_.group_ids
+            if not ids:
+                lo, hi = (int(domain[0]), int(domain[1])) if domain is not None else (0, 0)
+                if hi < lo:
+                    lo, hi = hi, lo
+                new = RowSelection(
+                    field=self.field,
+                    direction=self.direction,
+                    type="range",
+                    range_=RangeParams(range_min=lo, range_max=hi),
+                )
+                return new, "list was empty"
+            sorted_ids = sorted(ids)
+            lo, hi = sorted_ids[0], sorted_ids[-1]
+            new = RowSelection(
+                field=self.field,
+                direction=self.direction,
+                type="range",
+                range_=RangeParams(range_min=lo, range_max=hi),
+            )
+            warn = None if _is_contiguous(sorted_ids) else "list gaps lost"
+            return new, warn
+
+        # Should be unreachable — every (from, to) pair is covered above.
+        raise ValueError(f"unsupported translation {self.type!r} -> {new_type!r}")
+
+    def with_direction(self, direction: Direction) -> RowSelection:
+        return replace(self, direction=direction)
+
+    def with_field(self, field: str) -> RowSelection:
+        return replace(self, field=field)
+
+
+def _is_arithmetic_progression(sorted_ids: list[int]) -> bool:
+    """``sorted_ids`` already deduplicated and sorted ascending."""
+    if len(sorted_ids) <= 1:
+        return True
+    step = sorted_ids[1] - sorted_ids[0]
+    if step <= 0:
+        return False
+    for i in range(2, len(sorted_ids)):
+        if sorted_ids[i] - sorted_ids[i - 1] != step:
+            return False
+    return True
+
+
+def _is_contiguous(sorted_ids: list[int]) -> bool:
+    if len(sorted_ids) <= 1:
+        return True
+    return sorted_ids[-1] - sorted_ids[0] + 1 == len(sorted_ids)
+
+
+@dataclass(frozen=True)
 class SortConfig:
-    primary: PrimarySelection
-    secondary: SecondarySelection | None
+    primary: RowSelection
+    secondary: RowSelection | None
     committed: bool
 
     def required_fields(self) -> set[str]:
@@ -53,20 +281,27 @@ class SortConfig:
         return fields
 
     def is_natural_order(self) -> bool:
-        """True when primary is TRACE_RANGE asc and no secondary is set."""
-        return (
-            self.primary.field == TRACE_RANGE_FIELD
-            and self.primary.direction == "asc"
-            and self.secondary is None
-        )
+        """True when primary is TRACE_RANGE asc Value-default and no secondary is set."""
+        p = self.primary
+        if self.secondary is not None:
+            return False
+        if p.field != TRACE_RANGE_FIELD or p.direction != "asc":
+            return False
+        # Type must be value with the standard (0, 1, 1) progression for the
+        # render path to short-circuit to natural file order. A Range/List
+        # primary over TRACE_RANGE is structurally unusual — treat it as
+        # non-natural so the renderer picks up its semantics.
+        if p.type != "value" or p.value is None:
+            return False
+        return p.value.first == 0 and p.value.count == 1 and p.value.skip == 1
 
 
 def default_sort_config(*, count: int = 1, skip: int = 1, committed: bool = False) -> SortConfig:
     """Return the fresh-group default: natural trace range, uncommitted."""
     return SortConfig(
-        primary=PrimarySelection(
-            field=TRACE_RANGE_FIELD,
-            direction="asc",
+        primary=RowSelection.value_default(
+            TRACE_RANGE_FIELD,
+            "asc",
             first=0,
             count=int(count),
             skip=int(skip),
@@ -79,8 +314,11 @@ def default_sort_config(*, count: int = 1, skip: int = 1, committed: bool = Fals
 __all__ = [
     "TRACE_RANGE_FIELD",
     "Direction",
-    "PrimarySelection",
-    "SecondarySelection",
+    "RowType",
+    "ValueParams",
+    "RangeParams",
+    "ListParams",
+    "RowSelection",
     "SortConfig",
     "default_sort_config",
 ]
