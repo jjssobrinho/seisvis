@@ -9,8 +9,8 @@ Desktop viewer for 2D/3D SEG-Y reflection seismic data.
 - Lazy SEG-Y loading — O(1) open regardless of file size
 - Multi-member toggle groups in tabbed viewports
 - Lazy A−B difference datasets
-- Configurable group stepping: shot / inline / crossline / trace-range
-- Mode-aware crosshair and info-track labels
+- Two-row sort with three selection types per row — Value (regular sweep), Range (contiguous), List (explicit picks)
+- Mode-aware crosshair and info-track labels, per-file display-name renames
 - Zoom restricted to the currently loaded traces (no re-fetch on pan/zoom)
 - Per-member processing: colormap, clip, gain, bandpass, AGC
 - QSettings persistence of window layout and toolbar defaults
@@ -44,25 +44,46 @@ uv run python -m seisvis
    appears in the command-bar dropdown, the info-track labels, and the
    crosshair readout for this file.
 
-4. **Commit a shot-gather sort** — In the command-bar at the bottom of
+4. **Commit a list of shots** — In the command-bar at the bottom of
    the canvas, set the primary key to `SP` (or whichever field provides
-   shot), pick `Count = 1`, and click `☆` to commit. The display
-   re-renders one shot at a time; drag the scroll bar to page through
-   shots.
+   shot) and switch its **type** dropdown to `List`. Type
+   `1, 5, 47` into the input and click `☆` to commit. The display
+   re-renders only those three shots, side-by-side in the order given.
 
-5. **Switch to a channel gather** — Add a secondary row with `+`, set
-   it to `Channel`, swap primary/secondary with `⇅`, and commit.
-   You're now sorted by channel with each gather containing every shot.
+5. **Narrow the channel range** — Click `+` to add a secondary row,
+   set its key to `Channel`, switch its type to `Range`, and drag the
+   handles to a sub-range (e.g. channels 20–80). Commit. Each shot
+   now shows only the configured channel band.
 
-6. **Watch the info track update** — Above the plot, primary labels
-   reflect the new primary key (`Channel 12`, etc.) and a sub-label
-   under each one shows the secondary range (`SP 100–250`). Both lines
-   use whatever display name you set in step 3.
+6. **Swap rows** — Click `⇅` on the primary row. The list of shots
+   becomes the secondary filter and the channel range becomes the
+   primary key — you're now displaying a sweep of channels, each
+   containing the three selected shots. The info track sub-label
+   reflects the new structure.
 
 7. **Close and reopen** — Quit (`Alt+F4` / File → Exit) and relaunch.
    Window geometry, toolbar defaults, and the `.sv` sidecar's renames
    and role mappings are restored. Sort itself starts fresh each
    session — commit again to apply.
+
+## Row types
+
+Each command-bar row (primary and secondary) carries a **type**
+dropdown. Both rows can independently use any type:
+
+- **Value** — an arithmetic-progression selection
+  (First / Count / Skip). Best for paging through a regular sweep:
+  every shot, every 10th inline, a 100-trace window.
+- **Range** — a contiguous bounded `[min, max]` selection driven by
+  a dual-handle track. Best when you want everything between two
+  cutoffs: channels 20–100, inlines 400–600.
+- **List** — an explicit, possibly non-contiguous list parsed from
+  text (`1, 5-7, 12`). Best for QC of specific picks: three
+  suspect shots, a hand-built set of inlines from picking.
+
+Out-of-domain entries in a List render as blank columns rather
+than failing — convenient for comparing members that don't all
+contain the same ids.
 
 ## Keyboard shortcuts
 

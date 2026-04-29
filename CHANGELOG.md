@@ -1,76 +1,25 @@
 # Changelog
 
-## [Unreleased] v3.3 — Validation Tightening
+## [v0.3.0] Row Types: Value / Range / List per row
 
-- **`RowSelection.validate_against_domain(domain)`** returns a short
-  warning string when a row's selection is partially or fully outside
-  a dataset's `[min, max]` for the row's key field. `None` means
-  fully covered. `TRACE_RANGE` rows always pass; empty `List` rows
-  pass.
-- **Active-member domain check** runs in `GroupCommandBar` on
-  `member_added`, `member_removed`, and `active_index_changed`. Any
-  warning is surfaced via the bar's `status_message` signal so the
-  user gets immediate feedback when coverage shifts under the current
-  sort.
-- **Key-change reset notification.** Changing a row's key dropdown
-  already reset the row to type-appropriate defaults (Value
-  `(0, 1, 1)`, Range full domain, List empty); v3.3 emits
-  `"Reset {primary|secondary} to defaults for new key {field}"` so
-  the reset is visible.
-- **Commit-failure messages tightened.** Range-coverage failures now
-  read `"Incompatible: {field} range [lo, hi] does not overlap
-  {member}'s [min, max]"` (with the member's actual domain), and
-  field-presence failures read `"Incompatible: {row} sort field
-  {field} not populated on {member}"`. Both prefixed with
-  `Incompatible:` so the cause is unmistakable. Failure paths still
-  preserve the uncommitted draft and don't update the display.
-- **Documentation.** New `Validation rules` subsection in CLAUDE.md
-  covers the two validation layers, the key-change reset, the
-  type-change translation warnings, and the commit-failure
-  invariants.
+Consolidated release of the v3.x line. The two-row sort introduced in
+v0.2.0 gains a per-row **type** dimension: each row chooses
+independently between a Value (arithmetic progression), Range
+(contiguous band), or List (explicit ids) selection over its key
+field.
 
-Tests: new `test_validation.py` (per-type domain checks including
-inverted-domain normalization and empty-list silence),
-`test_key_change_reset.py` (Value/Range/List key change resets +
-status message), and `test_commit_failures.py` (List parse error,
-disjoint Range, missing field — each preserves draft and emits a
-specific reason).
+**Breaking change vs v0.2.0.** `models/sort_config.py` no longer
+exports `PrimarySelection` or `SecondarySelection`. Both rows are now
+expressed as a single `RowSelection` dataclass with a `type` field
+and one populated parameter object (`ValueParams`, `RangeParams`,
+`ListParams`). External code that constructed `SortConfig` from the
+old types must migrate. (Internal-only impact in this repo, but
+documented for future-archaeology.)
 
-## [Unreleased] v3.2 — List Polish
-
-- **Parser rewrite.** `parse_list` now returns a `ParseResult`
-  dataclass (`ids`, `error`, `error_position`). Errors are specific
-  and 1-indexed: `expected integer at position N`,
-  `unmatched range hyphen at position N`,
-  `negative integer not allowed at position N`,
-  `empty entry at position N`. Reversed ranges (`5-3`) normalize to
-  `[3,4,5]`; single-element ranges (`7-7`) are valid; trailing commas
-  and whitespace anywhere outside an integer are accepted.
-- **Inline error UI.** Each List-row page is now a vertical stack:
-  line edit, red error label below the input (hidden when valid),
-  parsed-summary at the bottom (`→ N groups: a, b, c…` truncated).
-- **Last-good list retained on parse error.** While the input is
-  unparseable the row's `RowSelection.list_` keeps its last valid
-  value; commit is refused and the status bar names which row plus
-  the parser's specific message and position.
-- **Soft cap at 1,000 entries.** The parsed-summary appends
-  `(large list — performance may degrade)` and the status bar emits
-  a one-shot notification when a list crosses the threshold; the flag
-  resets when the list drops back below so a later crossing warns
-  again. The status fragment for List rows appends `· large list`.
-- **Out-of-domain entries** still parse successfully; rendering leaves
-  blank columns for ids the dataset doesn't have (no commit failure).
-
-Tests: new `test_list_parser_full.py` covers grammar, errors, positions,
-and large lists; new `test_list_widget_integration.py` exercises the
-inline error label, last-good retention, commit refusal with named-row
-status, empty-list commit, and the one-shot soft-cap warning.
-`test_list_parser_basic.py` was retired in favor of the full file.
-
-## [Unreleased] v3.1 — Row Types Architecture
+### v3.1 — Row types architecture
 
 - **Per-row selector type.** Each command-bar row (primary and
-  secondary) now carries a Type dropdown — Value / Range / List —
+  secondary) carries a Type dropdown — Value / Range / List —
   alongside the existing Field and Direction controls. Both rows can
   independently use any of the three types.
 - **Value** keeps the M4.1 scroll-bar-with-markers (First / Count /
@@ -78,12 +27,11 @@ status, empty-list commit, and the one-shot soft-cap warning.
   arithmetic progression on the secondary.
 - **Range** uses a dual-handle band selector over the field's value
   domain.
-- **List** uses a text input that parses
-  `"1, 5-7, 12"`-style grammar (deduped, sorted; trailing comma
-  allowed; empty input valid). Out-of-domain entries render blank
-  rather than failing.
-- **Type translation** is lossless when possible and produces a status
-  bar warning when not (e.g. `value→range` with skip>1 warns
+- **List** uses a text input that parses `"1, 5-7, 12"`-style grammar
+  (deduped, sorted; trailing comma allowed; empty input valid).
+  Out-of-domain entries render blank rather than failing.
+- **Type translation** is lossless when possible and produces a
+  status bar warning when not (e.g. `value→range` with skip>1 warns
   `skip discarded`; `list→value` over a non-progression warns
   `list gaps lost`).
 - **Compatibility checks** are now per-row. Range-typed rows still
@@ -95,11 +43,70 @@ status, empty-list commit, and the one-shot soft-cap warning.
 - **Status label** reflects each row's type
   (`Shot 1/600` / `CH 1–120` / `CH 3 entries`).
 
-Tests: `test_row_selection.py`, `test_translation.py`,
-`test_get_trace_indices_v3.py`, `test_list_parser_basic.py` cover the
-new surface; existing `test_sort_config.py`,
+### v3.2 — List polish
+
+- **Parser rewrite.** `parse_list` returns a `ParseResult` dataclass
+  (`ids`, `error`, `error_position`). Errors are specific and
+  1-indexed: `expected integer at position N`,
+  `unmatched range hyphen at position N`,
+  `negative integer not allowed at position N`,
+  `empty entry at position N`. Reversed ranges (`5-3`) normalize to
+  `[3,4,5]`; single-element ranges (`7-7`) are valid; trailing
+  commas and whitespace anywhere outside an integer are accepted.
+- **Inline error UI.** Each List-row page is a vertical stack: line
+  edit, red error label below the input (hidden when valid),
+  parsed-summary at the bottom (`→ N groups: a, b, c…` truncated).
+- **Last-good list retained on parse error.** While the input is
+  unparseable the row's `RowSelection.list_` keeps its last valid
+  value; commit is refused and the status bar names which row plus
+  the parser's specific message and position.
+- **Soft cap at 1,000 entries.** The parsed-summary appends
+  `(large list — performance may degrade)` and the status bar emits
+  a one-shot notification when a list crosses the threshold; the
+  flag resets when the list drops back below so a later crossing
+  warns again. The status fragment for List rows appends
+  `· large list`.
+
+### v3.3 — Validation tightening
+
+- **`RowSelection.validate_against_domain(domain)`** returns a short
+  warning string when a row's selection is partially or fully outside
+  a dataset's `[min, max]` for the row's key field. `None` means
+  fully covered. `TRACE_RANGE` rows always pass; empty `List` rows
+  pass.
+- **Active-member domain check** runs in `GroupCommandBar` on
+  `member_added`, `member_removed`, and `active_index_changed`. Any
+  warning is surfaced via the bar's `status_message` signal so the
+  user gets immediate feedback when coverage shifts under the
+  current sort.
+- **Key-change reset notification.** Changing a row's key dropdown
+  resets the row to type-appropriate defaults (Value `(0, 1, 1)`,
+  Range full domain, List empty) and emits
+  `"Reset {primary|secondary} to defaults for new key {field}"` so
+  the reset is visible.
+- **Commit-failure messages tightened.** Range-coverage failures
+  read `"Incompatible: {field} range [lo, hi] does not overlap
+  {member}'s [min, max]"` (with the member's actual domain), and
+  field-presence failures read `"Incompatible: {row} sort field
+  {field} not populated on {member}"`. Both prefixed with
+  `Incompatible:` so the cause is unmistakable. Failure paths
+  preserve the uncommitted draft and don't update the display.
+
+### v3.4 — v0.3.0 release polish
+
+- **README.** First-steps walkthrough rewritten to demonstrate List,
+  Range, and the row-swap end-to-end. New `Row types` section
+  briefly explains when to pick each.
+- **Version bump** to `0.3.0`.
+
+Tests added across the v3.x line: `test_row_selection.py`,
+`test_translation.py`, `test_get_trace_indices_v3.py`,
+`test_list_parser_full.py`, `test_list_widget_integration.py`,
+`test_validation.py`, `test_key_change_reset.py`,
+`test_commit_failures.py`. Existing `test_sort_config.py`,
 `test_compatibility_sort.py`, `test_group_index_sort.py`, and
-`test_group_command_bar_commit.py` are migrated to the new model.
+`test_group_command_bar_commit.py` migrated to the `RowSelection`
+model.
 
 ## [v0.2.0] Header inspection, two-row sort, polish
 
