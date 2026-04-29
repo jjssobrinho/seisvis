@@ -45,7 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from seisvis.models.group_index import GroupIndex, GroupingMode
-from seisvis.models.list_parser import parse_list
+from seisvis.models.list_parser import ParseResult, parse_list
 from seisvis.models.sort_config import (
     TRACE_RANGE_FIELD,
     ListParams,
@@ -62,6 +62,15 @@ from seisvis.ui.widgets.scroll_bar_with_markers import ScrollBarWithMarkers
 log = logging.getLogger(__name__)
 
 DRAG_THROTTLE_MS = 150
+
+# Soft cap for List-row size: at or above this count, the row's parsed
+# summary appends a perf warning and the status bar emits a one-shot
+# notification when the list crosses the threshold.
+LARGE_LIST_THRESHOLD = 1000
+
+# Inline-summary preview character budget: caps the comma-joined preview
+# of group ids so the label doesn't grow unbounded. Tested deterministically.
+_LIST_PREVIEW_BUDGET = 30
 
 
 # Fields the command bar always offers in dropdowns, even if the dataset's
@@ -114,6 +123,7 @@ class _RowWidgets:
     range_label: QLabel
     # List page widgets:
     list_edit: QLineEdit
+    list_error: QLabel
     list_summary: QLabel
     # Page indices into selector_stack:
     value_page: int
@@ -138,6 +148,11 @@ class GroupCommandBar(QWidget):
         # last good ListParams; we surface a warning on commit if needed).
         self._primary_list_error: str | None = None
         self._secondary_list_error: str | None = None
+        # Have we already emitted the soft-cap warning for the row's
+        # current list? Reset when the list drops back below the threshold
+        # so the user gets one notification per crossing.
+        self._primary_list_warned_large: bool = False
+        self._secondary_list_warned_large: bool = False
 
         # Build the two row panels and the structural buttons / commit / status.
         self._primary = self._build_row("Primary:")
@@ -220,15 +235,22 @@ class GroupCommandBar(QWidget):
         r_layout.addWidget(range_track, stretch=1)
         r_layout.addWidget(range_label)
 
-        # List page: text input + parsed-summary label.
+        # List page: text input on top, inline error indicator below it,
+        # parsed summary at the bottom. Vertical so the error message has
+        # space without crowding the input.
         list_page = QWidget(selector_stack)
         list_edit = QLineEdit(list_page)
         list_edit.setPlaceholderText("e.g. 1-10, 15, 20-30")
-        list_summary = QLabel("—", list_page)
-        l_layout = QHBoxLayout(list_page)
+        list_error = QLabel("", list_page)
+        list_error.setStyleSheet("color: #DC2626; font-size: 10pt;")
+        list_error.setVisible(False)
+        list_summary = QLabel("→ 0 groups", list_page)
+        list_summary.setStyleSheet("color: #6B7280; font-size: 10pt;")
+        l_layout = QVBoxLayout(list_page)
         l_layout.setContentsMargins(0, 0, 0, 0)
-        l_layout.setSpacing(6)
-        l_layout.addWidget(list_edit, stretch=1)
+        l_layout.setSpacing(1)
+        l_layout.addWidget(list_edit)
+        l_layout.addWidget(list_error)
         l_layout.addWidget(list_summary)
 
         v_idx = selector_stack.addWidget(value_page)
@@ -257,6 +279,7 @@ class GroupCommandBar(QWidget):
             range_track=range_track,
             range_label=range_label,
             list_edit=list_edit,
+            list_error=list_error,
             list_summary=list_summary,
             value_page=v_idx,
             range_page=r_idx,
@@ -447,6 +470,8 @@ class GroupCommandBar(QWidget):
         self._draft = self.group.shared_state.sort_config
         self._primary_list_error = None
         self._secondary_list_error = None
+        self._primary_list_warned_large = False
+        self._secondary_list_warned_large = False
         self._resync_widgets()
 
     def _resync_widgets(self) -> None:
@@ -617,28 +642,44 @@ class GroupCommandBar(QWidget):
         row.list_edit.blockSignals(True)
         row.list_edit.setText(_format_list_for_input(list_.group_ids))
         row.list_edit.blockSignals(False)
-        # Clear any cached parse error since the text now reflects a valid
-        # ListParams.
+        # Clear any cached parse error / warning since the text now reflects
+        # a valid ListParams.
         if is_primary:
             self._primary_list_error = None
+            self._primary_list_warned_large = len(list_.group_ids) >= LARGE_LIST_THRESHOLD
         else:
             self._secondary_list_error = None
-        self._update_list_summary(row, list_.group_ids, error=None)
+            self._secondary_list_warned_large = len(list_.group_ids) >= LARGE_LIST_THRESHOLD
+        self._update_list_error(row, error=None, position=None)
+        self._update_list_summary(row, list_.group_ids)
+
+    def _update_list_error(
+        self,
+        row: _RowWidgets,
+        *,
+        error: str | None,
+        position: int | None,  # noqa: ARG002 - position already encoded in error text
+    ) -> None:
+        """Show or hide the inline error label below the list input."""
+        if error is None:
+            row.list_error.setText("")
+            row.list_error.setVisible(False)
+            return
+        row.list_error.setText(error)
+        row.list_error.setVisible(True)
 
     def _update_list_summary(
         self,
         row: _RowWidgets,
         ids: tuple[int, ...] | list[int],
-        *,
-        error: str | None,
     ) -> None:
-        if error is not None:
-            row.list_summary.setText(f"⚠ {error}")
-            row.list_summary.setStyleSheet("color: #DC2626;")
-            return
-        n = len(ids)
-        row.list_summary.setStyleSheet("")
-        row.list_summary.setText(f"{n} entries")
+        """Render the parsed-summary label under the inline error.
+
+        Shows ``→ N groups`` for the empty list and ``→ N groups: a, b, c…``
+        truncated to a small char budget otherwise. Lists at or above the
+        soft-cap threshold append a perf warning suffix.
+        """
+        row.list_summary.setText(_format_summary(ids))
 
     def _field_domain(self, gi: GroupIndex, field: str) -> tuple[int, int] | None:
         if field == TRACE_RANGE_FIELD:
@@ -925,24 +966,31 @@ class GroupCommandBar(QWidget):
         current = self._draft.primary if is_primary else self._draft.secondary
         if current is None or current.type != "list":
             return
-        ids, error = parse_list(text)
+        result: ParseResult = parse_list(text)
         row = self._primary if is_primary else self._secondary
-        if error is not None:
+        if result.error is not None:
             # Keep the draft's last-good list intact; flag the parse error so
-            # commit refuses.
+            # commit refuses. Inline summary still reflects last-good count
+            # so the user can see what would be committed if they revert.
             if is_primary:
-                self._primary_list_error = error
+                self._primary_list_error = result.error
             else:
-                self._secondary_list_error = error
-            ids = current.list_.group_ids if current.list_ else ()
-            self._update_list_summary(row, ids, error=error)
+                self._secondary_list_error = result.error
+            last_good = current.list_.group_ids if current.list_ else ()
+            self._update_list_error(row, error=result.error, position=result.error_position)
+            self._update_list_summary(row, last_good)
             self._update_commit_icon()
             self._update_status()
             return
+        # Parse succeeded — update the row's RowSelection with the new ids,
+        # clear the inline error, and emit a one-shot status notification
+        # the first time the list crosses the soft cap.
+        ids = result.ids
         if is_primary:
             self._primary_list_error = None
         else:
             self._secondary_list_error = None
+        self._maybe_warn_large_list(is_primary=is_primary, count=len(ids))
         new_row = RowSelection(
             field=current.field,
             direction=current.direction,
@@ -950,9 +998,26 @@ class GroupCommandBar(QWidget):
             list_=ListParams(group_ids=tuple(ids)),
         )
         self._replace_row(is_primary=is_primary, new_row=new_row)
-        self._update_list_summary(row, ids, error=None)
+        self._update_list_error(row, error=None, position=None)
+        self._update_list_summary(row, ids)
         self._update_commit_icon()
         self._update_status()
+
+    def _maybe_warn_large_list(self, *, is_primary: bool, count: int) -> None:
+        """Emit a one-shot status notification when a list crosses the soft
+        cap. Resets when the list drops back below so a later crossing
+        warns again."""
+        warned_attr = "_primary_list_warned_large" if is_primary else "_secondary_list_warned_large"
+        already_warned = getattr(self, warned_attr)
+        crossed = count >= LARGE_LIST_THRESHOLD
+        if crossed and not already_warned:
+            who = "primary" if is_primary else "secondary"
+            self.status_message.emit(
+                f"{who} row: displaying {count}+ groups; performance may degrade"
+            )
+            setattr(self, warned_attr, True)
+        elif not crossed and already_warned:
+            setattr(self, warned_attr, False)
 
     # --- structural button handlers ---
 
@@ -977,6 +1042,7 @@ class GroupCommandBar(QWidget):
     def _on_remove_secondary_clicked(self) -> None:
         self._stage_secondary(None)
         self._secondary_list_error = None
+        self._secondary_list_warned_large = False
         self._resync_widgets()
 
     def _on_swap_clicked(self) -> None:
@@ -1006,6 +1072,8 @@ class GroupCommandBar(QWidget):
         self._draft = SortConfig(primary=new_primary, secondary=new_secondary, committed=False)
         self._primary_list_error = None
         self._secondary_list_error = None
+        self._primary_list_warned_large = False
+        self._secondary_list_warned_large = False
         self._resync_widgets()
 
     def _row_default_for_type(self, *, field: str, direction: str, type_: RowType) -> RowSelection:
@@ -1202,8 +1270,42 @@ def _status_fragment(label: str, sel: RowSelection, n_groups: int | None) -> str
         r = sel.range_
         return f"{label} {r.range_min}–{r.range_max}"
     if sel.type == "list" and sel.list_ is not None:
-        return f"{label} {len(sel.list_.group_ids)} entries"
+        n = len(sel.list_.group_ids)
+        suffix = " · large list" if n >= LARGE_LIST_THRESHOLD else ""
+        return f"{label} {n} entries{suffix}"
     return label
+
+
+def _format_summary(ids: tuple[int, ...] | list[int]) -> str:
+    """Render the inline parsed-summary text shown below the List input."""
+    n = len(ids)
+    if n == 0:
+        return "→ 0 groups"
+    sorted_ids = sorted(set(int(g) for g in ids))
+    n = len(sorted_ids)
+    preview_parts: list[str] = []
+    used = 0
+    truncated = False
+    for idx, val in enumerate(sorted_ids):
+        s = str(val)
+        sep_cost = 2 if preview_parts else 0
+        cost = sep_cost + len(s)
+        if preview_parts and used + cost > _LIST_PREVIEW_BUDGET:
+            truncated = True
+            break
+        preview_parts.append(s)
+        used += cost
+        if idx == n - 1:
+            break
+    if len(preview_parts) < n:
+        truncated = True
+    preview = ", ".join(preview_parts)
+    if truncated:
+        preview += "…"
+    base = f"→ {n} groups: {preview}"
+    if n >= LARGE_LIST_THRESHOLD:
+        base += "  (large list — performance may degrade)"
+    return base
 
 
 __all__ = ["GroupCommandBar", "DRAG_THROTTLE_MS"]

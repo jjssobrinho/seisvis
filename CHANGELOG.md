@@ -1,5 +1,36 @@
 # Changelog
 
+## [Unreleased] v3.2 — List Polish
+
+- **Parser rewrite.** `parse_list` now returns a `ParseResult`
+  dataclass (`ids`, `error`, `error_position`). Errors are specific
+  and 1-indexed: `expected integer at position N`,
+  `unmatched range hyphen at position N`,
+  `negative integer not allowed at position N`,
+  `empty entry at position N`. Reversed ranges (`5-3`) normalize to
+  `[3,4,5]`; single-element ranges (`7-7`) are valid; trailing commas
+  and whitespace anywhere outside an integer are accepted.
+- **Inline error UI.** Each List-row page is now a vertical stack:
+  line edit, red error label below the input (hidden when valid),
+  parsed-summary at the bottom (`→ N groups: a, b, c…` truncated).
+- **Last-good list retained on parse error.** While the input is
+  unparseable the row's `RowSelection.list_` keeps its last valid
+  value; commit is refused and the status bar names which row plus
+  the parser's specific message and position.
+- **Soft cap at 1,000 entries.** The parsed-summary appends
+  `(large list — performance may degrade)` and the status bar emits
+  a one-shot notification when a list crosses the threshold; the flag
+  resets when the list drops back below so a later crossing warns
+  again. The status fragment for List rows appends `· large list`.
+- **Out-of-domain entries** still parse successfully; rendering leaves
+  blank columns for ids the dataset doesn't have (no commit failure).
+
+Tests: new `test_list_parser_full.py` covers grammar, errors, positions,
+and large lists; new `test_list_widget_integration.py` exercises the
+inline error label, last-good retention, commit refusal with named-row
+status, empty-list commit, and the one-shot soft-cap warning.
+`test_list_parser_basic.py` was retired in favor of the full file.
+
 ## [Unreleased] v3.1 — Row Types Architecture
 
 - **Per-row selector type.** Each command-bar row (primary and
