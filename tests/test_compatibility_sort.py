@@ -120,8 +120,9 @@ def test_secondary_range_disjoint_fails() -> None:
     )
     result = are_toggle_compatible(a, b, _cfg_shot_with_channel_range(1, 3))
     assert not result.ok
-    assert "'B'" in result.reason
+    assert "B" in result.reason
     assert "TraceNumber" in result.reason
+    assert "Incompatible" in result.reason
 
 
 def test_secondary_list_does_not_check_overlap() -> None:
@@ -156,7 +157,8 @@ def test_primary_range_disjoint_fails() -> None:
     result = are_toggle_compatible(a, b, cfg)
     assert not result.ok
     assert "TraceNumber" in result.reason
-    assert "'B'" in result.reason
+    assert "B" in result.reason
+    assert "Incompatible" in result.reason
 
 
 def test_shape_mismatch_reports_before_sort_check() -> None:

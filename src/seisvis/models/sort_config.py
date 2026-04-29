@@ -245,6 +245,74 @@ class RowSelection:
     def with_field(self, field: str) -> RowSelection:
         return replace(self, field=field)
 
+    # --- domain validation ---
+
+    def validate_against_domain(self, domain: tuple[int, int]) -> str | None:
+        """Return ``None`` when this row's selection lies (at least partially)
+        within ``domain``, else a short human-readable warning string.
+
+        ``domain`` is the ``(min, max)`` of the row's key field's value space
+        on the dataset being checked. Validation is **non-blocking**: the
+        command bar uses the returned message for status notifications when
+        the active member changes. Hard refusal of incompatible Range rows
+        still happens in :func:`are_toggle_compatible`.
+
+        ``TRACE_RANGE`` rows are always valid — the synthetic id space
+        spans every loaded dataset.
+        """
+        if self.field == TRACE_RANGE_FIELD:
+            return None
+
+        lo, hi = int(domain[0]), int(domain[1])
+        if hi < lo:
+            lo, hi = hi, lo
+
+        if self.type == "value":
+            assert self.value is not None
+            v = self.value
+            first = v.first
+            last = v.first + max(0, v.count - 1) * max(1, v.skip)
+            if last < lo or first > hi:
+                return (
+                    f"{self.field} positions {first}…{last} are outside "
+                    f"available range [{lo}, {hi}]"
+                )
+            if first < lo or last > hi:
+                return (
+                    f"{self.field} positions {first}…{last} extend beyond "
+                    f"available range [{lo}, {hi}]"
+                )
+            return None
+
+        if self.type == "range":
+            assert self.range_ is not None
+            r = self.range_
+            if r.range_max < lo or r.range_min > hi:
+                return (
+                    f"{self.field} range [{r.range_min}, {r.range_max}] does "
+                    f"not overlap available range [{lo}, {hi}]"
+                )
+            if r.range_min < lo or r.range_max > hi:
+                return (
+                    f"{self.field} range [{r.range_min}, {r.range_max}] "
+                    f"partially outside available range [{lo}, {hi}]"
+                )
+            return None
+
+        if self.type == "list":
+            assert self.list_ is not None
+            ids = self.list_.group_ids
+            if not ids:
+                return None
+            inside = [i for i in ids if lo <= i <= hi]
+            if not inside:
+                return f"{self.field} list entries are all outside available range [{lo}, {hi}]"
+            if len(inside) < len(ids):
+                return f"{self.field} list has entries outside available range [{lo}, {hi}]"
+            return None
+
+        return None
+
 
 def _is_arithmetic_progression(sorted_ids: list[int]) -> bool:
     """``sorted_ids`` already deduplicated and sorted ascending."""

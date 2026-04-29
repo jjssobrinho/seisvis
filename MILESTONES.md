@@ -1,115 +1,89 @@
-Milestone v3.2 — List Polish
-Prerequisite: v31-done.
-Polish the List input experience: full grammar with whitespace
-tolerance, inline error reporting, soft warning at 1,000 entries,
-previous-valid-state-holds during invalid input. The minimal
-v3.1 List input is enhanced, not replaced.
-Parser improvements
-Extend src/seismic_viz/models/list_parser.py:
-python@dataclass
-class ParseResult:
-    ids: list[int]              # sorted, deduplicated
-    error: Optional[str]        # human-readable error or None
-    error_position: Optional[int]   # character index of first error
-Grammar precisely:
+Milestone v3.3 — Validation Tightening
+Prerequisite: v32-done.
+Tighten validation across all row types and clarify the rules in
+documentation. This is the smallest of the four v3 milestones.
+Range row min/max coherence
+Currently, a Range-type row's RangeTrackWithMarkers permits any
+[min, max] the user can drag. Add validation:
 
-Entries separated by commas. Trailing comma allowed.
-Each entry is either an integer or int-int (range, inclusive).
-Whitespace allowed around commas, hyphens, and entries.
-Negative integers are NOT accepted in v0.3.0 (group IDs are
-non-negative).
-Reversed ranges (5-3) are accepted and normalized to 3-5.
-Single-element ranges (7-7) are valid; equivalent to 7.
-Empty input → empty list, no error.
-Maximum total entries after expansion: no hard cap (warn at
-1,000; see below).
+Inverted range (min > max): the widget should never allow
+this — the M4.1 widget already clamps. Confirm the clamp works
+when the user types into supporting spinboxes (if any) and via
+keyboard.
+Out-of-domain range: if the row's key field's domain is
+[100, 1000] and the user manually sets the range to [2000, 3000] (somehow — e.g. the dataset changes), the row should
+detect this and surface a status warning. Compatibility check
+already handles this; this is just a UX notification.
 
-Error reporting must be specific:
+Add a validation method to RowSelection:
+pythondef validate_against_domain(self, domain: tuple[int, int]) -> Optional[str]:
+    """Returns None if valid, or a human-readable error string."""
+Called by the command bar whenever the active member changes (so
+if a member is added with narrower coverage than the current
+config requires, the user gets immediate feedback).
+Behavior on key field change
+When the user changes a row's key dropdown to a different field,
+the row's selection state is reset to defaults for the
+current type:
 
-"expected integer at position 5" (showing 1-indexed character
-in the input).
-"unmatched range hyphen at position 12".
-"negative integer not allowed at position 8".
+Value → ValueParams(first=0, count=1, skip=1).
+Range → full domain of new key.
+List → empty list.
 
-The parser is purely string → result; no domain knowledge.
-Out-of-domain group IDs (legal integers but not present in the
-dataset) are returned successfully — the rendering layer handles
-them as blank.
-Inline error UI
-Update the List page in the row's QStackedWidget:
+Why: the prior selection's values are meaningless for a different
+key (e.g. "show shots 1-10" doesn't translate to "show channels
+1-10" with any obvious meaning). Resetting is honest.
+The status bar reports the reset: "Reset {row} to defaults for
+new key {field}".
+Behavior on type change re-confirmation
+v3.1 implements translate_to which converts state across types.
+Confirm the implementation:
 
-Below the QLineEdit, a small error indicator label.
-On every keystroke, run the parser:
+All translations match the table.
+Warnings appear in the status bar and are dismissible (they
+clear on next user action).
+Edge cases: translating from an unparseable List (current text
+field is invalid) — use the last valid list, or empty if no
+valid list ever existed.
 
-If parse succeeds: clear the error label; update an internal
-"pending list" but DO NOT update the row's RowSelection
-(uncommitted state).
-If parse fails: show the error message in the indicator label
-in red. The pending list keeps its last valid value (so commit
-can still use it if the user gives up on the current edit).
+Behavior on commit failure
+When a commit fails (incompatible members, invalid List, etc.),
+the failure path must be:
 
+Status bar shows the specific reason (e.g. "Incompatible:
+{field} range [20, 100] does not overlap {member.name}'s
+[1, 96]").
+The uncommitted state persists — the user can fix and retry.
+The display does NOT change (still showing the last committed
+state).
+The ★ button stays in the uncommitted (☆) state.
 
-Below the error indicator, a parsed-summary label:
-→ 8 groups: 1, 5, 47, 100… (truncated to fit width).
-
-The row's RowSelection.list_ updates only when:
-
-The user moves focus away from the field while parse is valid, OR
-The user presses commit while parse is valid.
-
-If the user presses commit while any List row's text field is
-currently invalid, the commit is refused; status bar names the
-row.
-Soft warning at 1,000 entries
-When the parsed list has 1,000 or more entries:
-
-Inline summary label appends  (large list — performance may degrade).
-Status bar appends the same warning when the row is the
-active edit target.
-
-No hard cap. The widget tolerates any size; rendering reads
-however many group IDs it's given.
-Edge cases
-
-Empty list committed: a List-type row with an empty list
-produces no traces. Primary empty list = blank canvas. Secondary
-empty list = no traces in any primary group (also blank canvas).
-The status bar reflects this: "0 groups" displayed clearly so
-the user knows it's not a bug.
-Out-of-domain entries: entries the dataset doesn't have
-render blank for that member. Compatibility check (v3.1)
-doesn't fail on this.
-Reversed range: 5-3 parsed as [3, 4, 5]. Direction
-arrow then orders them per the row's direction.
-Duplicates: deduplicated silently in the parser.
-
+Verify all failure paths: invalid List, out-of-range Range,
+missing field, etc. — all give specific reasons, not "compat
+failed".
+Documentation
+Update CLAUDE.md's Sort section if any v3.1/v3.2 details
+diverged from spec. Document the validation rules in a new
+"Validation rules" subsection.
 Tests
 
-tests/test_list_parser_full.py: every case above. Whitespace
-tolerance. Reversed ranges. Trailing commas. Specific error
-messages and positions.
-tests/test_list_widget_integration.py (manual test plan in
-tests/manual/v32_list_polish.md):
-
-Type a partial valid input like 1-; verify error indicator
-shows; verify pending list keeps last valid; verify commit is
-refused with named-row status message.
-Fix the input; verify error clears; verify summary label
-updates.
-Type a list of 1,500 entries; verify large-list warning shows.
-Submit empty list; verify canvas blanks with clear status.
-
-
+tests/test_validation.py: validate_against_domain for each
+row type, including out-of-domain edge cases.
+tests/test_key_change_reset.py: changing key field resets
+selection to type-appropriate defaults.
+tests/test_commit_failures.py: each commit-failure mode
+produces a specific error message.
 
 Verification
 
-Type valid lists with various edge cases (1-3, 5-3, 1, 1, 1
-should dedup, etc.) and confirm parsing.
-Type 1-10, abc; verify error message points at character
-position of abc.
-Type 1-10000; verify the warning appears but the list parses.
-Press commit while text field is invalid; verify refusal and
-status message names the row.
+Set primary Range over Shot to [50, 100]. Add a member with
+only shots 1-30. Verify status warning and commit refusal with
+specific message.
+Change a row's key field; verify selection resets to defaults
+for that type.
+Translate List → Value with a non-progression list; verify the
+warning text appears and the status bar can be cleared by
+another action.
 
-On completion: commit feat: v3.2 list polish and parsing,
-tag v32-done, stop.
+On completion: commit feat: v3.3 validation tightening,
+tag v33-done, stop.

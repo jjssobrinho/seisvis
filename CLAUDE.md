@@ -322,6 +322,36 @@ fail validation.
 - No hard cap in v0.3.0. The widget tolerates any size; the
   rendering pipeline reads however many group IDs it's given.
 
+### Validation rules
+
+Two layers — non-blocking domain checks (status bar warnings) and
+blocking commit checks (`are_toggle_compatible`):
+
+- **Non-blocking domain check**: `RowSelection.validate_against_domain(domain)`
+  returns a short message if the row's selection is partially or
+  fully outside the active member's `[min, max]` for that field.
+  Called by the command bar on `member_added`, `member_removed`, and
+  `active_index_changed`. `TRACE_RANGE` rows always pass. Empty
+  `List` rows pass — they render blank, not invalid.
+- **Key change reset**: changing a row's key dropdown drops the
+  prior selection and seeds defaults for the row's current type
+  (Value → `(0, 1, 1)`; Range → full domain of new key; List →
+  empty). Status bar reports `"Reset {primary|secondary} to
+  defaults for new key {field}"`.
+- **Type change**: `RowSelection.translate_to` returns
+  `(new_selection, optional_warning)` per the translation table.
+  When a warning is returned the command bar emits it as a status
+  message; the draft stays uncommitted. Translating from an
+  unparseable List uses the last good `ListParams` already on the
+  draft (or empty if none was ever valid).
+- **Commit failure invariants**: when commit is refused (List
+  parse error, Range with no overlap, missing field), the status
+  bar (and modal) reports a *specific* reason naming the field,
+  the configured selection, and — for coverage failures — the
+  member's actual domain. The draft stays `committed=False`, the
+  ★ stays ☆, `group.update_sort_config` is not called, and the
+  display continues to show the last committed state.
+
 ---
 
 ## `.sv` Sidecar

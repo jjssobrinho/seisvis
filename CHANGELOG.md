@@ -1,5 +1,41 @@
 # Changelog
 
+## [Unreleased] v3.3 — Validation Tightening
+
+- **`RowSelection.validate_against_domain(domain)`** returns a short
+  warning string when a row's selection is partially or fully outside
+  a dataset's `[min, max]` for the row's key field. `None` means
+  fully covered. `TRACE_RANGE` rows always pass; empty `List` rows
+  pass.
+- **Active-member domain check** runs in `GroupCommandBar` on
+  `member_added`, `member_removed`, and `active_index_changed`. Any
+  warning is surfaced via the bar's `status_message` signal so the
+  user gets immediate feedback when coverage shifts under the current
+  sort.
+- **Key-change reset notification.** Changing a row's key dropdown
+  already reset the row to type-appropriate defaults (Value
+  `(0, 1, 1)`, Range full domain, List empty); v3.3 emits
+  `"Reset {primary|secondary} to defaults for new key {field}"` so
+  the reset is visible.
+- **Commit-failure messages tightened.** Range-coverage failures now
+  read `"Incompatible: {field} range [lo, hi] does not overlap
+  {member}'s [min, max]"` (with the member's actual domain), and
+  field-presence failures read `"Incompatible: {row} sort field
+  {field} not populated on {member}"`. Both prefixed with
+  `Incompatible:` so the cause is unmistakable. Failure paths still
+  preserve the uncommitted draft and don't update the display.
+- **Documentation.** New `Validation rules` subsection in CLAUDE.md
+  covers the two validation layers, the key-change reset, the
+  type-change translation warnings, and the commit-failure
+  invariants.
+
+Tests: new `test_validation.py` (per-type domain checks including
+inverted-domain normalization and empty-list silence),
+`test_key_change_reset.py` (Value/Range/List key change resets +
+status message), and `test_commit_failures.py` (List parse error,
+disjoint Range, missing field — each preserves draft and emits a
+specific reason).
+
 ## [Unreleased] v3.2 — List Polish
 
 - **Parser rewrite.** `parse_list` now returns a `ParseResult`

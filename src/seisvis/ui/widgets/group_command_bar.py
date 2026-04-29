@@ -172,9 +172,10 @@ class GroupCommandBar(QWidget):
         self._build_layout()
         self._wire_signals()
 
-        group.member_added.connect(self._rebuild)
-        group.member_removed.connect(self._rebuild)
+        group.member_added.connect(self._on_member_added)
+        group.member_removed.connect(self._on_member_removed)
         group.reference_index_changed.connect(self._rebuild)
+        group.active_index_changed.connect(self._on_active_index_changed)
         group.shared_state_changed.connect(self._sync_from_state)
 
         self._rebuild()
@@ -427,6 +428,66 @@ class GroupCommandBar(QWidget):
 
     def _on_index_ready(self) -> None:
         self._rebuild()
+
+    # --- active-member domain validation ---
+
+    def _on_member_added(self, _index: int) -> None:
+        self._rebuild()
+        self._validate_active_member()
+
+    def _on_member_removed(self, _index: int) -> None:
+        self._rebuild()
+        self._validate_active_member()
+
+    def _on_active_index_changed(self, _index: int) -> None:
+        self._validate_active_member()
+
+    def _active_dataset(self):  # noqa: ANN202
+        if self.group.is_empty:
+            return None
+        return self.group.members[self.group.active_index].dataset
+
+    def _domain_on(self, ds, field: str) -> tuple[int, int] | None:  # noqa: ANN001
+        """Return ``(min, max)`` for *field* on *ds*, or None if unavailable.
+
+        ``TRACE_RANGE`` short-circuits to the dataset's full id space.
+        """
+        if ds is None:
+            return None
+        if field == TRACE_RANGE_FIELD:
+            n = int(getattr(ds, "n_traces", 0))
+            if n <= 0:
+                return None
+            return (0, n - 1)
+        gi = getattr(ds, "group_index", None)
+        if gi is None:
+            return None
+        return gi.field_value_range(field)
+
+    def _validate_active_member(self) -> None:
+        """Run :meth:`RowSelection.validate_against_domain` on the active
+        member for each row of the *committed* sort config and surface any
+        warning via ``status_message``.
+
+        Triggered on member add / remove / active-index change so the user
+        gets immediate feedback when coverage shifts under the current sort.
+        """
+        sc = self.group.shared_state.sort_config
+        ds = self._active_dataset()
+        if ds is None:
+            return
+        for row, label in (
+            (sc.primary, "primary"),
+            (sc.secondary, "secondary"),
+        ):
+            if row is None:
+                continue
+            domain = self._domain_on(ds, row.field)
+            if domain is None:
+                continue
+            warning = row.validate_against_domain(domain)
+            if warning is not None:
+                self.status_message.emit(f"{label} row: {warning}")
 
     # --- field-list helpers ---
 
@@ -784,6 +845,10 @@ class GroupCommandBar(QWidget):
         )
         self._replace_row(is_primary=is_primary, new_row=new_row)
         self._resync_widgets()
+        who = "primary" if is_primary else "secondary"
+        self.status_message.emit(
+            f"Reset {who} to defaults for new key {self._field_label(new_field)}"
+        )
 
     def _on_type_changed(self, *, is_primary: bool) -> None:
         if self._rebuilding:

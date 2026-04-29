@@ -85,6 +85,14 @@ def _range_coverage_ok(ds: Dataset, field: str, lo: int, hi: int) -> bool:
     return bool(np.any((arr >= lo) & (arr <= hi)))
 
 
+def _field_domain_on(ds: Dataset, field: str) -> tuple[int, int] | None:
+    """Return ``(min, max)`` for *field* on *ds*, or None if unavailable."""
+    gi = ds.group_index
+    if gi is None:
+        return None
+    return gi.field_value_range(field)
+
+
 def _row_compat(
     a: Dataset,
     b: Dataset,
@@ -98,7 +106,7 @@ def _row_compat(
         if required - _fields_populated_on(ds, required):
             return CompatResult(
                 False,
-                f"{label} sort field {row.field!r} not populated on {ds.name!r}",
+                f"Incompatible: {label} sort field {row.field} not populated on {ds.name}",
             )
         del ds_label
     if row.type == "range":
@@ -106,9 +114,12 @@ def _row_compat(
         lo, hi = row.range_.range_min, row.range_.range_max
         for ds in (a, b):
             if not _range_coverage_ok(ds, row.field, lo, hi):
+                domain = _field_domain_on(ds, row.field)
+                where = f"[{domain[0]}, {domain[1]}]" if domain is not None else "values"
                 return CompatResult(
                     False,
-                    f"{row.field} range [{lo}, {hi}] does not overlap {ds.name!r}'s values",
+                    f"Incompatible: {row.field} range [{lo}, {hi}] does not "
+                    f"overlap {ds.name}'s {where}",
                 )
     return CompatResult(True, "")
 
