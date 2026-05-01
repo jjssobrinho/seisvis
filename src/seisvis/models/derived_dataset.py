@@ -134,6 +134,9 @@ class DerivedDataset(QObject):
     def crossline_at(self, trace_index: int) -> int | None:
         return self.parent_a.crossline_at(trace_index)
 
+    def header_value_at(self, field: str, trace_index: int) -> int | None:
+        return self.parent_a.header_value_at(field, trace_index)
+
     def close(self) -> None:
         pass  # parents own their handles
 

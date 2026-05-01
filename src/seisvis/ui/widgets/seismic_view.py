@@ -1083,12 +1083,29 @@ class SeismicView(QWidget):
 
             return _DEFAULT_FIELD_NAMES.get(f, f)
 
+        def _header_at(f: str) -> int | None:
+            if hasattr(ds, "header_value_at"):
+                return ds.header_value_at(f, trace)
+            return None
+
         primary_name = _field_name(field)
         if field == "FieldRecord":
+            ch = _header_at("TraceNumber")
             ch_name = _field_name("TraceNumber")
-            return (
-                f"{primary_name} {group_id}, {ch_name} {ch + 1} | t = {t_str} ms | amp = {amp_str}"
-            )
+            if ch is not None:
+                return (
+                    f"{primary_name} {group_id}, {ch_name} {ch} | t = {t_str} ms | amp = {amp_str}"
+                )
+            return f"{primary_name} {group_id} | t = {t_str} ms | amp = {amp_str}"
+        if field == "TraceNumber":
+            ffid = _header_at("FieldRecord")
+            shot_name = _field_name("FieldRecord")
+            if ffid is not None:
+                return (
+                    f"{primary_name} {group_id}, {shot_name} {ffid} "
+                    f"| t = {t_str} ms | amp = {amp_str}"
+                )
+            return f"{primary_name} {group_id} | t = {t_str} ms | amp = {amp_str}"
         if field == "INLINE_3D":
             xl = ds.crossline_at(trace) if hasattr(ds, "crossline_at") else None
             xl_name = _field_name("CROSSLINE_3D")
@@ -1106,8 +1123,8 @@ class SeismicView(QWidget):
                 )
             return f"{primary_name} {group_id} | t = {t_str} ms | amp = {amp_str}"
         # Generic field: single-line readout keyed off the field's display
-        # name. Covers TraceNumber, CDP, offset, and any other populated
-        # primary the user picks.
+        # name. Covers CDP, offset, and any other populated primary the user
+        # picks for which we don't have a meaningful secondary header.
         return f"{primary_name} {group_id} | t = {t_str} ms | amp = {amp_str}"
 
     def _build_group_x_positions(

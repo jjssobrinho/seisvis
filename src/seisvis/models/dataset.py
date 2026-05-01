@@ -161,6 +161,18 @@ class Dataset(QObject):
         """Return the crossline number at ``trace_index``, or ``None``."""
         return self._header_value_at(GroupingMode.CROSSLINE, trace_index)
 
+    def header_value_at(self, field: str, trace_index: int) -> int | None:
+        """Return the header value for ``field`` at ``trace_index``, or ``None``.
+
+        Generic counterpart to :meth:`inline_at` / :meth:`crossline_at` — reads
+        any field that the group index has materialized (e.g. ``FieldRecord``,
+        ``TraceNumber``).
+        """
+        gi = self.group_index
+        if gi is None:
+            return None
+        return gi.field_value_at(field, trace_index)
+
     def _header_value_at(self, mode: GroupingMode, trace_index: int) -> int | None:
         gi = self.group_index
         if gi is None or gi.mode_state(mode) is not ModeState.READY:

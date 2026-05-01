@@ -580,6 +580,21 @@ class GroupIndex:
         ch = int(np.count_nonzero(arr[:t] == gid))
         return gid, ch
 
+    def field_value_at(self, field: str, trace_index: int) -> int | None:
+        """Return the per-trace header value for ``field`` at ``trace_index``.
+
+        Reads from the field-name-keyed per-trace arrays populated either at
+        construction or by a full header scan. Returns ``None`` when the
+        field hasn't been materialized or the index is out of range.
+        """
+        t = int(trace_index)
+        if t < 0 or t >= self._n_traces:
+            return None
+        arr = self._field_arrays.get(field)
+        if arr is None or t >= arr.size:
+            return None
+        return int(arr[t])
+
     def field_group_for_trace(self, field: str, trace_index: int) -> tuple[int, int] | None:
         """Return ``(group_id, index_within_group)`` for ``trace_index`` keyed
         on an arbitrary header *field* (or the ``TRACE_RANGE`` sentinel).
