@@ -19,6 +19,7 @@ _SHORTCUTS: list[tuple[str, str]] = [
     ("Ctrl+D", "Compute A − B from current diff selection"),
     ("1 … 9", "Switch to member 1–9 (canvas focus)"),
     ("Space", "Toggle auto-flicker on/off (canvas focus)"),
+    ("C", "Toggle crosshair lines on/off (canvas focus, off by default)"),
     ("F", "Fit to command-bar view / reset zoom (canvas focus)"),
     ("g", "Increase gain +3 dB (canvas focus)"),
     ("G", "Decrease gain −3 dB (canvas focus)"),

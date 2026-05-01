@@ -166,6 +166,8 @@ class SeismicView(QWidget):
         # Used to translate packed display-x coordinates back to physical
         # trace indices for the crosshair readout and info-track ticks.
         self._current_trace_indices: np.ndarray | None = None
+        # Crosshair lines start hidden; user presses `c` to toggle.
+        self._crosshair_enabled: bool = False
 
         self._build_ui()
         self._wire_group_signals()
@@ -306,6 +308,7 @@ class SeismicView(QWidget):
             (QKeySequence(Qt.Key.Key_End), self.command_bar.go_last),
             (QKeySequence(Qt.Key.Key_F), self._reset_zoom_to_commanded),
             (QKeySequence(Qt.Key.Key_Space), self._toggle_flicker),
+            (QKeySequence("c"), self._toggle_crosshair),
             (QKeySequence("g"), lambda: self._bump_gain(3.0)),
             (QKeySequence("Shift+g"), lambda: self._bump_gain(-3.0)),
         ):
@@ -329,6 +332,12 @@ class SeismicView(QWidget):
         cb = self.toggle_bar._flicker_check
         if cb.isEnabled():
             cb.setChecked(not cb.isChecked())
+
+    def _toggle_crosshair(self) -> None:
+        self._crosshair_enabled = not self._crosshair_enabled
+        if not self._crosshair_enabled:
+            self._v_line.setVisible(False)
+            self._h_line.setVisible(False)
 
     # Mirrors the controller's edit-target fan-out: link_all=True fans to every
     # member, otherwise only the edit target is bumped. Kept on the canvas (not
@@ -1028,8 +1037,8 @@ class SeismicView(QWidget):
         t_ms = float(data_pt.y())
         self._v_line.setPos(trace)
         self._h_line.setPos(t_ms)
-        self._v_line.setVisible(True)
-        self._h_line.setVisible(True)
+        self._v_line.setVisible(self._crosshair_enabled)
+        self._h_line.setVisible(self._crosshair_enabled)
 
         amp = self._amplitude_at(trace, t_ms)
         self.cursor_readout.emit(trace, t_ms, amp)
