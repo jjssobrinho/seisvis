@@ -18,6 +18,7 @@ from PySide6.QtWidgets import QMainWindow, QTabWidget, QWidget
 
 from seisvis.models.toggle_group import ToggleGroup
 from seisvis.ui.widgets.fft_tab import FFTTab
+from seisvis.ui.widgets.fk_tab import FKTab
 
 if TYPE_CHECKING:
     from seisvis.controllers.transform_controller import TransformController
@@ -48,7 +49,7 @@ class TransformWindow(QMainWindow):
         # Keep references so we can route worker results to the right tab
         # without searching by index (tabs may be reordered/closed).
         self._fft_tab: FFTTab | None = None
-        self._fk_tab: QWidget | None = None
+        self._fk_tab: FKTab | None = None
 
         controller.result_ready.connect(self._on_result_ready)
         controller.result_failed.connect(self._on_result_failed)
@@ -73,17 +74,17 @@ class TransformWindow(QMainWindow):
         self._tabs.setCurrentWidget(self._fft_tab)
 
     def open_fk_tab(self) -> None:
-        """Stub for v4.2 — adds a placeholder tab so the wiring is exercised.
-
-        Real f-k math arrives in v4.3 along with the proper widget.
-        """
+        """Add the f-k tab if missing and make it current."""
         if self._fk_tab is None:
-            from PySide6.QtWidgets import QLabel
-
-            placeholder = QLabel("f-k transform — coming in v4.3", parent=self)
-            placeholder.setStyleSheet("color: #888; font-style: italic; padding: 24px;")
-            self._tabs.addTab(placeholder, "f-k")
-            self._fk_tab = placeholder
+            tab = FKTab(self._group, parent=self)
+            tab.member_requested.connect(
+                lambda member: self._controller.request_recompute("fk", [member])
+            )
+            self._tabs.addTab(tab, "f-k")
+            self._fk_tab = tab
+            # Initial dispatch is immediate — see open_fft_tab for the
+            # rationale (no other event to coalesce with).
+            self._controller.request_recompute("fk", [tab.selected_member()], immediate=True)
         self._tabs.setCurrentWidget(self._fk_tab)
 
     def has_fft_tab(self) -> bool:
@@ -113,6 +114,9 @@ class TransformWindow(QMainWindow):
     ) -> None:
         if transform_type == "fft" and self._fft_tab is not None:
             self._fft_tab.update_curve(member_index, axes, magnitude)
+        elif transform_type == "fk" and self._fk_tab is not None:
+            freq, wavenumber = axes  # type: ignore[misc]
+            self._fk_tab.update_image(member_index, freq, wavenumber, magnitude)
 
     def _on_result_failed(self, member_index: int, transform_type: str, error_msg: str) -> None:
         log.warning(
@@ -120,6 +124,8 @@ class TransformWindow(QMainWindow):
         )
         if transform_type == "fft" and self._fft_tab is not None:
             self._fft_tab.show_error(member_index, error_msg)
+        elif transform_type == "fk" and self._fk_tab is not None:
+            self._fk_tab.show_error(member_index, error_msg)
 
     def _on_group_name_changed(self, name: str) -> None:
         self.setWindowTitle(f"Transforms — {name}")
@@ -127,6 +133,8 @@ class TransformWindow(QMainWindow):
     def _refresh_member_lists(self) -> None:
         if self._fft_tab is not None:
             self._fft_tab.rebuild_member_selectors()
+        if self._fk_tab is not None:
+            self._fk_tab.rebuild_member_selectors()
 
     def closeEvent(self, event: QEvent) -> None:  # type: ignore[override]
         self._controller.cancel_all()

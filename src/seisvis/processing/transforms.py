@@ -2,8 +2,8 @@
 
 Functions here are deliberately Qt-free and side-effect-free so that the
 worker layer can call them on a thread pool and tests can exercise them in
-isolation. v4.2 ships the per-trace FFT averaged across traces; the f-k
-transform lands in v4.3.
+isolation. v4.2 shipped the per-trace FFT averaged across traces; v4.3
+adds the 2D f-k (frequency-wavenumber) transform.
 """
 
 from __future__ import annotations
@@ -40,3 +40,43 @@ def fft_per_trace_averaged(
     averaged = magnitudes.mean(axis=0).astype(np.float32, copy=False)
     freq_hz = np.fft.rfftfreq(n_samples, d=dt_s).astype(np.float32, copy=False)
     return freq_hz, averaged
+
+
+def fk_transform(
+    data: np.ndarray,
+    sample_interval_ms: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """2D FFT magnitude of a (trace × time) selection, fftshifted.
+
+    ``data`` is shape ``(n_traces, n_samples)`` (the orientation produced by
+    :meth:`Dataset.read_slice`). The 2D FFT is taken over both axes, the
+    magnitude is computed, and both axes are ``fftshift``ed so zero
+    frequency / wavenumber sits at the array centre.
+
+    Returns ``(frequency_hz, wavenumber_cycles_per_trace, magnitude)`` where
+    ``frequency_hz`` has length ``n_samples``, ``wavenumber`` has length
+    ``n_traces``, and ``magnitude`` has shape ``(n_traces, n_samples)``,
+    all ``float32``. Empty input (zero traces or zero samples) yields three
+    empty ``float32`` arrays.
+
+    Wavenumber is reported in cycles-per-trace, not cycles-per-meter — the
+    function makes no assumption about physical trace spacing.
+    """
+    if data.ndim != 2:
+        raise ValueError(f"data must be 2-D, got {data.ndim}-D")
+    n_traces, n_samples = data.shape
+    if n_traces == 0 or n_samples == 0:
+        empty = np.empty(0, dtype=np.float32)
+        empty2d = np.empty((0, 0), dtype=np.float32)
+        return empty, empty, empty2d
+    if not sample_interval_ms or sample_interval_ms <= 0:
+        raise ValueError(f"sample_interval_ms must be positive, got {sample_interval_ms!r}")
+
+    dt_s = float(sample_interval_ms) / 1000.0
+    spectrum = np.fft.fft2(data.astype(np.float32, copy=False))
+    shifted = np.fft.fftshift(spectrum)
+    magnitude = np.abs(shifted).astype(np.float32, copy=False)
+
+    freq_hz = np.fft.fftshift(np.fft.fftfreq(n_samples, d=dt_s)).astype(np.float32, copy=False)
+    wavenumber = np.fft.fftshift(np.fft.fftfreq(n_traces, d=1.0)).astype(np.float32, copy=False)
+    return freq_hz, wavenumber, magnitude

@@ -20,7 +20,7 @@ from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
 from seisvis.models.dataset import Dataset
 from seisvis.models.selection import Selection
-from seisvis.processing.transforms import fft_per_trace_averaged
+from seisvis.processing.transforms import fft_per_trace_averaged, fk_transform
 
 log = logging.getLogger(__name__)
 
@@ -30,8 +30,8 @@ TransformType = Literal["fft", "fk"]
 class TransformWorkerSignals(QObject):
     # (member_index, transform_type, axes, magnitude)
     #
-    # ``axes`` is a 1-D ndarray for FFT (frequency_hz). For f-k (v4.3) it
-    # will be a 2-tuple ``(freq_hz, wavenumber_cpt)``.
+    # ``axes`` is a 1-D ndarray for FFT (frequency_hz) and a 2-tuple
+    # ``(freq_hz, wavenumber_cpt)`` for f-k.
     finished = Signal(int, str, object, object)
     failed = Signal(int, str, str)
 
@@ -80,17 +80,17 @@ class TransformWorker(QRunnable):
             if self.is_cancelled:
                 return
 
+            sample_interval_ms = float(self.dataset.sample_interval_ms or 1.0)
             if self.transform_type == "fft":
-                axes, magnitude = fft_per_trace_averaged(
-                    data, float(self.dataset.sample_interval_ms or 1.0)
-                )
+                axes, magnitude = fft_per_trace_averaged(data, sample_interval_ms)
+            elif self.transform_type == "fk":
+                freq, wavenumber, magnitude = fk_transform(data, sample_interval_ms)
+                axes = (freq, wavenumber)
             else:
-                # f-k lands in v4.3; emit a clear failure for now so callers
-                # surface a useful message instead of a silent no-op.
                 self.signals.failed.emit(
                     self.member_index,
                     self.transform_type,
-                    "f-k transform not implemented in v4.2",
+                    f"unknown transform type: {self.transform_type!r}",
                 )
                 return
 

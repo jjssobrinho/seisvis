@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### v4.3 — f-k Transform
+
+- **Pure f-k transform.** `processing/transforms.py` adds
+  `fk_transform(data, sample_interval_ms)`, a Qt-free function that
+  returns `(frequency_hz, wavenumber_cycles_per_trace, magnitude)` —
+  the fftshifted 2D-FFT magnitude of a `(n_traces, n_samples)`
+  selection. Wavenumber is reported in cycles-per-trace, with no
+  assumption of physical trace spacing.
+- **TransformWorker.** The `"fk"` branch is wired through to
+  `fk_transform`; it emits `(member_index, "fk", (freq, wavenumber),
+  magnitude)`. Selection slices are still pulled through
+  `SelectionSliceCache` so FFT and f-k tabs share one read per
+  member per drag-pause.
+- **f-k tab.** `ui/widgets/fk_tab.py` adds a `QComboBox` member
+  selector, a `pg.ImageView` (frequency × wavenumber) and a
+  `Computing…` overlay that fades the previous image to 50% during
+  recompute. The dropdown follows the canvas' active member, with
+  user overrides persisting until the next canvas toggle re-syncs.
+- **TransformWindow.** `open_fk_tab()` now instantiates the real
+  `FKTab`, routes f-k results / errors to it, and rebuilds its
+  member selector when members are added or removed.
+- **Toolbar.** Updated the f-k button tooltip to drop the v4.2
+  placeholder qualifier.
+- **Tests.** `test_fk_transform` (dipping plane-wave peak location,
+  fftshift symmetry, zero / empty input, validation), extended
+  `test_transform_controller` for f-k immediate dispatch with the
+  2-tuple axes contract, and extended `test_transform_window` for
+  open / idempotency / member-add rebuild / canvas-toggle re-sync.
+  Manual plan in `tests/manual/v43_fk.md`.
+
 ### v4.2 — Transform Window + FFT
 
 - **Pure FFT transform.** `processing/transforms.py` exposes

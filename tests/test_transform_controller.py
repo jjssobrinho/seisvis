@@ -49,6 +49,26 @@ def test_immediate_dispatch_runs_fft_worker(group_with_selection: ToggleGroup) -
     assert magnitude.size == axes.size
 
 
+def test_immediate_dispatch_runs_fk_worker(group_with_selection: ToggleGroup) -> None:
+    pool = QThreadPool()
+    ctrl = TransformController(group_with_selection, thread_pool=pool)
+    results: list[tuple] = []
+    ctrl.result_ready.connect(lambda *args: results.append(args))
+
+    ctrl.request_recompute("fk", [0], immediate=True)
+    pool.waitForDone(2000)
+    _wait_for(lambda: len(results) >= 1)
+
+    member_index, ttype, axes, magnitude = results[0]
+    assert member_index == 0
+    assert ttype == "fk"
+    # f-k axes is a 2-tuple (frequency_hz, wavenumber_cpt).
+    assert isinstance(axes, tuple) and len(axes) == 2
+    freq, wavenumber = axes
+    assert freq.size > 0 and wavenumber.size > 0
+    assert magnitude.shape == (wavenumber.size, freq.size)
+
+
 def test_throttle_coalesces_rapid_requests(group_with_selection: ToggleGroup) -> None:
     pool = QThreadPool()
     ctrl = TransformController(group_with_selection, thread_pool=pool)

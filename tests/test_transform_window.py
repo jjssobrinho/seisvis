@@ -76,3 +76,59 @@ def test_member_added_rebuilds_selectors(group: ToggleGroup, segy_3d: Path) -> N
         assert len(fft_tab._checkboxes) == initial + 1
     finally:
         ds2.close()
+
+
+def test_open_fk_tab_adds_real_tab(group: ToggleGroup) -> None:
+    win, _ = _make(group)
+    assert not win.has_fk_tab()
+    win.open_fk_tab()
+    assert win.has_fk_tab()
+    assert win._tabs.count() == 1
+    from seisvis.ui.widgets.fk_tab import FKTab
+
+    assert isinstance(win._fk_tab, FKTab)
+    assert win._fk_tab._combo.count() == group.n_members
+
+
+def test_open_fk_tab_idempotent(group: ToggleGroup) -> None:
+    win, _ = _make(group)
+    win.open_fk_tab()
+    win.open_fk_tab()
+    assert win._tabs.count() == 1
+
+
+def test_member_added_rebuilds_fk_selector(group: ToggleGroup, segy_3d: Path) -> None:
+    win, _ = _make(group)
+    win.open_fk_tab()
+    fk_tab = win._fk_tab
+    assert fk_tab is not None
+    initial = fk_tab._combo.count()
+
+    ds2 = load_segy(segy_3d)
+    try:
+        group.add_member(ds2)
+        assert fk_tab._combo.count() == initial + 1
+    finally:
+        ds2.close()
+
+
+def test_active_index_change_syncs_fk_combo(group: ToggleGroup, segy_3d: Path) -> None:
+    ds2 = load_segy(segy_3d)
+    try:
+        group.add_member(ds2)
+        win, _ = _make(group)
+        win.open_fk_tab()
+        fk_tab = win._fk_tab
+        assert fk_tab is not None
+        assert fk_tab.selected_member() == group.active_index
+
+        requests: list[int] = []
+        fk_tab.member_requested.connect(requests.append)
+
+        new_active = 1 if group.active_index == 0 else 0
+        group.set_active(new_active)
+        assert fk_tab._combo.currentIndex() == new_active
+        assert fk_tab.selected_member() == new_active
+        assert requests == [new_active]
+    finally:
+        ds2.close()

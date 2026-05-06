@@ -80,7 +80,7 @@ class AnalysisGroup(QGroupBox):
         self.fk_button.setText("f-k")
         self.fk_button.setIcon(_text_icon("f-k"))
         self.fk_button.setToolButtonStyle(self.fk_button.toolButtonStyle().ToolButtonTextBesideIcon)
-        self.fk_button.setToolTip("f-k transform of selection (v4.3)")
+        self.fk_button.setToolTip("Frequency-wavenumber transform of selection")
         self.fk_button.clicked.connect(self.fk_requested.emit)
         layout.addWidget(self.fk_button)
 
