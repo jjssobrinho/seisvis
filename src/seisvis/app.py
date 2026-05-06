@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from seisvis.controllers.active_group_controller import ActiveGroupController
+from seisvis.controllers.transforms_coordinator import TransformsCoordinator
 from seisvis.io.slice_cache import SliceCache
 from seisvis.models.dataset import Dataset
 from seisvis.models.project import Project
@@ -210,6 +211,10 @@ class MainWindow(QMainWindow):
         self.toolbar.analysis.selection_mode_toggled.connect(
             self.display_panel.set_selection_mode_active
         )
+        self.transforms_coordinator = TransformsCoordinator(self.project, self._pool, parent=self)
+        self.transforms_coordinator.status_message.connect(self._on_status_message)
+        self.toolbar.analysis.fft_requested.connect(self.transforms_coordinator.open_fft)
+        self.toolbar.analysis.fk_requested.connect(self.transforms_coordinator.open_fk)
         display_layout.addWidget(self.display_panel, stretch=1)
 
         self._h_splitter.addWidget(display_container)
@@ -561,6 +566,7 @@ def main() -> int:
 
     app.aboutToQuit.connect(lambda: qsettings.save(window))
     app.aboutToQuit.connect(window._cancel_all_scans)
+    app.aboutToQuit.connect(window.transforms_coordinator.shutdown)
     app.aboutToQuit.connect(project.close_all)
     window.show()
     return app.exec()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
@@ -95,6 +96,12 @@ class ToggleGroup(QObject):
         # region; cleared when the data layout changes (sort commit, group
         # switch, command-bar edit), preserved through active-member toggles.
         self._selection: Selection | None = None
+        # v4.2: per-group transform window, lazily created when the user
+        # first clicks an Analysis-toolbar transform button. ``None`` means
+        # no window currently exists; closing the window resets this to
+        # ``None`` so the next click recreates it. Typed as ``Any`` to keep
+        # the model layer free of UI imports at runtime.
+        self.transform_window: Any | None = None
 
     # --- read-only properties ---
 

@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+### v4.2 — Transform Window + FFT
+
+- **Pure FFT transform.** `processing/transforms.py` exposes
+  `fft_per_trace_averaged(data, sample_interval_ms)`, a Qt-free function
+  that returns `(frequency_hz, magnitude)` — magnitude of the per-trace
+  real FFT averaged across traces. f-k math is deferred to v4.3.
+- **TransformWorker.** `workers/transform_worker.py` runs one transform
+  on one member's selection slice on the thread pool. Cancellation is
+  cooperative: the worker checks `is_cancelled` once between the slice
+  read and the FFT call. We don't try to interrupt numpy mid-call.
+- **SelectionSliceCache.** `controllers/selection_slice_cache.py` keeps
+  one Selection's slices in memory so FFT and f-k tabs against the same
+  region share a single read; any new Selection invalidates the cache.
+- **TransformController.** `controllers/transform_controller.py` owns
+  the per-toggle-group throttle (150 ms FFT, 500 ms f-k), worker
+  lifecycle, and result routing. Selection changes cancel in-flight
+  workers and restart the timers.
+- **Transform window.** `ui/windows/transform_window.py` is a per-group
+  `QMainWindow` with a `QTabWidget` of FFT (and a v4.3 f-k placeholder).
+  Closing the last tab closes the window; closing the window cancels
+  workers and clears `ToggleGroup.transform_window` but leaves the
+  canvas selection rectangle in place.
+- **FFT tab.** `ui/widgets/fft_tab.py` shows one checkbox per member
+  (label colored to match the `tab10` palette) and one curve per
+  checked member in the same plot. A right-click `Log Y axis` toggle
+  switches between linear and log10 magnitude.
+- **Toolbar.** `AnalysisGroup` adds `FFT` and `f-k` buttons next to the
+  `Select` button. A `TransformsCoordinator` in `app.py` routes clicks
+  to the active group, lazily creating the controller + window.
+- **Tests.** `test_transforms` (sine peak, DC, zero, average, empty,
+  validation), `test_selection_slice_cache` (hits, member isolation,
+  invalidation), `test_transform_controller` (immediate dispatch,
+  throttle coalescing, cancellation on selection change, deactivate),
+  `test_transform_window` (tab open/close, group reference cleanup,
+  member-add rebuild). Manual plan in `tests/manual/v42_fft.md`.
+
 ### v4.1 — Selection tool
 
 - **Rectangular canvas selection.** A new `Selection` model on

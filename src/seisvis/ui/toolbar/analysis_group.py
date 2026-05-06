@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
-from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QGroupBox, QHBoxLayout, QToolButton, QWidget
 
 
@@ -19,10 +19,33 @@ def _selection_icon() -> QPixmap:
     return pix
 
 
+def _text_icon(text: str) -> QPixmap:
+    """16x16 pixmap with short bold lettering — used as a quick FFT/f-k glyph."""
+    pix = QPixmap(16, 16)
+    pix.fill(QColor(0, 0, 0, 0))
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    font = QFont()
+    font.setBold(True)
+    font.setPointSize(7)
+    painter.setFont(font)
+    painter.setPen(QColor("#1f77b4"))
+    painter.drawText(pix.rect(), 0x84, text)  # AlignCenter == 0x84
+    painter.end()
+    return pix
+
+
 class AnalysisGroup(QGroupBox):
-    """Analysis tab: rectangle selection (v4.1) plus FFT/f-k slots (v4.2/v4.3)."""
+    """Analysis tab: rectangle selection + FFT/f-k transform launchers.
+
+    The transform buttons are click-only (not checkable) — they open or
+    focus the per-toggle-group transform window. Disabled state when no
+    selection exists is enforced by the controller, not the button itself.
+    """
 
     selection_mode_toggled = Signal(bool)
+    fft_requested = Signal()
+    fk_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Analysis", parent)
@@ -42,6 +65,25 @@ class AnalysisGroup(QGroupBox):
         )
         self.selection_button.toggled.connect(self.selection_mode_toggled.emit)
         layout.addWidget(self.selection_button)
+
+        self.fft_button = QToolButton(self)
+        self.fft_button.setText("FFT")
+        self.fft_button.setIcon(_text_icon("FFT"))
+        self.fft_button.setToolButtonStyle(
+            self.fft_button.toolButtonStyle().ToolButtonTextBesideIcon
+        )
+        self.fft_button.setToolTip("Fourier transform of selection")
+        self.fft_button.clicked.connect(self.fft_requested.emit)
+        layout.addWidget(self.fft_button)
+
+        self.fk_button = QToolButton(self)
+        self.fk_button.setText("f-k")
+        self.fk_button.setIcon(_text_icon("f-k"))
+        self.fk_button.setToolButtonStyle(self.fk_button.toolButtonStyle().ToolButtonTextBesideIcon)
+        self.fk_button.setToolTip("f-k transform of selection (v4.3)")
+        self.fk_button.clicked.connect(self.fk_requested.emit)
+        layout.addWidget(self.fk_button)
+
         layout.addStretch(1)
 
     def set_selection_mode(self, enabled: bool) -> None:

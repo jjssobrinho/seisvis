@@ -1,160 +1,180 @@
-Milestone v4.1 — Selection Tool
-Prerequisite: v0.3.0 tag present.
-Build the rectangular selection tool on the canvas: model state,
-overlay widget, lifecycle rules. No transforms yet — that's v4.2.
-The selection is fully interactive and visible on the canvas, but
-doesn't drive any computation. This deliberate isolation lets us
-verify the interaction model works cleanly before transforms
-depend on it.
-Selection model
-New file src/seismic_viz/models/selection.py:
-python@dataclass(frozen=True)
-class Selection:
-    trace_start: int        # rendered-order index, inclusive
-    trace_end: int          # rendered-order index, inclusive
-    sample_start: int       # time-sample index, inclusive
-    sample_end: int         # time-sample index, inclusive
+Milestone v4.2 — Transform Window + FFT
+Prerequisite: v41-done.
+Build the transform window scaffolding (one window per toggle
+group, opened on demand) with a tab system, and the FFT tab. The
+FFT plots a single averaged spectrum per checked member, all
+overlaid in the same plot using tab10 colors.
+Models
+No changes to ToggleGroup beyond what v4.1 added. The
+transform window is a UI artifact, not a model entity. Add:
+python# In ToggleGroup
+transform_window: TransformWindow | None    # lazily created
+Set to None initially; created the first time an Analysis-toolbar
+button (FFT or f-k) is clicked while this group is active.
+Pure transforms
+New file src/seismic_viz/processing/transforms.py:
+pythondef fft_per_trace_averaged(
+    data: np.ndarray,           # shape (n_traces, n_samples)
+    sample_interval_ms: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-trace FFT, magnitude, averaged across traces.
 
-    def n_traces(self) -> int: ...
-    def n_samples(self) -> int: ...
-    def is_valid(self) -> bool:
-        return (self.trace_end >= self.trace_start
-                and self.sample_end >= self.sample_start)
-Add to ToggleGroup:
-pythonselection: Selection | None     # None when no selection exists
-selection_changed: Signal       # emits the new Selection or None
-Selection lifecycle (clear rules)
-Clear the selection (set to None and emit signal) when:
+    Returns (frequency_hz, magnitude). frequency_hz length =
+    n_samples // 2 + 1; magnitude same length, dtype float32.
+    """
+Use np.fft.rfft for real-input efficiency. Magnitude is
+np.abs(spectrum). Average is np.mean(magnitudes, axis=0).
+Frequency axis is np.fft.rfftfreq(n_samples, d=sample_interval_ms/1000.0).
+Pure-function. No Qt imports. Unit-testable in isolation.
+Transform worker
+New file src/seismic_viz/workers/transform_worker.py:
+pythonclass TransformWorker(QRunnable):
+    def __init__(
+        self,
+        dataset: Dataset,
+        selection: Selection,
+        transform_type: Literal["fft", "fk"],
+        member_index: int,
+    ): ...
 
-SortConfig.committed transitions to a new value (sort commit).
-The active toggle group changes (user clicks a different tab).
-The command bar's current_group_id, groups_per_view, or
-group_skip changes (any command-bar edit that re-fetches
-traces).
-The user presses Delete or Backspace while the canvas has
-focus and a selection exists.
-The toggle group is closed.
+    finished: Signal     # emits (member_index, transform_type, axes, magnitude)
+    failed: Signal       # emits (member_index, transform_type, error_msg)
+Implementation:
 
-Do NOT clear on:
+Reads the slice via dataset.read_slice(trace_indices, time_slice) for the selection's region.
+Calls the appropriate pure-transform function from
+processing/transforms.py.
+Emits finished with results, or failed with an error.
 
-Active member change.
-Pan / zoom (within the commanded range).
-Toolbar processing edits (colormap, gain, bandpass, AGC).
+Cancellation: a public is_cancelled flag. The worker checks it
+after the slice read (before the FFT) — that's the single
+cancellation point. We don't try to interrupt numpy mid-FFT.
+Slice cache
+A small cache shared between FFT and f-k workers for the same
+selection:
+pythonclass SelectionSliceCache:
+    def get_or_load(
+        self,
+        dataset: Dataset,
+        member_index: int,
+        selection: Selection,
+    ) -> np.ndarray: ...
 
-Wire all the clear-triggers in controllers/active_group_controller.py
-(or wherever toggle-group state changes are routed today). The
-lifecycle is centralized — no widget should clear the selection
-directly.
-Selection mode toggle
-Add a button to the toolbar's new Analysis section (see Toolbar
-Layout below): a small icon depicting a rectangle. The button is
-a checkable QToolButton:
+    def invalidate(self, selection: Selection) -> None: ...
+Cache key: (member_index, selection_hash). When a new selection
+comes in, invalidate everything from the previous one. Memory
+ceiling: hold at most one selection's slices at a time.
+Lives in the transform controller, not the worker.
+Transform controller
+New file src/seismic_viz/controllers/transform_controller.py:
+Owns the throttling, worker lifecycle, and signal routing for one
+toggle group's transform window.
+pythonclass TransformController(QObject):
+    def __init__(self, toggle_group: ToggleGroup, window: TransformWindow): ...
 
-Unchecked: standard pyqtgraph interaction (pan/zoom).
-Checked: selection mode active. Left-click-drag draws a new
-selection rectangle (replacing any existing one). Pyqtgraph's
-default rect-zoom is suppressed while the button is checked.
+    # called by the window when its tabs change or its member
+    # selectors change
+    def request_recompute(self, transform_type, members): ...
+Throttling: each transform type has its own QTimer set to
+single-shot:
 
-Toggling the button off does NOT clear the selection — it just
-stops new selections from being drawn. The existing rectangle
-remains visible and editable (drag corners or whole rect).
-Selection overlay widget
-New file src/seismic_viz/ui/widgets/selection_overlay.py. A
-pg.GraphicsObject (or QGraphicsItem) added to the seismic
-view's PlotItem:
+FFT timer: 150 ms.
+f-k timer: 500 ms (created in v4.3 but the throttling
+infrastructure is built here).
 
-Draws a rectangle outline plus translucent fill in the active
-member's tab10 color.
-Outline is 2 px solid; fill alpha is ~15%.
-Four corner handles (small squares) for resize.
-The rectangle as a whole is draggable.
-Snaps to integer trace and sample boundaries during drag.
-Emits via the toggle group's Selection updates as the user
-manipulates (no throttling needed at this level — selection
-model updates are cheap).
-Updates color when the active member changes (subscribe to
-active_index_changed).
-Hidden when toggle_group.selection is None.
+When selection_changed fires, the timer is restarted. When it
+fires, currently-running workers for that transform type are
+cancelled (flag flipped) and new workers are dispatched for each
+requested member.
+Transform window
+New file src/seismic_viz/ui/windows/transform_window.py:
+pythonclass TransformWindow(QMainWindow):
+    def __init__(self, toggle_group: ToggleGroup): ...
 
-Snapping
-The overlay's pixel-to-trace conversion uses the plot's view
-transform. For each mouse move:
+    def open_fft_tab(self) -> None: ...
+    def open_fk_tab(self) -> None: ...   # stubbed in v4.2
+Layout: a QTabWidget in the central widget. Each tab is closable
+(setTabsClosable(True)). When the last tab is closed, the
+window closes itself and clears its reference on the toggle group.
+Title: "Transforms — {toggle_group.name}".
+Window starts hidden; shown by toggle_group.transform_window.show()
+when a tab is opened.
+Closing the window:
 
-Convert mouse position from pixels to plot coordinates.
-Round x to the nearest integer (= rendered trace position).
-Round y to the nearest integer multiple of the dataset's
-sample_interval_ms (= sample boundary).
-Update the Selection model with these snapped values.
+Cancels all in-flight transform workers for this group.
+Sets toggle_group.transform_window = None.
+Selection on the toggle group is NOT cleared.
 
-The visual rectangle redraws on the snapped values, never on
-sub-trace or sub-sample fractions.
-Color palette
-Add src/seismic_viz/utils/member_colors.py:
-pythonTAB10: list[QColor] = [
-    QColor("#1f77b4"),  # 0 — blue
-    QColor("#ff7f0e"),  # 1 — orange
-    QColor("#2ca02c"),  # 2 — green
-    QColor("#d62728"),  # 3 — red
-    QColor("#9467bd"),  # 4 — purple
-    QColor("#8c564b"),  # 5 — brown
-    QColor("#e377c2"),  # 6 — pink
-    QColor("#7f7f7f"),  # 7 — gray
-    QColor("#bcbd22"),  # 8 — yellow-green
-    QColor("#17becf"),  # 9 — cyan
-]
+FFT tab
+New file src/seismic_viz/ui/widgets/fft_tab.py:
+Layout (top to bottom):
 
-def member_color(member_index: int) -> QColor:
-    return TAB10[member_index % 10]
-Toolbar layout — new Analysis section
-Restructure the global toolbar to have three visually-separated
-sections:
+Member selector strip: a QHBoxLayout of QCheckBoxes,
+one per group member. Each checkbox label uses the member's
+name and is colored to match the member's tab10 color
+(setStyleSheet). Default state: all checked.
+Plot area: a pg.PlotWidget. X axis = "Frequency (Hz)";
+Y axis = "Magnitude". One curve per checked member, colored
+with tab10.
+Status overlay: a small label in the corner showing
+"Computing…" while a worker is running.
 
-Appearance: colormap, clip %, gain.
-Analysis (new): rectangle-selection button only in v4.1.
-FFT and f-k buttons added in v4.2 / v4.3.
-Processing: bandpass, AGC.
+When the user toggles a checkbox: emit a request to the controller
+to recompute (which dispatches workers for the now-checked
+members and clears curves for unchecked ones).
+When a TransformWorker.finished signal arrives for this tab's
+transform type: update the curve for the corresponding member.
+Right-click context menu on the plot: "Log Y axis" toggle.
+FFT button
+Add the FFT button to the Analysis toolbar section. Icon: a
+simple "FFT" text label or a wave-spectrum-like icon (Claude
+Code's call). Tooltip: "Fourier transform of selection".
+Behavior on click:
 
-At the right end: edit-target selector. Use QToolBar.addSeparator()
-between sections.
-The Analysis section is enabled only when an active toggle group
-exists (parallel to the existing toolbar enable/disable behavior).
+If no selection exists: status bar shows "Draw a selection
+first." No window opens.
+If selection exists and no transform window is open for this
+group: create the window, add the FFT tab, show the window.
+If window is open and FFT tab exists: bring window to front.
+If window is open but FFT tab was closed: re-add the FFT tab.
+
+Recompute on tab open is automatic — adding the tab triggers a
+request to the controller.
 Tests
 
-tests/test_selection_model.py: Selection dataclass equality,
-validity, n_traces/n_samples; immutability.
-tests/test_selection_lifecycle.py: each clear trigger fires
-correctly. Mock ToggleGroup and verify selection_changed
-emissions and final state. Active-member changes and pan/zoom
-do NOT trigger clears.
-tests/test_snapping.py: pure-function pixel-to-snapped-coord
-conversion. Off-by-one cases at trace 0 and last trace; sample
-0 and last sample. Sub-pixel inputs round correctly.
-tests/manual/v41_selection.md: manual test plan covering:
+tests/test_transforms.py: fft_per_trace_averaged against
+known synthetic input (e.g. a constant-frequency sine wave;
+verify peak at the right frequency).
+tests/test_selection_slice_cache.py: hit/miss behavior;
+invalidation; memory bounded to one selection.
+tests/test_transform_controller.py: throttling behavior with
+a QTest.qWait; verify cancellation flag is set on rapid
+selection changes.
+tests/manual/v42_fft.md:
 
-Toggle button enables selection mode; rect draws on drag.
-Rectangle persists across active-member toggle.
-Rectangle cleared by sort commit, group switch, command-bar
-edit, Delete key.
-Color follows the active member.
-Snap behavior at edges.
-Toggle button off does NOT clear; rectangle still editable.
+Open a file with multiple members. Draw a selection. Click
+FFT. Window opens with an FFT tab.
+All members' spectra plot in their tab10 colors.
+Uncheck a member; its curve disappears. Re-check; recomputes
+and reappears.
+Drag the selection on the canvas. After ~150 ms the spectra
+update.
+Toggle active member on canvas. Selection rectangle changes
+color; FFT plots stay (showing all checked members).
+Close the FFT tab. Window closes. Selection rectangle stays.
+Click FFT button again. Window reopens; tab restored;
+spectra recomputed.
 
 
 
 Verification
 
-Open a file. Click the selection-mode button (it goes pressed/
-checked). Left-drag a rectangle on the canvas. Confirm it
-appears in the active member's tab10 color, snapped.
-Toggle to a different member (key 1/2/3 or click). Rectangle
-color changes; rectangle stays in same trace/time region.
-Press Delete with canvas focused; rectangle vanishes.
-Draw new rectangle. Commit a different sort; rectangle vanishes.
-Draw new rectangle. Edit Count in the command bar; rectangle
-vanishes.
-Draw new rectangle. Toggle the selection-mode button off; the
-rectangle remains and is still editable. Drag a corner; the
-Selection model updates.
+3 members, 100-trace × 1000-sample selection. Spectra appear
+within ~200 ms of selection commit.
+Larger selection (3000 traces × 2000 samples). Spectra appear
+within ~1 second; "Computing…" indicator visible during.
+Drag selection corner continuously for 5 seconds. Final spectra
+correct after release; intermediate updates throttled to 150 ms.
 
-On completion: commit feat: v4.1 selection tool with lifecycle,
-tag v41-done, stop.
+On completion: commit feat: v4.2 transform window with FFT,
+tag v42-done, stop.
