@@ -89,6 +89,11 @@ class SelectionOverlay(pg.GraphicsObject):
         self._sample_bounds: tuple[int, int] | None = None
         # Current selection (data coords). None when hidden.
         self._selection: Selection | None = None
+        # Editable=True means clicks on the rectangle resize/move it.
+        # When the canvas is in selection-mode, we set this False so that
+        # the overlay ignores clicks and the ViewBox creates a brand-new
+        # rectangle even when the drag starts inside the existing one.
+        self._editable: bool = True
 
         # Active drag state.
         self._drag_kind: DragKind | None = None
@@ -128,12 +133,41 @@ class SelectionOverlay(pg.GraphicsObject):
         self.setVisible(selection is not None)
         self.update()
 
+    def set_editable(self, editable: bool) -> None:
+        """Enable / disable resize and move on the existing rectangle.
+
+        When ``False``, mouse presses on the rectangle are ignored so the
+        ViewBox sees them — used while the canvas is in selection-mode
+        so a left-drag inside the existing rectangle still creates a
+        fresh one (per the v4.1 spec).
+        """
+        editable = bool(editable)
+        if editable == self._editable:
+            return
+        self._editable = editable
+        # Cancel any in-flight resize/move when we lose edit-eligibility.
+        if not editable:
+            self._drag_kind = None
+            self._drag_initial = None
+            self._drag_anchor = None
+            self.unsetCursor()
+
     # ------------------------------------------------------------------ paint
 
     def boundingRect(self) -> QRectF:  # noqa: D401 - Qt override
         if self._selection is None:
             return QRectF()
-        return self._data_rect()
+        rect = self._data_rect()
+        # Pad by half the handle size so the outer half of each corner
+        # handle is part of the item's hittable area. The padding is
+        # computed in data units against the current pixel size; if the
+        # user zooms further out before we get a chance to call
+        # prepareGeometryChange, Qt may slightly clip handles — this is
+        # a cosmetic edge case, not a correctness one.
+        dx, dy = self._pixel_size_in_data()
+        pad_x = (self.HANDLE_PX / 2.0) * dx
+        pad_y = (self.HANDLE_PX / 2.0) * dy
+        return rect.adjusted(-pad_x, -pad_y, pad_x, pad_y)
 
     def paint(self, painter, option, widget=None) -> None:  # noqa: ANN001, D401
         if self._selection is None:
@@ -223,6 +257,9 @@ class SelectionOverlay(pg.GraphicsObject):
     # ------------------------------------------------------------------ mouse
 
     def hoverMoveEvent(self, event) -> None:  # noqa: D401, ANN001
+        if not self._editable:
+            self.unsetCursor()
+            return
         kind = self._hit_test(event.pos())
         if kind == "move":
             self.setCursor(Qt.CursorShape.SizeAllCursor)
@@ -234,7 +271,7 @@ class SelectionOverlay(pg.GraphicsObject):
             self.unsetCursor()
 
     def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:  # noqa: D401
-        if event.button() != Qt.MouseButton.LeftButton:
+        if not self._editable or event.button() != Qt.MouseButton.LeftButton:
             event.ignore()
             return
         kind = self._hit_test(event.pos())

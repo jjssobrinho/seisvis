@@ -194,11 +194,10 @@ class SeismicView(QWidget):
         self._current_trace_indices: np.ndarray | None = None
         # Crosshair lines start hidden; user presses `c` to toggle.
         self._crosshair_enabled: bool = False
-        # v4.1: rectangle-selection mode + overlay. The overlay is a child
-        # of the PlotItem (data-coord space) and reads its current state
-        # from ``group.selection``.
+        # v4.1: rectangle-selection mode. The overlay is a child of the
+        # PlotItem (data-coord space) and reads its current state from
+        # ``group.selection``.
         self._selection_mode_active: bool = False
-        self._creating_selection: bool = False
 
         self._build_ui()
         self._wire_group_signals()
@@ -263,12 +262,20 @@ class SeismicView(QWidget):
         self.plot_item.addItem(self._h_line, ignoreBounds=True)
         self.plot_widget.scene().sigMouseMoved.connect(self._on_mouse_moved)
 
-        # Selection overlay: parented under the ViewBox so it lives in data
-        # coords and pans/zooms with the image.
+        # Selection overlay: addItem parents it under the ViewBox's
+        # childGroup, which is the only place data items live in data
+        # coords (the ViewBox itself is in scene/pixel space). Passing
+        # ignoreBounds keeps the overlay out of auto-range computation so
+        # the rectangle never resizes the visible window.
         self.selection_overlay = SelectionOverlay()
-        self.selection_overlay.setParentItem(view_box)
+        view_box.addItem(self.selection_overlay, ignoreBounds=True)
         self.selection_overlay.selection_edited.connect(self._on_selection_edited)
         view_box.selection_drag.connect(self._on_selection_drag)
+        # Handle padding in boundingRect is computed in data units from the
+        # current pixel size; tell the overlay to refresh whenever zoom
+        # changes so the bounds stay generous enough to keep corner
+        # handles hittable.
+        view_box.sigRangeChanged.connect(self._on_overlay_view_range_changed)
 
         # Loading label in the corner (hidden until a worker is in flight).
         self.loading_label = QLabel("Loading…", self.plot_widget)
@@ -385,8 +392,11 @@ class SeismicView(QWidget):
         """Toggle the rectangle-selection drag mode for this canvas.
 
         When active, left-click-drag draws a new selection (replacing any
-        existing one) instead of rubber-band zooming. Toggling off does
-        not clear the existing selection — the rectangle stays editable.
+        existing one) instead of rubber-band zooming, and the existing
+        rectangle stops responding to corner / body drags so the user
+        can always start a fresh selection from anywhere on the canvas.
+        Toggling off restores both rect-zoom and overlay editing without
+        clearing the existing selection.
         """
         active = bool(active)
         if active == self._selection_mode_active:
@@ -395,6 +405,7 @@ class SeismicView(QWidget):
         view_box = self.plot_item.getViewBox()
         if isinstance(view_box, _SeismicViewBox):
             view_box.set_selection_mode_active(active)
+        self.selection_overlay.set_editable(not active)
 
     def _clear_selection_via_key(self) -> None:
         if self.group.selection is not None:
@@ -439,10 +450,22 @@ class SeismicView(QWidget):
     def _on_selection_changed(self, _selection: object) -> None:
         self._refresh_overlay_geometry()
 
+    def _on_overlay_view_range_changed(self, *_args: object) -> None:
+        if self.group.selection is None:
+            return
+        self.selection_overlay.prepareGeometryChange()
+        self.selection_overlay.update()
+
     def _on_selection_drag(
-        self, start_view: QPointF, current_view: QPointF, is_finish: bool
+        self, start_view: QPointF, current_view: QPointF, _is_finish: bool
     ) -> None:
-        """Build a new Selection from a left-drag in selection mode."""
+        """Build a new Selection from a left-drag in selection mode.
+
+        The drag fires on each mouse-move plus the final release; we
+        update the group's selection on every emission so the rectangle
+        follows the cursor live, and the rectangle is already committed
+        in place by the time the button is released.
+        """
         sel = selection_from_points(
             float(start_view.x()),
             float(start_view.y()),
@@ -454,14 +477,7 @@ class SeismicView(QWidget):
         )
         if not sel.is_valid():
             return
-        # While dragging, keep updating the rectangle so the user sees it
-        # follow the cursor; commit to the group on release.
-        self._creating_selection = True
-        try:
-            self.group.set_selection(sel)
-        finally:
-            if is_finish:
-                self._creating_selection = False
+        self.group.set_selection(sel)
 
     def _on_selection_edited(self, sel: object) -> None:
         if isinstance(sel, Selection):
