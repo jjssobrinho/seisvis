@@ -10,6 +10,7 @@ from seisvis.models.compatibility import CompatResult, are_toggle_compatible
 from seisvis.models.dataset import Dataset
 from seisvis.models.display_state import DisplayState
 from seisvis.models.processing_chain import ProcessingChain
+from seisvis.models.selection import Selection
 from seisvis.models.sort_config import SortConfig, default_sort_config
 
 log = logging.getLogger(__name__)
@@ -77,6 +78,7 @@ class ToggleGroup(QObject):
     color_scale_changed = Signal()
     auto_color_scale_requested = Signal()
     sort_config_committed = Signal(object)  # SortConfig
+    selection_changed = Signal(object)  # Selection | None
 
     def __init__(self, name: str, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -88,6 +90,11 @@ class ToggleGroup(QObject):
         self._edit_target_index: int = 0
         self._link_all: bool = True
         self.shared_state: SharedState = SharedState()
+        # v4.1: rectangular canvas selection feeding the transform window.
+        # Lives on the group so every member shares the same (trace, time)
+        # region; cleared when the data layout changes (sort commit, group
+        # switch, command-bar edit), preserved through active-member toggles.
+        self._selection: Selection | None = None
 
     # --- read-only properties ---
 
@@ -122,6 +129,17 @@ class ToggleGroup(QObject):
     @property
     def is_empty(self) -> bool:
         return not self._members
+
+    @property
+    def selection(self) -> Selection | None:
+        return self._selection
+
+    def set_selection(self, selection: Selection | None) -> None:
+        """Replace the group's canvas selection. Emits when the value changes."""
+        if selection == self._selection:
+            return
+        self._selection = selection
+        self.selection_changed.emit(selection)
 
     # --- mutation helpers ---
 
@@ -368,12 +386,18 @@ class ToggleGroup(QObject):
         and ``sort_config_committed`` additionally when the new config has
         ``committed == True``. Uncommitted edits stage silently (renderer
         keeps the last committed view).
+
+        Any commit clears the canvas selection — the rendered (trace, time)
+        layout is about to change, so the rectangle's anchor traces no
+        longer correspond to the same data. Uncommitted edits leave the
+        selection in place since they don't re-render.
         """
         if config == self.shared_state.sort_config:
             return
         self.shared_state.sort_config = config
         self.shared_state_changed.emit()
         if config.committed:
+            self.set_selection(None)
             self.sort_config_committed.emit(config)
 
     def update_zoomed_ranges(

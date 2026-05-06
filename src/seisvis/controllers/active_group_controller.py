@@ -55,6 +55,13 @@ class ActiveGroupController(QObject):
 
     def _on_active_group_changed(self, group_id: object) -> None:
         gid = str(group_id) if group_id is not None else None
+        # Selection lifecycle: switching tabs clears the outgoing group's
+        # canvas selection. The selection rectangle is only meaningful in
+        # the context of a specific group's render; carrying it across
+        # tabs would surface stale (trace, time) coordinates that point at
+        # a different dataset.
+        if self._group is not None and self._group.selection is not None:
+            self._group.set_selection(None)
         group = self._project.find_toggle_group(gid) if gid else None
         self._bind_group(group)
 

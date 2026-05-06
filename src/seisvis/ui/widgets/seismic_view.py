@@ -10,13 +10,16 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from seisvis.io.slice_cache import SliceCache, SliceKey
 from seisvis.models.group_index import GroupIndex, GroupingMode
+from seisvis.models.selection import Selection
 from seisvis.models.sort_config import TRACE_RANGE_FIELD, RowSelection, SortConfig
 from seisvis.models.toggle_group import Member, ToggleGroup
 from seisvis.ui.widgets.group_command_bar import GroupCommandBar
 from seisvis.ui.widgets.info_track import GroupXPositions, InfoTrack, default_display_names
 from seisvis.ui.widgets.scale_bar import ScaleBar
+from seisvis.ui.widgets.selection_overlay import SelectionOverlay, selection_from_points
 from seisvis.ui.widgets.toggle_bar import ToggleBar
 from seisvis.utils.colormaps import get_colormap
+from seisvis.utils.member_colors import member_color
 from seisvis.workers.slice_worker import SliceWorker
 
 log = logging.getLogger(__name__)
@@ -114,11 +117,34 @@ class _SeismicViewBox(pg.ViewBox):
     wants left = rubber-band zoom, middle = pan, right = scale, regardless of
     the mode visible in the context menu, so we force the mouse-mode per
     button for the duration of the drag.
+
+    When selection mode is active, left-drag is intercepted to draw a
+    Selection rectangle instead of zooming. The drag positions are emitted
+    in view (data) coords for the canvas to consume.
     """
 
+    # start_view, current_view, is_finish — emitted only while
+    # ``selection_mode_active`` is True and the user is left-dragging.
+    selection_drag = Signal(QPointF, QPointF, bool)
+
+    def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003 - pg passthrough
+        super().__init__(*args, **kwargs)
+        self._selection_mode_active = False
+
+    def set_selection_mode_active(self, active: bool) -> None:
+        self._selection_mode_active = bool(active)
+
     def mouseDragEvent(self, ev, axis=None):  # noqa: D401 - pyqtgraph override
-        saved = self.state["mouseMode"]
         button = ev.button()
+        if self._selection_mode_active and button == Qt.MouseButton.LeftButton:
+            ev.accept()
+            start_scene = ev.buttonDownScenePos(Qt.MouseButton.LeftButton)
+            cur_scene = ev.scenePos()
+            start_view = self.mapSceneToView(start_scene)
+            cur_view = self.mapSceneToView(cur_scene)
+            self.selection_drag.emit(start_view, cur_view, ev.isFinish())
+            return
+        saved = self.state["mouseMode"]
         if button == Qt.MouseButton.LeftButton:
             self.state["mouseMode"] = pg.ViewBox.RectMode
         elif button == Qt.MouseButton.MiddleButton:
@@ -168,6 +194,11 @@ class SeismicView(QWidget):
         self._current_trace_indices: np.ndarray | None = None
         # Crosshair lines start hidden; user presses `c` to toggle.
         self._crosshair_enabled: bool = False
+        # v4.1: rectangle-selection mode + overlay. The overlay is a child
+        # of the PlotItem (data-coord space) and reads its current state
+        # from ``group.selection``.
+        self._selection_mode_active: bool = False
+        self._creating_selection: bool = False
 
         self._build_ui()
         self._wire_group_signals()
@@ -231,6 +262,13 @@ class SeismicView(QWidget):
         self.plot_item.addItem(self._v_line, ignoreBounds=True)
         self.plot_item.addItem(self._h_line, ignoreBounds=True)
         self.plot_widget.scene().sigMouseMoved.connect(self._on_mouse_moved)
+
+        # Selection overlay: parented under the ViewBox so it lives in data
+        # coords and pans/zooms with the image.
+        self.selection_overlay = SelectionOverlay()
+        self.selection_overlay.setParentItem(view_box)
+        self.selection_overlay.selection_edited.connect(self._on_selection_edited)
+        view_box.selection_drag.connect(self._on_selection_drag)
 
         # Loading label in the corner (hidden until a worker is in flight).
         self.loading_label = QLabel("Loading…", self.plot_widget)
@@ -311,6 +349,8 @@ class SeismicView(QWidget):
             (QKeySequence("c"), self._toggle_crosshair),
             (QKeySequence("g"), lambda: self._bump_gain(3.0)),
             (QKeySequence("Shift+g"), lambda: self._bump_gain(-3.0)),
+            (QKeySequence(Qt.Key.Key_Delete), self._clear_selection_via_key),
+            (QKeySequence(Qt.Key.Key_Backspace), self._clear_selection_via_key),
         ):
             sc = QShortcut(seq, self)
             sc.setContext(ctx)
@@ -338,6 +378,94 @@ class SeismicView(QWidget):
         if not self._crosshair_enabled:
             self._v_line.setVisible(False)
             self._h_line.setVisible(False)
+
+    # ---- v4.1 selection mode + overlay --------------------------------
+
+    def set_selection_mode_active(self, active: bool) -> None:
+        """Toggle the rectangle-selection drag mode for this canvas.
+
+        When active, left-click-drag draws a new selection (replacing any
+        existing one) instead of rubber-band zooming. Toggling off does
+        not clear the existing selection — the rectangle stays editable.
+        """
+        active = bool(active)
+        if active == self._selection_mode_active:
+            return
+        self._selection_mode_active = active
+        view_box = self.plot_item.getViewBox()
+        if isinstance(view_box, _SeismicViewBox):
+            view_box.set_selection_mode_active(active)
+
+    def _clear_selection_via_key(self) -> None:
+        if self.group.selection is not None:
+            self.group.set_selection(None)
+
+    def _active_member_color(self):  # noqa: ANN202 - QColor
+        active = self.group.active_index
+        if 0 <= active < self.group.n_members:
+            return member_color(active)
+        return member_color(0)
+
+    def _active_dt_ms(self) -> float:
+        ds = self._active_dataset()
+        if ds is None:
+            return 1.0
+        return float(ds.sample_interval_ms or 1.0)
+
+    def _selection_trace_bounds(self) -> tuple[int, int] | None:
+        """Inclusive ``(lo, hi)`` trace-column bounds for snapping."""
+        state = self.group.shared_state
+        cmd = state.commanded_trace_range
+        if cmd is None:
+            return None
+        # commanded_trace_range is a half-open ``(lo, hi)`` width, so the
+        # inclusive last column is hi - 1.
+        return int(cmd[0]), max(int(cmd[0]), int(cmd[1]) - 1)
+
+    def _selection_sample_bounds(self) -> tuple[int, int] | None:
+        ds = self._active_dataset()
+        if ds is None:
+            return None
+        return 0, max(0, int(ds.n_samples) - 1)
+
+    def _refresh_overlay_geometry(self) -> None:
+        self.selection_overlay.set_dt_ms(self._active_dt_ms())
+        self.selection_overlay.set_bounds(
+            self._selection_trace_bounds(), self._selection_sample_bounds()
+        )
+        self.selection_overlay.set_color(self._active_member_color())
+        self.selection_overlay.set_selection(self.group.selection)
+
+    def _on_selection_changed(self, _selection: object) -> None:
+        self._refresh_overlay_geometry()
+
+    def _on_selection_drag(
+        self, start_view: QPointF, current_view: QPointF, is_finish: bool
+    ) -> None:
+        """Build a new Selection from a left-drag in selection mode."""
+        sel = selection_from_points(
+            float(start_view.x()),
+            float(start_view.y()),
+            float(current_view.x()),
+            float(current_view.y()),
+            self._active_dt_ms(),
+            trace_bounds=self._selection_trace_bounds(),
+            sample_bounds=self._selection_sample_bounds(),
+        )
+        if not sel.is_valid():
+            return
+        # While dragging, keep updating the rectangle so the user sees it
+        # follow the cursor; commit to the group on release.
+        self._creating_selection = True
+        try:
+            self.group.set_selection(sel)
+        finally:
+            if is_finish:
+                self._creating_selection = False
+
+    def _on_selection_edited(self, sel: object) -> None:
+        if isinstance(sel, Selection):
+            self.group.set_selection(sel)
 
     # Mirrors the controller's edit-target fan-out: link_all=True fans to every
     # member, otherwise only the edit target is bumped. Kept on the canvas (not
@@ -372,6 +500,7 @@ class SeismicView(QWidget):
         self.group.processing_chain_changed.connect(self._on_processing_chain_changed)
         self.group.color_scale_changed.connect(self._on_color_scale_changed)
         self.group.auto_color_scale_requested.connect(self._on_auto_color_scale_requested)
+        self.group.selection_changed.connect(self._on_selection_changed)
 
     # --- Member management ---
 
@@ -443,6 +572,9 @@ class SeismicView(QWidget):
         self._refresh_info_track()
         self._refresh_overlays()
         self._refresh_scale_bar()
+        # Selection rectangle survives active-member toggles but recolors
+        # to follow the new active member.
+        self._refresh_overlay_geometry()
         self._last_active_index = self.group.active_index
         # Requesting a slice for the newly active member ensures it renders
         # even if nothing was fetched during an earlier incompatible
@@ -529,6 +661,11 @@ class SeismicView(QWidget):
         self._apply_plot_ranges()
         self._refresh_info_track()
         self._refresh_overlays()
+        # Commanded-range changes can shift snapping bounds; resync overlay
+        # so the rectangle stays inside the new layout. (A sort commit
+        # itself nukes the selection via ToggleGroup.update_sort_config,
+        # so this is mostly a no-op other than dt/bounds refresh.)
+        self._refresh_overlay_geometry()
         for i in range(len(self._image_items)):
             self._request_slice(i)
 

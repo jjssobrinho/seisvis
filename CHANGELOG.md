@@ -1,5 +1,35 @@
 # Changelog
 
+## [Unreleased]
+
+### v4.1 — Selection tool
+
+- **Rectangular canvas selection.** A new `Selection` model on
+  `ToggleGroup` stores an inclusive `(trace_start, trace_end,
+  sample_start, sample_end)` rectangle. The same selection applies to
+  every member of the group, so spectra of differently-processed
+  members can be compared at the identical region in v4.2 / v4.3.
+- **Analysis toolbar tab.** A third toolbar tab ("Analysis") joins
+  Appearance and Processing. Its only v4.1 control is a checkable
+  `Select` button that arms rectangle-selection mode; FFT and f-k
+  buttons land here in v4.2 / v4.3.
+- **Selection overlay.** `SelectionOverlay` renders the rectangle as
+  a 2 px outline plus 15% alpha fill in the active member's `tab10`
+  color, with four corner handles for resize. The body drags as a
+  whole. All geometry snaps to integer trace columns and sample
+  rows, so the visible rectangle never sits on sub-trace or
+  sub-sample fractions. Color follows the active member —
+  `member_color()` cycles `tab10` modulo 10.
+- **Lifecycle.** Selection clears on sort commit, group switch, and
+  Delete / Backspace; survives active-member toggles, pan / zoom,
+  and toolbar processing edits. The clear logic lives on the
+  `ToggleGroup` model and `ActiveGroupController`, so no widget
+  reaches into selection state directly.
+- **Tests.** `test_selection_model`, `test_selection_lifecycle`, and
+  `test_snapping` cover the dataclass, the lifecycle clear matrix,
+  and the pure snapping helpers. Manual plan in
+  `tests/manual/v41_selection.md`.
+
 ## [v0.3.0] Row Types: Value / Range / List per row
 
 Consolidated release of the v3.x line. The two-row sort introduced in

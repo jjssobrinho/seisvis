@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from seisvis.ui.toolbar.analysis_group import AnalysisGroup
 from seisvis.ui.toolbar.appearance_group import AppearanceGroup
 from seisvis.ui.toolbar.edit_target_selector import EditTargetSelector
 from seisvis.ui.toolbar.processing_group import ProcessingGroup
@@ -38,6 +39,7 @@ class GlobalToolbar(QWidget):
 
         self._tab_bar = QTabBar(self)
         self._tab_bar.addTab("Appearance")
+        self._tab_bar.addTab("Analysis")
         self._tab_bar.addTab("Processing")
         self._tab_bar.setDrawBase(False)
         self._tab_bar.setExpanding(False)
@@ -51,12 +53,17 @@ class GlobalToolbar(QWidget):
         self.appearance.setTitle("")
         self.appearance.setFlat(True)
 
+        self.analysis = AnalysisGroup(self._content)
+        self.analysis.setTitle("")
+        self.analysis.setFlat(True)
+
         self.processing = ProcessingGroup(self._content)
         self.processing.setTitle("")
         self.processing.setFlat(True)
 
         self._stack = QStackedWidget(self._content)
         self._stack.addWidget(self.appearance)
+        self._stack.addWidget(self.analysis)
         self._stack.addWidget(self.processing)
 
         self.edit_target = EditTargetSelector(self._content)
@@ -106,5 +113,11 @@ class GlobalToolbar(QWidget):
 
     def set_group_enabled(self, enabled: bool) -> None:
         """Enable/disable all interactive children (used when no active group)."""
-        for w in (self.appearance, self.processing, self.edit_target, self._reset_button):
+        for w in (
+            self.appearance,
+            self.analysis,
+            self.processing,
+            self.edit_target,
+            self._reset_button,
+        ):
             w.setEnabled(enabled)

@@ -47,6 +47,10 @@ class DisplayPanel(QTabWidget):
         self._pool = pool
         self._cache = cache
         self._views: dict[str, SeismicView] = {}
+        # Toolbar-driven selection mode persists across tab switches; new
+        # views inherit the current mode on creation so the user's choice
+        # in the toolbar survives opening a fresh group.
+        self._selection_mode_active: bool = False
 
         tab_bar = _RenameableTabBar(self)
         tab_bar.rename_requested.connect(self._prompt_rename)
@@ -66,6 +70,7 @@ class DisplayPanel(QTabWidget):
         view = SeismicView(group, self._pool, self._cache, parent=self)
         view.status_message.connect(self.status_message)
         view.cursor_readout.connect(self.cursor_readout)
+        view.set_selection_mode_active(self._selection_mode_active)
         group.name_changed.connect(lambda name, g=group: self._on_group_renamed(g, name))
         self._views[group.id] = view
         idx = self.addTab(view, group.name)
@@ -134,6 +139,20 @@ class DisplayPanel(QTabWidget):
 
     def view_for(self, group_id: str) -> SeismicView | None:
         return self._views.get(group_id)
+
+    def set_selection_mode_active(self, active: bool) -> None:
+        """Apply the rectangle-selection mode to every open canvas.
+
+        The flag persists in this panel so groups opened later inherit it,
+        matching the toolbar button's checked state which is global to the
+        app rather than per-tab.
+        """
+        active = bool(active)
+        if active == self._selection_mode_active:
+            return
+        self._selection_mode_active = active
+        for view in self._views.values():
+            view.set_selection_mode_active(active)
 
     # Unused event hook retained for future double-click refinements.
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: D401

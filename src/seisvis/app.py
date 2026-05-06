@@ -207,6 +207,9 @@ class MainWindow(QMainWindow):
         self.display_panel.status_message.connect(self._on_status_message)
         self.display_panel.cursor_readout.connect(self._on_cursor_readout)
         self.display_panel.close_group_requested.connect(self._on_close_group_requested)
+        self.toolbar.analysis.selection_mode_toggled.connect(
+            self.display_panel.set_selection_mode_active
+        )
         display_layout.addWidget(self.display_panel, stretch=1)
 
         self._h_splitter.addWidget(display_container)

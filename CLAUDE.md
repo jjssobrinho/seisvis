@@ -23,6 +23,10 @@ data. Current capabilities:
 - Per-file header field inspection (surange-style scanner),
   remapping of SHOT/INLINE/CROSSLINE roles, and display-name
   rename, persisted in a `.sv` JSON sidecar.
+- Per-row Value / Range / List type selection in the command bar,
+  with translation rules between types and explicit commit.
+- Rectangular selection tool on the canvas feeding live FFT and
+  f-k transforms in a separate window per toggle group.
 
 ---
 
@@ -48,6 +52,15 @@ data. Current capabilities:
 | v3.2  | List Polish (parsing, errors, soft cap)       | `v32-done`       |
 | v3.3  | Validation Tightening                         | `v33-done`       |
 | v3.4  | v0.3.0 Release                                | `v34-done`       |
+
+### v0.4.0 roadmap
+
+| #     | Name                                          | Tag              |
+|-------|-----------------------------------------------|------------------|
+| v4.1  | Selection Tool (rectangle, model, lifecycle)  | `v41-done`       |
+| v4.2  | Transform Window + FFT                        | `v42-done`       |
+| v4.3  | f-k Transform                                 | `v43-done`       |
+| v4.4  | v0.4.0 Release                                | `v44-done`       |
 
 Milestones are sequential; each in its own session. Finish, commit,
 tag, stop. **Let tests run to completion** before tagging. Check
@@ -322,36 +335,6 @@ fail validation.
 - No hard cap in v0.3.0. The widget tolerates any size; the
   rendering pipeline reads however many group IDs it's given.
 
-### Validation rules
-
-Two layers — non-blocking domain checks (status bar warnings) and
-blocking commit checks (`are_toggle_compatible`):
-
-- **Non-blocking domain check**: `RowSelection.validate_against_domain(domain)`
-  returns a short message if the row's selection is partially or
-  fully outside the active member's `[min, max]` for that field.
-  Called by the command bar on `member_added`, `member_removed`, and
-  `active_index_changed`. `TRACE_RANGE` rows always pass. Empty
-  `List` rows pass — they render blank, not invalid.
-- **Key change reset**: changing a row's key dropdown drops the
-  prior selection and seeds defaults for the row's current type
-  (Value → `(0, 1, 1)`; Range → full domain of new key; List →
-  empty). Status bar reports `"Reset {primary|secondary} to
-  defaults for new key {field}"`.
-- **Type change**: `RowSelection.translate_to` returns
-  `(new_selection, optional_warning)` per the translation table.
-  When a warning is returned the command bar emits it as a status
-  message; the draft stays uncommitted. Translating from an
-  unparseable List uses the last good `ListParams` already on the
-  draft (or empty if none was ever valid).
-- **Commit failure invariants**: when commit is refused (List
-  parse error, Range with no overlap, missing field), the status
-  bar (and modal) reports a *specific* reason naming the field,
-  the configured selection, and — for coverage failures — the
-  member's actual domain. The draft stays `committed=False`, the
-  ★ stays ☆, `group.update_sort_config` is not called, and the
-  display continues to show the last committed state.
-
 ---
 
 ## `.sv` Sidecar
@@ -406,6 +389,8 @@ ToggleGroup
   reference_index             whose coordinates define commanded shared_state
   edit_target_index           toolbar target (when link_all=False)
   link_all                    bool
+  selection                   Optional[Selection]   # canvas selection for transforms
+  transform_window            Optional[TransformWindow]   # lazily created
   shared_state                commanded_trace_range, commanded_time_range_ms,
                               zoomed_trace_range,    zoomed_time_range_ms,
                               sort_config,           current_group_id,
@@ -504,6 +489,137 @@ Fall back to the no-sort format when `group_for_trace` returns None.
 
 ---
 
+## Selection & Transforms
+
+A rectangular **selection** on the canvas defines a `(trace_range,
+time_range)` region of interest. The selection feeds a separate
+**Transform Window** (one per toggle group) that displays FFT
+and/or f-k transforms of the selected region.
+
+### Selection model
+
+```
+Selection
+  trace_start    int      # first trace index in dataset coordinates (rendered order)
+  trace_end      int      # last trace index, inclusive
+  sample_start   int      # first time-sample index
+  sample_end     int      # last time-sample index, inclusive
+```
+
+Selection lives on the `ToggleGroup` (one selection per group, not
+per member). It applies to every member of the group at the same
+(trace, time) region — which is the point: it lets the user compare
+spectra of differently-processed members at the identical region.
+
+### Selection lifecycle
+
+- **Created** by left-click-dragging on the canvas while in
+  selection mode (toggled on by the rectangle button in the
+  Analysis toolbar).
+- **Edited** by dragging corners or the rectangle as a whole.
+- **Snaps** to integer trace indices and integer sample indices.
+- **Cleared** on:
+  - Sort commit (any change to `SortConfig`).
+  - Toggle group switch.
+  - Command bar edit that re-fetches traces (First/Count/Skip).
+  - The user pressing `Delete` or `Backspace` while a selection
+    exists and the canvas has focus.
+  - The toggle group being closed.
+- **Persists** through:
+  - Active member change (selection is multi-member by design).
+  - Pan/zoom within commanded traces.
+  - Toolbar processing edits (colormap, gain, bandpass, AGC).
+  - Closing the transform window (selection rectangle stays on
+    canvas; reopening recomputes transforms).
+
+### Selection rectangle visual
+
+- Drawn as a rectangle outline plus translucent fill on the canvas.
+- Outline color follows the **active member's** index in the
+  `tab10` palette (member 1 = blue, member 2 = orange, member 3 =
+  green, etc., looping at member 11).
+- Fill is the same color at low alpha (~15%).
+- When no selection mode is active and no selection exists, no
+  rectangle is shown.
+- When selection mode is toggled off but a selection exists, the
+  rectangle stays on canvas (visible, clickable to re-edit).
+
+### Transform Window
+
+One per toggle group. Lazily created the first time the user clicks
+FFT or f-k. A `QMainWindow` with:
+
+- **Tab widget** in the center. Tabs added on demand:
+  - "FFT" tab — created when user clicks the FFT button.
+  - "f-k" tab — created when user clicks the f-k button.
+- Tabs can be closed individually. When the last tab is closed,
+  the window closes.
+- Closing the window clears the worker pipeline but does NOT clear
+  the selection.
+
+### FFT tab
+
+Layout, top to bottom:
+
+1. **Member selector menu**: a horizontal row of checkboxes, one
+   per group member, labels colored to match each member's `tab10`
+   color. Default state: all members checked.
+2. **Plot area**: a pyqtgraph plot showing one curve per checked
+   member. Each curve is the **single averaged spectrum** —
+   magnitude of the time-axis FFT, averaged across the selected
+   traces of that member, plotted vs. frequency in Hz.
+3. Standard plot axes; log-scale Y optional via right-click.
+
+### f-k tab
+
+Layout, top to bottom:
+
+1. **Member selector menu**: same widget as FFT but acts as a
+   single-select (radio buttons or dropdown). Default: the
+   currently-active member on the canvas.
+2. **Plot area**: a pyqtgraph image showing the magnitude of the
+   2D FFT (frequency × wavenumber). Frequency axis in Hz; wavenumber
+   axis in cycles-per-trace (no physical-distance conversion in v0.4).
+3. Standard image controls (colormap, clip percentile).
+
+### Live coupling
+
+Selection changes flow to the transform window via signals:
+
+```
+Selection edited
+    ↓
+ToggleGroup.selection_changed signal
+    ↓ (throttled per transform: 150 ms FFT, 500 ms f-k)
+TransformController cancels in-flight workers for that transform
+    ↓
+TransformController dispatches new TransformWorker(selection, transform_type, members)
+    ↓ (worker pulls trace data from each member's dataset and runs FFT/f-k)
+TransformWorker emits result(transform_type, member_index, magnitude, axes)
+    ↓
+Transform window's tab updates plot
+```
+
+**Slice cache**: when both FFT and f-k tabs are open against the
+same selection, the trace data read from `dataset.read_slice` is
+cached and reused. Cache invalidated on selection change.
+
+**Cancellation honesty**: a numpy operation in flight cannot be
+interrupted mid-call; "cancel" means "discard result on completion."
+Workers check the cancellation flag at well-defined points.
+
+**Compute spinner**: each tab shows a "computing…" indicator while
+its worker is running. The previous result fades to half opacity
+during recompute so the user has a visual reference.
+
+### f-k on irregular geometry
+
+Always compute. Wavenumber axis is labeled in cycles-per-trace, not
+cycles-per-meter — the math is honest about what was actually
+computed. Users with regular trace spacing can convert mentally.
+
+---
+
 ## Derived Datasets (diff)
 
 - Viewport-level operation: selects two toggle groups from the
@@ -521,8 +637,12 @@ Fall back to the no-sort format when `group_for_trace` returns None.
 
 ## Layout
 
-- **Top toolbar** (global, pinned): colormap, clip %, gain, bandpass,
-  AGC, edit-target selector `[1] [2] … [All]`.
+- **Top toolbar** (global, pinned), three sections separated by
+  visual dividers:
+  - **Appearance**: colormap, clip %, gain.
+  - **Analysis**: rectangle-selection button, FFT button, f-k button.
+  - **Processing**: bandpass, AGC.
+  - At the right end: edit-target selector `[1] [2] … [All]`.
 - **Top-left** (Catalog): loaded + derived datasets. Derived names
   render in blue.
 - **Bottom-left** (Viewport Manager): list of toggle groups with
@@ -530,6 +650,8 @@ Fall back to the no-sort format when `group_for_trace` returns None.
 - **Right** (Display Canvas): `QTabWidget`, one tab per toggle group.
   Vertical stack per tab: toggle bar / info track / plot / group
   command bar.
+- **Transform Window** (one per toggle group, opened on demand):
+  separate `QMainWindow` with a tab system. See Selection & Transforms.
 
 ---
 
@@ -634,19 +756,28 @@ contiguous range. Used by Range-type rows in either position.
 - Zoom operates only within commanded range; no refetch on pan/zoom.
 - Sort commit is explicit; editing sort keys doesn't auto-render.
 - Sort lives on the toggle group; all members share it exactly.
+- Selection lives on the toggle group; all members share it
+  exactly. Survives active-member changes; cleared on data-layout
+  changes (sort commit, group switch, command-bar edit) and on
+  Delete key.
+- Transform workers throttle at 150 ms (FFT) or 500 ms (f-k);
+  cancelled by discarding results, not interrupting numpy.
 
 ---
 
 ## Out of Scope
 
 Wiggle / variable-area rendering; 3D volume slicing views; horizon/
-event picking; CSV/image export; non-SEG-Y formats; project save-
-load; auto-resampling; whole-trace AGC; diff scale factors; diffs
-between group members; keyboard bindings for members 10+; non-
-uniform group skip; pan/zoom refetch; in-memory tile cache;
-three-or-more-key sort; non-lexicographic sort semantics; `.svh`
-header-array sidecar cache; app-wide (non-per-file) rename
-preferences.
+event picking; CSV export of trace data; non-SEG-Y formats; project
+save-load; view presets (deferred to a later version); auto-
+resampling; whole-trace AGC; diff scale factors; diffs between
+group members; keyboard bindings for members 10+; non-uniform group
+skip; pan/zoom refetch; in-memory tile cache; three-or-more-key
+sort; non-lexicographic sort semantics; `.svh` header-array sidecar
+cache; app-wide (non-per-file) rename preferences; physical-distance
+wavenumber axis on f-k (cycles-per-trace only); progressive /
+chunked transform computation; transform result caching across
+window lifecycle.
 
 ---
 
