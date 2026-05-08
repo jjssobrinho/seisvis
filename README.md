@@ -13,6 +13,7 @@ Desktop viewer for 2D/3D SEG-Y reflection seismic data.
 - Mode-aware crosshair and info-track labels, per-file display-name renames
 - Zoom restricted to the currently loaded traces (no re-fetch on pan/zoom)
 - Per-member processing: colormap, clip, gain, bandpass, AGC
+- Rectangle selection feeding live FFT and f-k transforms in a separate window per group
 - QSettings persistence of window layout and toolbar defaults
 
 ## Install
@@ -85,6 +86,35 @@ Out-of-domain entries in a List render as blank columns rather
 than failing — convenient for comparing members that don't all
 contain the same ids.
 
+## Transforms
+
+A toggle group can spawn a side window of frequency-domain
+transforms (FFT and f-k) over a rectangular selection on the
+canvas. The selection applies to every member, so the spectra you
+see all describe the *same* region — handy for comparing how
+different processing chains affect the same patch of data.
+
+1. Click `Select` in the **Analysis** toolbar tab (or press `R`).
+   Drag a rectangle on the canvas. Toggle `Select` off to lock the
+   rectangle; corners and the body remain draggable for fine edits.
+2. Click `FFT` (or press `Shift+F`) to open the transform window
+   with an FFT tab. Each checked member draws one curve in its
+   `tab10` color — magnitude of the per-trace FFT, averaged across
+   the selected traces.
+3. Click `f-k` (or press `Shift+K`) to add an f-k tab. Pick which
+   member to view from the dropdown; by default it follows the
+   canvas' active member, so toggling members on the canvas
+   automatically re-syncs the f-k image.
+4. Drag a corner of the selection. Both transforms update on a
+   throttle (FFT 150 ms, f-k 500 ms) with a `Computing…` overlay
+   while previous results fade to half opacity.
+5. Press `Delete` (or `Backspace`) on the canvas to clear the
+   selection. Sort-commits and group switches also clear it.
+
+The transform window has its own title that follows the group's
+name; closing the last tab closes the window, and closing the
+toggle group closes the transform window with it.
+
 ## Keyboard shortcuts
 
 | Shortcut          | Action                                           |
@@ -93,6 +123,10 @@ contain the same ids.
 | `Ctrl+W`          | Close active toggle group                        |
 | `Ctrl+T`          | New toggle group from selected catalog item      |
 | `Ctrl+D`          | Compute A − B from current diff selection        |
+| `R`               | Toggle rectangle-selection mode                  |
+| `Shift+F`         | Open / focus FFT tab for the active group        |
+| `Shift+K`         | Open / focus f-k tab for the active group        |
+| `Delete` / `Backspace` | Clear the canvas selection                  |
 | `1` … `9`         | Switch to member 1–9 (canvas focus)              |
 | `Space`           | Toggle auto-flicker on/off (canvas focus)        |
 | `C`               | Toggle crosshair lines on/off (off by default)   |

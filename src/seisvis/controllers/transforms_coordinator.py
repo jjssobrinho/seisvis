@@ -41,6 +41,7 @@ class TransformsCoordinator(QObject):
         self._project = project
         self._pool = thread_pool or QThreadPool.globalInstance()
         self._controllers: dict[str, TransformController] = {}
+        self._windows: dict[str, TransformWindow] = {}
         project.toggle_group_removed.connect(self._on_group_removed)
 
     # --- public entry points ----------------------------------------
@@ -55,11 +56,10 @@ class TransformsCoordinator(QObject):
         """Cancel everything; called on app exit before pool drains."""
         for ctrl in list(self._controllers.values()):
             ctrl.cancel_all()
-        for gid in list(self._controllers.keys()):
-            group = self._project.find_toggle_group(gid)
-            if group is not None and group.transform_window is not None:
-                group.transform_window.close()
+        for win in list(self._windows.values()):
+            win.close()
         self._controllers.clear()
+        self._windows.clear()
 
     # --- internal ----------------------------------------------------
 
@@ -91,13 +91,21 @@ class TransformsCoordinator(QObject):
         controller.set_window(window)
         group.transform_window = window
         self._controllers[group.id] = controller
+        self._windows[group.id] = window
         # The window flips ``group.transform_window`` back to ``None`` in
-        # its closeEvent; mirror that into our controller registry so we
-        # don't keep a stale entry around.
-        window.destroyed.connect(lambda _obj, gid=group.id: self._controllers.pop(gid, None))
+        # its closeEvent; mirror that into our registries so we don't keep
+        # a stale entry around.
+        window.destroyed.connect(lambda _obj, gid=group.id: self._forget(gid))
         return window
+
+    def _forget(self, group_id: str) -> None:
+        self._controllers.pop(group_id, None)
+        self._windows.pop(group_id, None)
 
     def _on_group_removed(self, group_id: str) -> None:
         ctrl = self._controllers.pop(group_id, None)
         if ctrl is not None:
             ctrl.cancel_all()
+        win = self._windows.pop(group_id, None)
+        if win is not None:
+            win.close()

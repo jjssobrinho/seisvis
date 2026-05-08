@@ -1,6 +1,30 @@
 # Changelog
 
-## [Unreleased]
+## [v0.4.0] Selection & Transforms
+
+Consolidated release of the v4.x line. A new rectangle selection on
+the canvas drives a side window of frequency-domain transforms
+(FFT, f-k). The selection lives on the toggle group, so every
+member sees the same region — comparing how processing changes
+spectra is one drag and a button click. No breaking API changes
+from v0.3.0; every v4.x addition is additive.
+
+### v4.4 — Polish & v0.4.0 release
+
+- **Keyboard shortcuts.** `R` toggles rectangle-selection mode;
+  `Shift+F` opens / focuses the FFT tab; `Shift+K` opens / focuses
+  the f-k tab. `Shift+` modifiers were chosen on `F` / `K` to keep
+  the canvas-focus `F` (fit-zoom) free. `Delete` / `Backspace` for
+  selection-clear (shipped in v4.1) is now documented in
+  Help → Keyboard Shortcuts and the README.
+- **Group close → transform window close.** Closing a toggle group
+  now closes its transform window. Previously the window orphaned
+  itself and stayed on screen referring to the now-removed group.
+  `TransformsCoordinator` tracks windows per group id and closes
+  them on `toggle_group_removed`.
+- **README.** New `Transforms` section walks through select →
+  FFT → f-k → clear with the new shortcuts.
+- **Version bump** to `0.4.0`.
 
 ### v4.3 — f-k Transform
 

@@ -229,10 +229,17 @@ class MainWindow(QMainWindow):
             (QKeySequence("Ctrl+W"), self._on_close_active_group),
             (QKeySequence("Ctrl+T"), self._on_new_group_from_catalog),
             (QKeySequence("Ctrl+D"), self._on_compute_diff),
+            (QKeySequence("R"), self._on_toggle_selection_mode),
+            (QKeySequence("Shift+F"), self.transforms_coordinator.open_fft),
+            (QKeySequence("Shift+K"), self.transforms_coordinator.open_fk),
         ):
             sc = QShortcut(seq, self)
             sc.setContext(ctx)
             sc.activated.connect(handler)
+
+    def _on_toggle_selection_mode(self) -> None:
+        button = self.toolbar.analysis.selection_button
+        button.toggle()
 
     # --- Global shortcut handlers ---
 
