@@ -79,6 +79,59 @@ def segy_3d(tmp_path: Path) -> Path:
     return p
 
 
+def _make_su(
+    path: Path,
+    *,
+    n_traces: int,
+    n_samples: int,
+    interval_us: int = 4000,
+    endian: str = "<",
+    first_field_record: int = 1,
+) -> None:
+    """Write a tiny synthetic Seismic Unix (.su) file for tests.
+
+    Each record is a 240-byte SEG-Y trace header followed by ``n_samples``
+    IEEE float32 samples in the given byte order. Trace values follow the same
+    deterministic pattern as ``_make_segy``: ``trace[t, s] = 100 * t + s``.
+    Headers carry FieldRecord, TraceNumber and CDP so header reads can be
+    asserted.
+    """
+    import struct
+
+    # 0-indexed byte offsets of the standard fields we populate.
+    off_fldr = 9 - 1  # FieldRecord (int32)
+    off_tracf = 13 - 1  # TraceNumber (int32)
+    off_cdp = 21 - 1  # CDP (int32)
+    off_ns = 115 - 1  # sample count (uint16)
+    off_dt = 117 - 1  # sample interval (uint16)
+
+    with open(path, "wb") as fh:
+        for t in range(n_traces):
+            header = bytearray(240)
+            struct.pack_into(endian + "i", header, off_fldr, first_field_record + t)
+            struct.pack_into(endian + "i", header, off_tracf, t + 1)
+            struct.pack_into(endian + "i", header, off_cdp, 100 + t)
+            struct.pack_into(endian + "H", header, off_ns, n_samples)
+            struct.pack_into(endian + "H", header, off_dt, interval_us)
+            fh.write(header)
+            samples = (100 * t + np.arange(n_samples)).astype(endian + "f4")
+            fh.write(samples.tobytes())
+
+
+@pytest.fixture
+def su_line(tmp_path: Path) -> Path:
+    p = tmp_path / "line.su"
+    _make_su(p, n_traces=8, n_samples=24, interval_us=2000)
+    return p
+
+
+@pytest.fixture
+def su_line_big_endian(tmp_path: Path) -> Path:
+    p = tmp_path / "line_be.su"
+    _make_su(p, n_traces=5, n_samples=16, interval_us=4000, endian=">")
+    return p
+
+
 @pytest.fixture
 def segy_2d(tmp_path: Path) -> Path:
     """A flat 2D line — one inline, several crosslines — no 3D structure asserted."""

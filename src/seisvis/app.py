@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from seisvis.controllers.active_group_controller import ActiveGroupController
 from seisvis.controllers.transforms_coordinator import TransformsCoordinator
+from seisvis.io.loader import SUPPORTED_SUFFIXES
 from seisvis.io.slice_cache import SliceCache
 from seisvis.models.dataset import Dataset
 from seisvis.models.project import Project
@@ -38,7 +39,7 @@ from seisvis.workers.header_scan_worker import HeaderScanWorker
 from seisvis.workers.load_worker import LoadWorker
 
 _LOG_PATH = Path("logs/seisvis.log")
-_SEGY_SUFFIXES = {".segy", ".sgy"}
+_SUPPORTED_SUFFIXES = SUPPORTED_SUFFIXES
 log = logging.getLogger(__name__)
 
 
@@ -365,7 +366,8 @@ class MainWindow(QMainWindow):
             self,
             "Load data",
             start_dir,
-            "SEG-Y files (*.segy *.sgy);;All files (*)",
+            "Seismic files (*.segy *.sgy *.su);;SEG-Y files (*.segy *.sgy);;"
+            "Seismic Unix files (*.su);;All files (*)",
         )
         for p in paths:
             path = Path(p)
@@ -373,8 +375,8 @@ class MainWindow(QMainWindow):
             self._submit_load(path)
 
     def _submit_load(self, path: Path) -> None:
-        if path.suffix.lower() not in _SEGY_SUFFIXES:
-            log.warning("ignoring non-SEG-Y path: %s", path)
+        if path.suffix.lower() not in _SUPPORTED_SUFFIXES:
+            log.warning("ignoring unsupported path: %s", path)
             return
         worker = LoadWorker(path)
         worker.signals.loaded.connect(self._on_load_finished)
@@ -544,7 +546,8 @@ class MainWindow(QMainWindow):
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls() and any(
-            Path(u.toLocalFile()).suffix.lower() in _SEGY_SUFFIXES for u in event.mimeData().urls()
+            Path(u.toLocalFile()).suffix.lower() in _SUPPORTED_SUFFIXES
+            for u in event.mimeData().urls()
         ):
             event.acceptProposedAction()
         else:

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, QObject, QRunnable, Signal, Slot
 
-from seisvis.io.segy_loader import load_segy
+from seisvis.io.loader import load_dataset
 
 log = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ class LoadWorkerSignals(QObject):
 
 
 class LoadWorker(QRunnable):
-    """QRunnable that loads a SEG-Y file on the global thread pool."""
+    """QRunnable that loads a SEG-Y or SU file on the global thread pool."""
 
     def __init__(self, path: Path) -> None:
         super().__init__()
@@ -26,7 +26,7 @@ class LoadWorker(QRunnable):
     @Slot()
     def run(self) -> None:
         try:
-            dataset = load_segy(self.path)
+            dataset = load_dataset(self.path)
         except Exception as exc:
             log.exception("load failed for %s", self.path)
             self.signals.failed.emit(str(self.path), str(exc))

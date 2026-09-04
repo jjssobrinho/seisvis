@@ -1,5 +1,33 @@
 # Changelog
 
+## [Unreleased]
+
+### Seismic Unix (`.su`) input
+
+- **Load `.su` files** alongside SEG-Y. Seismic Unix files are a bare
+  sequence of 240-byte SEG-Y trace headers, each followed by native-
+  endian IEEE float32 samples — no 3600-byte reel header and no
+  format code — so segyio cannot open them.
+- **`SUFile` adapter** (`io/su_reader.py`) exposes exactly the subset
+  of the segyio handle API the app consumes (`trace`, `header`,
+  `bin`, `tracecount`, `samples`, `format`, `unstructured`, `close`),
+  so `Dataset`, the surange scanner, and `HeaderScanWorker` are
+  unchanged. Trace-header field widths are derived from
+  `segyio.TraceField` offsets, so offset reads return the same signed
+  integers segyio would. Byte order (`<`/`>`) and `ns`/`dt` are
+  detected from the first trace header via plausibility + file-size
+  divisibility, preferring little-endian.
+- **`load_su`** (`io/su_loader.py`) mirrors `load_segy`: O(1) open
+  (first header + file size only), lazy `np.memmap`-backed reads,
+  always unstructured (SU carries no geometry). Grouping keys such as
+  SHOT come from the background full scan, exactly as for a SEG-Y
+  line.
+- **`load_dataset` dispatcher** (`io/loader.py`) picks the loader by
+  extension; `LoadWorker`, the file dialog, drag-and-drop, and the
+  accepted-suffix set now include `.su`.
+- Scope: SU data assumed native-endian IEEE float32 (the format
+  standard); one byte order per file. No `.su` writing.
+
 ## [v0.4.0] Selection & Transforms
 
 Consolidated release of the v4.x line. A new rectangle selection on
