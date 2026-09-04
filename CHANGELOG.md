@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Sort by non-default header fields (e.g. CDP)
+
+- **Fix "Group not present in this dataset" when grouping by CDP** (or any
+  populated field outside the default scan set). The command bar offers
+  every field the surange probe flags as populated, but the full header
+  scan only materialized per-trace arrays for the four role fields
+  (`FieldRecord`, `INLINE_3D`, `CROSSLINE_3D`, `TraceNumber`). Grouping by
+  any other key — `CDP` being the common one for stacked / CMP data — found
+  no array and rendered empty.
+- **`FieldScanWorker`** (`workers/field_scan_worker.py`) reads arbitrary
+  header fields for all traces in a single pass (works for both SEG-Y and
+  SU handles). **`GroupIndex.set_field_array`** materializes the result,
+  clears the sort/grouping caches, and rebuilds.
+- On a sort commit, the app detects any keyed field a member hasn't
+  materialized yet and dispatches the scan in the background; when it
+  completes the committed sort re-renders. Scans are de-duplicated per
+  dataset and cancelled on dataset removal / shutdown.
+
 ### Seismic Unix (`.su`) input
 
 - **Load `.su` files** alongside SEG-Y. Seismic Unix files are a bare

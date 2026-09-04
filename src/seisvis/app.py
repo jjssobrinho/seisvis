@@ -28,13 +28,14 @@ from seisvis.io.loader import SUPPORTED_SUFFIXES
 from seisvis.io.slice_cache import SliceCache
 from seisvis.models.dataset import Dataset
 from seisvis.models.project import Project
-from seisvis.models.sort_config import RowSelection, SortConfig
+from seisvis.models.sort_config import TRACE_RANGE_FIELD, RowSelection, SortConfig
 from seisvis.models.toggle_group import ToggleGroup
 from seisvis.ui.dialogs.dataset_properties_dialog import DatasetPropertiesDialog
 from seisvis.ui.panels.catalog_panel import CatalogPanel
 from seisvis.ui.panels.display_panel import DisplayPanel
 from seisvis.ui.panels.viewport_manager_panel import ViewportManagerPanel
 from seisvis.ui.toolbar.global_toolbar import GlobalToolbar
+from seisvis.workers.field_scan_worker import FieldScanWorker
 from seisvis.workers.header_scan_worker import HeaderScanWorker
 from seisvis.workers.load_worker import LoadWorker
 
@@ -112,6 +113,18 @@ class MainWindow(QMainWindow):
         self._pending_loads = 0
         self._scan_cancel_flags: dict[str, dict[str, bool]] = {}
         self._scan_workers: dict[str, HeaderScanWorker] = {}
+        # On-demand per-field scans (e.g. CDP) dispatched when a committed
+        # sort keys off a field the default header scan didn't materialize.
+        # Keyed by dataset id → {"cancelled": bool}; the in-flight set guards
+        # against dispatching a second scan for a field already being read.
+        self._field_scan_cancel_flags: dict[str, dict[str, bool]] = {}
+        self._field_scan_inflight: dict[str, set[str]] = {}
+        # Keep dispatched field-scan workers (and their signal carriers) alive
+        # until they finish — a QRunnable handed to QThreadPool is not owned by
+        # Python, so without this reference it can be collected mid-run and its
+        # queued finished/failed signals are dropped.
+        self._field_scan_workers: set[FieldScanWorker] = set()
+        self._sort_scan_wired_groups: set[str] = set()
         # Track which toggle-group ids we've wired status-bar signals to,
         # so we don't accumulate duplicate handlers when the active group
         # is revisited.
@@ -141,6 +154,9 @@ class MainWindow(QMainWindow):
         # Wire status-bar updates.
         project.active_toggle_group_changed.connect(self._on_active_group_changed_for_status)
         project.toggle_group_removed.connect(self._on_toggle_group_removed_for_status)
+        # Materialize non-default sort-key fields (e.g. CDP) on commit.
+        project.toggle_group_added.connect(self._wire_sort_field_scanning)
+        project.toggle_group_removed.connect(self._on_toggle_group_removed_for_scan)
 
         self._update_status_group_info()
         log.info("MainWindow created")
@@ -451,12 +467,127 @@ class MainWindow(QMainWindow):
         self._scan_workers.pop(dataset_id, None)
         if flag is not None:
             flag["cancelled"] = True
+        field_flag = self._field_scan_cancel_flags.pop(dataset_id, None)
+        self._field_scan_inflight.pop(dataset_id, None)
+        if field_flag is not None:
+            field_flag["cancelled"] = True
 
     def _cancel_all_scans(self) -> None:
         for flag in self._scan_cancel_flags.values():
             flag["cancelled"] = True
         self._scan_cancel_flags.clear()
         self._scan_workers.clear()
+        for flag in self._field_scan_cancel_flags.values():
+            flag["cancelled"] = True
+        self._field_scan_cancel_flags.clear()
+        self._field_scan_inflight.clear()
+
+    # --- On-demand sort-key field scanning ---
+
+    def _wire_sort_field_scanning(self, group: ToggleGroup) -> None:
+        """Connect a new toggle group's sort commits to field materialization."""
+        if group.id in self._sort_scan_wired_groups:
+            return
+        self._sort_scan_wired_groups.add(group.id)
+        group.sort_config_committed.connect(
+            lambda sc, g=group: self._ensure_sort_fields_scanned(g, sc)
+        )
+
+    def _on_toggle_group_removed_for_scan(self, group_id: str) -> None:
+        self._sort_scan_wired_groups.discard(group_id)
+
+    def _ensure_sort_fields_scanned(self, group: ToggleGroup, config: SortConfig) -> None:
+        """Dispatch per-field header scans for any committed sort key that a
+        member's group index hasn't materialized yet (e.g. CDP).
+
+        The default header scan only fills the SHOT / INLINE / CROSSLINE /
+        TraceNumber arrays, so a sort keyed on any other populated field would
+        otherwise render "Group not present". Here we read that field for the
+        members that lack it, store it on their index, and trigger a re-render.
+        """
+        fields: set[str] = set()
+        for row in (config.primary, config.secondary):
+            if row is not None and row.field and row.field != TRACE_RANGE_FIELD:
+                fields.add(row.field)
+        if not fields:
+            return
+
+        for member in group.members:
+            ds = member.dataset
+            gi = getattr(ds, "group_index", None)
+            # Only datasets that own a readable header handle can be scanned
+            # here; derived datasets proxy a parent's index and have none.
+            if gi is None or getattr(ds, "handle", None) is None or ds.is_closed:
+                continue
+            missing = {
+                f
+                for f in fields
+                if gi.field_array(f) is None
+                and f not in self._field_scan_inflight.get(ds.id, set())
+            }
+            if missing:
+                self._start_field_scan(ds, group, missing)
+
+    def _start_field_scan(self, dataset: Dataset, group: ToggleGroup, fields: set[str]) -> None:
+        self._field_scan_inflight.setdefault(dataset.id, set()).update(fields)
+        flag: dict[str, bool] = self._field_scan_cancel_flags.setdefault(
+            dataset.id, {"cancelled": False}
+        )
+        flag["cancelled"] = False
+        worker = FieldScanWorker(
+            dataset, sorted(fields), is_cancelled=lambda f=flag: f["cancelled"]
+        )
+        self._field_scan_workers.add(worker)
+        worker.signals.progress.connect(
+            lambda pct, name=dataset.name: self.statusBar().showMessage(
+                f"Indexing {name} headers… {pct:.0f}%"
+            )
+        )
+        worker.signals.finished.connect(
+            lambda ds_id, arrays, ds=dataset, g=group, w=worker: self._on_field_scan_finished(
+                ds, g, arrays, w
+            )
+        )
+        worker.signals.failed.connect(
+            lambda ds_id, msg, ds=dataset, w=worker: self._on_field_scan_failed(ds, msg, w)
+        )
+        log.info(
+            "dispatching field scan for %s: %s (%d traces)",
+            dataset.name,
+            sorted(fields),
+            dataset.n_traces,
+        )
+        self._pool.start(worker)
+
+    def _on_field_scan_finished(
+        self, dataset: Dataset, group: ToggleGroup, arrays: dict, worker: FieldScanWorker
+    ) -> None:
+        self._field_scan_workers.discard(worker)
+        self._field_scan_inflight.pop(dataset.id, None)
+        self._field_scan_cancel_flags.pop(dataset.id, None)
+        gi = getattr(dataset, "group_index", None)
+        if dataset.is_closed or gi is None:
+            return
+        try:
+            for name, arr in arrays.items():
+                gi.set_field_array(name, arr)
+        except ValueError:
+            log.exception("field scan produced a mismatched array for %s", dataset.name)
+            return
+        dataset.group_index_ready.emit()
+        # Re-run the committed sort now that the keys are materialized.
+        group.shared_state_changed.emit()
+        self.statusBar().showMessage(f"Indexed {dataset.name}", 3000)
+
+    def _on_field_scan_failed(
+        self, dataset: Dataset, message: str, worker: FieldScanWorker
+    ) -> None:
+        self._field_scan_workers.discard(worker)
+        self._field_scan_inflight.pop(dataset.id, None)
+        self._field_scan_cancel_flags.pop(dataset.id, None)
+        self.statusBar().showMessage(
+            f"Header field scan failed for {dataset.name}: {message}", 5000
+        )
 
     def _on_load_failed(self, source: str, error: str) -> None:
         self._pending_loads = max(0, self._pending_loads - 1)

@@ -269,6 +269,32 @@ class GroupIndex:
         """Return the per-trace int array for *field_name*, or ``None``."""
         return self._field_arrays.get(field_name)
 
+    def set_field_array(self, field_name: str, arr: np.ndarray) -> None:
+        """Materialize an arbitrary per-trace header field for sort/group use.
+
+        Stores the 1-D int array under *field_name*, clears the sort and
+        per-field grouping caches, and rebuilds the current mode's groups.
+        Used when a committed sort references a populated field the default
+        header scan doesn't cover (e.g. ``CDP``, ``offset``) — the mode-based
+        scan only materializes the SHOT / INLINE / CROSSLINE / TraceNumber
+        arrays, so any other key needs its per-trace values filled in here
+        before grouping can produce anything.
+
+        Raises ``ValueError`` on a length mismatch with ``n_traces``.
+        """
+        coerced = self._as_int_array(arr)
+        if coerced is None:
+            return
+        if coerced.size != self._n_traces:
+            raise ValueError(
+                f"field array for {field_name!r} has length {coerced.size}, "
+                f"expected {self._n_traces}"
+            )
+        self._field_arrays[field_name] = coerced
+        self._field_groups_cache.pop(field_name, None)
+        self._sort_cache.clear()
+        self._rebuild()
+
     def field_value_range(self, field_name: str) -> tuple[int, int] | None:
         """Return ``(min, max)`` of the per-trace values for *field_name*.
 
