@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Always-visible toolbar
+
+- **The Appearance / Analysis / Processing toolbar no longer collapses.**
+  It was hover-revealed: only the tab bar showed at rest, and the body
+  expanded on mouse-enter with a 300 ms grace timer plus popup- and
+  focus-aware deferral to keep it from closing mid-edit. All of that is
+  gone; the body, the Edit Target selector and the Reset button are
+  always shown.
+- The toolbar takes a `Fixed` vertical size policy so it hugs its
+  content rather than competing with the canvas for height.
+- `set_group_enabled(False)` still greys the controls out when there is
+  no active toggle group.
+
 ### Sort by non-default header fields (e.g. CDP)
 
 - **Fix "Group not present in this dataset" when grouping by CDP** (or any

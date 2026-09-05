@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QTimer, Signal
-from PySide6.QtGui import QEnterEvent
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QApplication,
     QHBoxLayout,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QTabBar,
     QVBoxLayout,
@@ -19,20 +18,18 @@ from seisvis.ui.toolbar.processing_group import ProcessingGroup
 
 
 class GlobalToolbar(QWidget):
-    """Hover-revealed top toolbar: Appearance/Processing tabs + Edit Target.
+    """Pinned top toolbar: Appearance/Analysis/Processing tabs + Edit Target.
 
-    At rest only the tab bar is visible; hovering the widget reveals the
-    active tab's body plus the Edit Target selector and Reset button.
+    Always visible: the tab bar, the active tab's body, the Edit Target
+    selector and the Reset button are all shown at all times.
     """
 
     reset_requested = Signal()
 
-    # Short grace period so the toolbar doesn't collapse when the cursor
-    # briefly strays out of bounds (e.g. while manipulating a spinbox).
-    _COLLAPSE_DELAY_MS = 300
-
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        # Pinned: hug the content vertically so the canvas keeps the rest.
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -76,40 +73,8 @@ class GlobalToolbar(QWidget):
         content_layout.addWidget(self._reset_button)
 
         root.addWidget(self._content)
-        self._content.setVisible(False)
 
         self._tab_bar.currentChanged.connect(self._stack.setCurrentIndex)
-
-        self._collapse_timer = QTimer(self)
-        self._collapse_timer.setSingleShot(True)
-        self._collapse_timer.setInterval(self._COLLAPSE_DELAY_MS)
-        self._collapse_timer.timeout.connect(self._maybe_collapse)
-
-    def enterEvent(self, event: QEnterEvent) -> None:
-        self._collapse_timer.stop()
-        self._content.setVisible(True)
-        super().enterEvent(event)
-
-    def leaveEvent(self, event: QEvent) -> None:
-        self._collapse_timer.start()
-        super().leaveEvent(event)
-
-    def _maybe_collapse(self) -> None:
-        if self.underMouse():
-            return
-        # Postpone while a popup (e.g. combobox dropdown) is open or a child
-        # still has keyboard focus — collapsing would dismiss the popup and
-        # interrupt an active edit.
-        app = QApplication.instance()
-        if app is not None:
-            if app.activePopupWidget() is not None:
-                self._collapse_timer.start()
-                return
-            focus = app.focusWidget()
-            if focus is not None and self.isAncestorOf(focus):
-                self._collapse_timer.start()
-                return
-        self._content.setVisible(False)
 
     def set_group_enabled(self, enabled: bool) -> None:
         """Enable/disable all interactive children (used when no active group)."""

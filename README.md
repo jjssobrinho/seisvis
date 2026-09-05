@@ -14,6 +14,7 @@ Desktop viewer for 2D/3D SEG-Y reflection seismic data.
 - Zoom restricted to the currently loaded traces (no re-fetch on pan/zoom)
 - Per-member processing: colormap, clip, gain, bandpass, AGC
 - Rectangle selection feeding live FFT and f-k transforms in a separate window per group
+- Always-visible Appearance / Analysis / Processing toolbar
 - QSettings persistence of window layout and toolbar defaults
 
 ## Install
