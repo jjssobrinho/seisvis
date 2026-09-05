@@ -30,6 +30,15 @@
   header scan, re-baselines the watcher and re-renders every group
   holding that dataset, refitting when the trace/sample count changed and
   clearing the canvas selection.
+- **The red survives selection.** Styles paint a selected row's text in the
+  palette's `HighlightedText` (white), which overrides the model's
+  `ForegroundRole` — so clicking a stale dataset hid the very warning the
+  user had just clicked to act on. `_ForegroundKeepingDelegate` pushes the
+  color into `HighlightedText` too, lightened 45% toward white so it reads
+  against the highlight fill. Opt-in per row via `KEEP_FOREGROUND_ROLE`:
+  the derived-dataset blue is categorization rather than a warning and
+  keeps the default white-on-highlight, which reads better than any tint
+  of blue against the teal.
 - Reload is always explicit; nothing re-reads a file on its own.
 
 ### Full display mode

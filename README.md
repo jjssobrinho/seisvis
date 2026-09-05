@@ -128,7 +128,8 @@ open handle keeps serving the *old* file indefinitely, with nothing on
 screen to say so.
 
 Every loaded file is therefore watched. When one changes, its name in
-the catalog turns **red** and the status bar says so. Hover the row for
+the catalog turns **red** — including while the row is selected — and
+the status bar says so. Hover the row for
 the details; right-click it and choose **Reload from disk** to re-open
 the file, re-read its headers, drop cached traces and re-render. The
 dataset keeps its identity through a reload, so toggle groups, the diff

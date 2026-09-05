@@ -11,12 +11,14 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QMenu,
     QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -64,6 +66,10 @@ class CatalogModel(QAbstractItemModel):
 
     M2 only uses the Loaded group; Derived stays empty until M6.
     """
+
+    # True for rows whose ForegroundRole carries a warning that must survive
+    # being selected. Read by _ForegroundKeepingDelegate.
+    KEEP_FOREGROUND_ROLE = Qt.ItemDataRole.UserRole + 1
 
     def __init__(self, project: Project, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -197,6 +203,8 @@ class CatalogModel(QAbstractItemModel):
             font = QFont()
             font.setItalic(True)
             return font
+        if role == CatalogModel.KEEP_FOREGROUND_ROLE:
+            return bool(getattr(ds, "data_stale", False))
         if role == Qt.ItemDataRole.ForegroundRole:
             if getattr(ds, "data_stale", False):
                 return QColor("#DC2626")
@@ -256,6 +264,47 @@ class CatalogModel(QAbstractItemModel):
         return bucket[index.row()]
 
 
+def _lighten(color: QColor, amount: float) -> QColor:
+    """Blend *color* toward white by *amount* (0.0 = unchanged, 1.0 = white)."""
+    return QColor(
+        round(color.red() + (255 - color.red()) * amount),
+        round(color.green() + (255 - color.green()) * amount),
+        round(color.blue() + (255 - color.blue()) * amount),
+    )
+
+
+class _ForegroundKeepingDelegate(QStyledItemDelegate):
+    """Keeps a warning color on a row that is currently selected.
+
+    Styles paint selected text in the palette's ``HighlightedText`` (white
+    here), which overrides whatever the model returned for
+    ``ForegroundRole`` — so a stale dataset's red name vanished the moment
+    the user clicked it, which is exactly when they are most likely to be
+    looking at it. Rows that flag themselves via ``KEEP_FOREGROUND_ROLE``
+    get their color pushed into ``HighlightedText`` too.
+
+    The selected variant is blended toward white: full-strength red sits
+    too close to the highlight fill in luminance to read against it. Rows
+    that do not opt in (the derived-dataset blue, which is categorization
+    rather than a warning) keep the default white-on-highlight, where they
+    read better than any tint of blue would.
+    """
+
+    _SELECTED_LIGHTEN = 0.45
+
+    def initStyleOption(self, option: QStyleOptionViewItem, index: QModelIndex) -> None:
+        super().initStyleOption(option, index)
+        if not index.data(CatalogModel.KEEP_FOREGROUND_ROLE):
+            return
+        color = index.data(Qt.ItemDataRole.ForegroundRole)
+        if not isinstance(color, QColor):
+            return
+        option.palette.setColor(QPalette.ColorRole.Text, color)
+        option.palette.setColor(
+            QPalette.ColorRole.HighlightedText, _lighten(color, self._SELECTED_LIGHTEN)
+        )
+
+
 class CatalogPanel(QWidget):
     """Tree view over the Project, with a right-click context menu."""
 
@@ -276,6 +325,7 @@ class CatalogPanel(QWidget):
         self._view.setHeaderHidden(False)
         self._view.setRootIsDecorated(True)
         self._view.setUniformRowHeights(True)
+        self._view.setItemDelegate(_ForegroundKeepingDelegate(self._view))
         self._view.expandAll()
         self._view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._view.customContextMenuRequested.connect(self._show_context_menu)

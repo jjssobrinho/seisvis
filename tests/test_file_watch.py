@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import segyio
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -263,3 +264,58 @@ def test_catalog_row_returns_to_normal_after_reload(gui_app, dataset: Dataset) -
     reload_dataset(dataset)
 
     assert model.data(row, Qt.ItemDataRole.ForegroundRole) is None
+
+
+def test_stale_row_keeps_its_color_when_selected(gui_app, dataset: Dataset) -> None:  # noqa: ARG001
+    """The selection highlight must not paint a stale row's warning away."""
+    from PySide6.QtCore import QModelIndex
+    from PySide6.QtGui import QPalette
+    from PySide6.QtWidgets import QStyleOptionViewItem
+
+    from seisvis.models.project import Project
+    from seisvis.ui.panels.catalog_panel import (
+        GROUP_LOADED,
+        CatalogModel,
+        _ForegroundKeepingDelegate,
+    )
+
+    project = Project()
+    model = CatalogModel(project)
+    project.add(dataset)
+    row = model.index(0, 0, model.index(GROUP_LOADED, 0, QModelIndex()))
+    delegate = _ForegroundKeepingDelegate()
+
+    option = QStyleOptionViewItem()
+    delegate.initStyleOption(option, row)
+    plain = option.palette.color(QPalette.ColorRole.HighlightedText)
+
+    dataset.set_data_stale(True)
+    option = QStyleOptionViewItem()
+    delegate.initStyleOption(option, row)
+    stale = option.palette.color(QPalette.ColorRole.HighlightedText)
+
+    # Reads as red rather than the default highlight text color, and is
+    # lightened so it carries against the highlight fill.
+    assert stale != plain
+    assert stale.red() > stale.green() and stale.red() > stale.blue()
+    assert stale.green() > QColor("#DC2626").green()
+
+
+def test_derived_row_does_not_opt_in(gui_app, segy_3d: Path) -> None:  # noqa: ARG001
+    """Derived blue is categorization, not a warning — white-on-select is fine."""
+    from PySide6.QtCore import QModelIndex
+
+    from seisvis.models.derived_dataset import DerivedDataset
+    from seisvis.models.project import Project
+    from seisvis.ui.panels.catalog_panel import GROUP_DERIVED, CatalogModel
+
+    a = load_dataset(segy_3d)
+    b = load_dataset(segy_3d)
+    project = Project()
+    model = CatalogModel(project)
+    project.add(DerivedDataset(parent_a=a, parent_b=b))
+    row = model.index(0, 0, model.index(GROUP_DERIVED, 0, QModelIndex()))
+
+    assert not model.data(row, CatalogModel.KEEP_FOREGROUND_ROLE)
+    a.close()
+    b.close()
