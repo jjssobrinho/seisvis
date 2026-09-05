@@ -4,7 +4,7 @@ import logging
 
 from PySide6.QtCore import QEvent, QObject, Qt, QThreadPool, Signal
 from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QInputDialog, QTabBar, QTabWidget, QWidget
+from PySide6.QtWidgets import QInputDialog, QTabBar, QTabWidget, QToolButton, QWidget
 
 from seisvis.io.slice_cache import SliceCache
 from seisvis.models.project import Project
@@ -34,6 +34,7 @@ class DisplayPanel(QTabWidget):
     status_message = Signal(str)
     cursor_readout = Signal(object, object, object)  # trace, t_ms, amp
     close_group_requested = Signal(str)  # group id
+    full_display_toggled = Signal(bool)
 
     def __init__(
         self,
@@ -59,6 +60,16 @@ class DisplayPanel(QTabWidget):
         self.setTabsClosable(True)
         self.currentChanged.connect(self._on_current_changed)
         self.tabCloseRequested.connect(self._on_tab_close_requested)
+
+        # Corner button rides the tab bar so it stays reachable in full
+        # display mode, where the global toolbar is hidden.
+        self.full_display_button = QToolButton(self)
+        self.full_display_button.setText("⛶")
+        self.full_display_button.setCheckable(True)
+        self.full_display_button.setToolTip("Full display mode")
+        self.full_display_button.setAutoRaise(True)
+        self.full_display_button.toggled.connect(self.full_display_toggled)
+        self.setCornerWidget(self.full_display_button, Qt.Corner.TopRightCorner)
 
         project.toggle_group_added.connect(self._on_group_added)
         project.toggle_group_removed.connect(self._on_group_removed)
@@ -139,6 +150,10 @@ class DisplayPanel(QTabWidget):
 
     def view_for(self, group_id: str) -> SeismicView | None:
         return self._views.get(group_id)
+
+    def toggle_full_display(self) -> None:
+        """Flip full display mode (used by the F11 shortcut)."""
+        self.full_display_button.toggle()
 
     def set_selection_mode_active(self, active: bool) -> None:
         """Apply the rectangle-selection mode to every open canvas.

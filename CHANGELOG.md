@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Full display mode
+
+- **`F11` / `⛶` button gives the canvas the whole screen.** The button
+  sits at the right end of the display panel's tab bar (tooltip
+  "Full display mode") and is checkable, so it doubles as the mode
+  indicator; `DisplayPanel.full_display_toggled(bool)` carries the state
+  to `MainWindow`.
+- Entering hides the left splitter (catalog + viewport manager), the
+  global toolbar and the menu bar, then `showFullScreen()`. Everything
+  needed to navigate the data stays put: tab bar, member toggle bar,
+  info track, group command bar, and the crosshair readout in the status
+  bar. Focus returns to the canvas so `1`…`9`, `F`, `Space` and the
+  arrow keys keep working.
+- Leaving restores the pre-fullscreen splitter sizes and whether the
+  window was maximized. `Esc` also exits, bound as a shortcut that is
+  only enabled while the mode is on so it stays free elsewhere.
+
 ### Always-visible toolbar
 
 - **The Appearance / Analysis / Processing toolbar no longer collapses.**

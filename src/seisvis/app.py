@@ -130,6 +130,11 @@ class MainWindow(QMainWindow):
         # is revisited.
         self._status_wired_groups: set[str] = set()
 
+        # Full display mode: canvas takes the whole screen, chrome hidden.
+        self._full_display: bool = False
+        self._pre_full_display_sizes: list[int] = []
+        self._was_maximized: bool = False
+
         # Persisted defaults applied to new groups.
         self._last_opened_folder: Path | None = None
         self._default_group_skip: int = 1
@@ -232,6 +237,7 @@ class MainWindow(QMainWindow):
         self.transforms_coordinator.status_message.connect(self._on_status_message)
         self.toolbar.analysis.fft_requested.connect(self.transforms_coordinator.open_fft)
         self.toolbar.analysis.fk_requested.connect(self.transforms_coordinator.open_fk)
+        self.display_panel.full_display_toggled.connect(self._on_full_display_toggled)
         display_layout.addWidget(self.display_panel, stretch=1)
 
         self._h_splitter.addWidget(display_container)
@@ -249,10 +255,63 @@ class MainWindow(QMainWindow):
             (QKeySequence("R"), self._on_toggle_selection_mode),
             (QKeySequence("Shift+F"), self.transforms_coordinator.open_fft),
             (QKeySequence("Shift+K"), self.transforms_coordinator.open_fk),
+            (QKeySequence("F11"), self.display_panel.toggle_full_display),
         ):
             sc = QShortcut(seq, self)
             sc.setContext(ctx)
             sc.activated.connect(handler)
+
+        # Esc is only bound while full display mode is on, so it stays
+        # available to the rest of the app the rest of the time.
+        self._exit_full_display_shortcut = QShortcut(QKeySequence("Esc"), self)
+        self._exit_full_display_shortcut.setContext(ctx)
+        self._exit_full_display_shortcut.setEnabled(False)
+        self._exit_full_display_shortcut.activated.connect(self._on_exit_full_display)
+
+    # --- Full display mode ---
+
+    def _on_full_display_toggled(self, enabled: bool) -> None:
+        """Give the canvas the whole screen, or hand the chrome back.
+
+        Everything needed to navigate the data — toggle bar, info track,
+        group command bar and the crosshair readout in the status bar —
+        lives inside the display panel or below it, so only the surrounding
+        chrome is hidden.
+        """
+        if enabled == self._full_display:
+            return
+        self._full_display = enabled
+        self._exit_full_display_shortcut.setEnabled(enabled)
+
+        if enabled:
+            self._pre_full_display_sizes = self._h_splitter.sizes()
+            self._was_maximized = self.isMaximized()
+            self._left_splitter.setVisible(False)
+            self.toolbar.setVisible(False)
+            self.menuBar().setVisible(False)
+            self.showFullScreen()
+            self.statusBar().showMessage("Full display mode — F11 or Esc to exit", 4000)
+        else:
+            self._left_splitter.setVisible(True)
+            self.toolbar.setVisible(True)
+            self.menuBar().setVisible(True)
+            if self._pre_full_display_sizes:
+                self._h_splitter.setSizes(self._pre_full_display_sizes)
+            if self._was_maximized:
+                self.showMaximized()
+            else:
+                self.showNormal()
+
+        # Keyboard navigation (1..9, F, Delete) is canvas-scoped, so hand
+        # focus back to the view after the layout change.
+        view = self.display_panel.currentWidget()
+        if view is not None:
+            view.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _on_exit_full_display(self) -> None:
+        """Esc leaves full display mode; elsewhere it does nothing."""
+        if self._full_display:
+            self.display_panel.full_display_button.setChecked(False)
 
     def _on_toggle_selection_mode(self) -> None:
         button = self.toolbar.analysis.selection_button

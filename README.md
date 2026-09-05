@@ -15,6 +15,7 @@ Desktop viewer for 2D/3D SEG-Y reflection seismic data.
 - Per-member processing: colormap, clip, gain, bandpass, AGC
 - Rectangle selection feeding live FFT and f-k transforms in a separate window per group
 - Always-visible Appearance / Analysis / Processing toolbar
+- Full display mode (`F11`) — canvas takes the whole screen, navigation controls stay
 - QSettings persistence of window layout and toolbar defaults
 
 ## Install
@@ -116,6 +117,25 @@ The transform window has its own title that follows the group's
 name; closing the last tab closes the window, and closing the
 toggle group closes the transform window with it.
 
+## Full display mode
+
+Click the `⛶` button at the right end of the canvas' tab bar — its
+tooltip reads *Full display mode* — or press `F11`. The window goes
+fullscreen and the catalog, viewport manager, global toolbar and menu
+bar hide, leaving the canvas everything the monitor has.
+
+What stays is everything needed to keep navigating the data: the tab
+bar (so you can still switch groups), the member toggle bar, the info
+track, the group command bar along the bottom — key, direction, type,
+First / Count / Skip, the marker scroll bar and the commit button —
+and the status bar's crosshair readout. Canvas keyboard bindings
+(`1`…`9`, `F`, `Space`, arrows) keep working; focus returns to the
+canvas on entry.
+
+Press `F11` again, `Esc`, or the same `⛶` button to leave. The panel
+widths and whether the window was maximized are restored as they
+were. `Esc` is only bound while the mode is active.
+
 ## Keyboard shortcuts
 
 | Shortcut          | Action                                           |
@@ -127,6 +147,8 @@ toggle group closes the transform window with it.
 | `R`               | Toggle rectangle-selection mode                  |
 | `Shift+F`         | Open / focus FFT tab for the active group        |
 | `Shift+K`         | Open / focus f-k tab for the active group        |
+| `F11`             | Toggle full display mode                         |
+| `Esc`             | Leave full display mode                          |
 | `Delete` / `Backspace` | Clear the canvas selection                  |
 | `1` … `9`         | Switch to member 1–9 (canvas focus)              |
 | `Space`           | Toggle auto-flicker on/off (canvas focus)        |

@@ -20,6 +20,8 @@ _SHORTCUTS: list[tuple[str, str]] = [
     ("R", "Toggle rectangle-selection mode"),
     ("Shift+F", "Open / focus FFT tab for the active group"),
     ("Shift+K", "Open / focus f-k tab for the active group"),
+    ("F11", "Toggle full display mode"),
+    ("Esc", "Leave full display mode"),
     ("Delete / Backspace", "Clear the canvas selection (canvas focus)"),
     ("1 … 9", "Switch to member 1–9 (canvas focus)"),
     ("Space", "Toggle auto-flicker on/off (canvas focus)"),
