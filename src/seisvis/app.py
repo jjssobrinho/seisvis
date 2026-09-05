@@ -30,6 +30,8 @@ from seisvis.models.dataset import Dataset
 from seisvis.models.project import Project
 from seisvis.models.sort_config import TRACE_RANGE_FIELD, RowSelection, SortConfig
 from seisvis.models.toggle_group import ToggleGroup
+from seisvis.services.dataset_reload import ReloadError, reload_dataset
+from seisvis.services.file_watch_service import FileWatchService
 from seisvis.ui.dialogs.dataset_properties_dialog import DatasetPropertiesDialog
 from seisvis.ui.panels.catalog_panel import CatalogPanel
 from seisvis.ui.panels.display_panel import DisplayPanel
@@ -130,6 +132,10 @@ class MainWindow(QMainWindow):
         # is revisited.
         self._status_wired_groups: set[str] = set()
 
+        # Watches the files behind loaded datasets so an out-from-under
+        # rewrite is reported instead of silently mixing old and new bytes.
+        self._file_watch = FileWatchService(self)
+
         # Full display mode: canvas takes the whole screen, chrome hidden.
         self._full_display: bool = False
         self._pre_full_display_sizes: list[int] = []
@@ -159,6 +165,10 @@ class MainWindow(QMainWindow):
         # Wire status-bar updates.
         project.active_toggle_group_changed.connect(self._on_active_group_changed_for_status)
         project.toggle_group_removed.connect(self._on_toggle_group_removed_for_status)
+        # File-change detection for loaded datasets.
+        project.dataset_added.connect(self._on_dataset_added_for_watch)
+        project.dataset_removed.connect(self._file_watch.unwatch)
+        self._file_watch.dataset_changed_on_disk.connect(self._on_dataset_changed_on_disk)
         # Materialize non-default sort-key fields (e.g. CDP) on commit.
         project.toggle_group_added.connect(self._wire_sort_field_scanning)
         project.toggle_group_removed.connect(self._on_toggle_group_removed_for_scan)
@@ -206,6 +216,7 @@ class MainWindow(QMainWindow):
         self.catalog_panel.remove_requested.connect(self._on_remove_requested)
         self.catalog_panel.open_in_new_group_requested.connect(self._on_open_in_new_group)
         self.catalog_panel.add_to_active_group_requested.connect(self._on_add_to_active_group)
+        self.catalog_panel.reload_requested.connect(self._on_reload_dataset)
         self._left_splitter.addWidget(self.catalog_panel)
 
         self.viewport_manager = ViewportManagerPanel(self.project)
@@ -267,6 +278,42 @@ class MainWindow(QMainWindow):
         self._exit_full_display_shortcut.setContext(ctx)
         self._exit_full_display_shortcut.setEnabled(False)
         self._exit_full_display_shortcut.activated.connect(self._on_exit_full_display)
+
+    # --- File-change detection ---
+
+    def _on_dataset_added_for_watch(self, dataset: Dataset) -> None:
+        """Watch real files only — derived datasets have no source of their own."""
+        if isinstance(dataset, Dataset):
+            self._file_watch.watch(dataset)
+
+    def _on_dataset_changed_on_disk(self, dataset_id: str) -> None:
+        dataset = self.project.find(dataset_id)
+        if dataset is None:
+            return
+        self.statusBar().showMessage(
+            f"{dataset.name} changed on disk — right-click it in the catalog to reload from disk",
+            8000,
+        )
+
+    def _on_reload_dataset(self, dataset: Dataset) -> None:
+        """Re-open a changed file and rebuild everything derived from it."""
+        try:
+            reload_dataset(dataset)
+        except ReloadError as exc:
+            QMessageBox.warning(
+                self,
+                "Reload failed",
+                f"Could not re-open {dataset.source_path}:\n\n{exc}",
+            )
+            return
+
+        # Everything read from the old file is now suspect: cached slices,
+        # the header-scan arrays behind grouping, and the rendered images.
+        self._slice_cache.clear()
+        self._file_watch.refresh(dataset)
+        self._start_header_scan(dataset)
+        self.display_panel.reload_views_for(dataset.id)
+        self.statusBar().showMessage(f"Reloaded {dataset.name} from disk", 4000)
 
     # --- Full display mode ---
 

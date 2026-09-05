@@ -56,6 +56,11 @@ class Dataset(QObject):
     # Fired after persist_sv() writes a new .sv to disk.
     sv_changed = Signal()
 
+    # Fired when the file backing this dataset is seen to have changed on
+    # disk (True) or after a successful reload (False). The catalog renders
+    # stale rows in red.
+    data_stale_changed = Signal(bool)
+
     def __init__(
         self,
         *,
@@ -88,6 +93,10 @@ class Dataset(QObject):
         self.header_fields_available: dict[str, FieldSample] | None = None
         self.sv: SVSidecar | None = None
         self.sv_stale: bool = False
+        # True once the watcher sees the source file change underneath us.
+        # Cached metadata, header-scan arrays and any already-fetched traces
+        # may no longer describe what is on disk until the user reloads.
+        self.data_stale: bool = False
 
     def populate_surange(self, force: bool = False) -> None:
         """Run the surange header scan and cache the result.
@@ -222,6 +231,49 @@ class Dataset(QObject):
         self.sv.to_json(sv_path)
         self.sv_stale = False
         self.sv_changed.emit()
+
+    def set_data_stale(self, stale: bool) -> None:
+        """Flag (or clear) "the file changed on disk". Emits on transitions."""
+        stale = bool(stale)
+        if stale == self.data_stale:
+            return
+        self.data_stale = stale
+        self.data_stale_changed.emit(stale)
+
+    def adopt(self, other: Dataset) -> None:
+        """Take over *other*'s open handle and freshly-read metadata.
+
+        Used by the reload path: the caller opens the file again into a
+        throwaway ``Dataset``, then hands it here. Identity (``id``,
+        ``name``) and the ``.sv`` sidecar stay with *self*, so toggle-group
+        members, the catalog and the diff selection keep their references —
+        only what was read from the file is replaced. *other* is left
+        closed-but-inert; its handle now belongs to *self*.
+        """
+        if other is self:
+            return
+        old_handle = self.handle
+        self.handle = other.handle
+        self.n_traces = other.n_traces
+        self.n_samples = other.n_samples
+        self.sample_interval_ms = other.sample_interval_ms
+        self.byte_format = other.byte_format
+        self.inline_range = other.inline_range
+        self.xline_range = other.xline_range
+        self.group_index = other.group_index
+        self.header_fields_available = other.header_fields_available
+        self.sv_stale = other.sv_stale
+        self._closed = False
+        # Neutralize the donor so its close() can't shut the handle we took.
+        other._closed = True
+        if old_handle is not None and old_handle is not self.handle:
+            try:
+                old_handle.close()
+            except Exception:
+                log.exception("error closing previous handle for %s", self.source_path)
+        self.set_data_stale(False)
+        self.surange_ready.emit()
+        self.group_index_ready.emit()
 
     def close(self) -> None:
         if self._closed:

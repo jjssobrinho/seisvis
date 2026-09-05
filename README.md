@@ -14,6 +14,7 @@ Desktop viewer for 2D/3D SEG-Y reflection seismic data.
 - Zoom restricted to the currently loaded traces (no re-fetch on pan/zoom)
 - Per-member processing: colormap, clip, gain, bandpass, AGC
 - Rectangle selection feeding live FFT and f-k transforms in a separate window per group
+- Detection of source files that change on disk, with in-place reload
 - Always-visible Appearance / Analysis / Processing toolbar
 - Full display mode (`F11`) — canvas takes the whole screen, navigation controls stay
 - QSettings persistence of window layout and toolbar defaults
@@ -116,6 +117,27 @@ different processing chains affect the same patch of data.
 The transform window has its own title that follows the group's
 name; closing the last tab closes the window, and closing the
 toggle group closes the transform window with it.
+
+## Files that change on disk
+
+SEG-Y and SU handles stay open for as long as the dataset is loaded, and
+metadata (trace count, sample count, header arrays) is read once. If
+another tool rewrites the file underneath you, that cached picture stops
+matching the disk — and in the common write-temp-then-rename case the
+open handle keeps serving the *old* file indefinitely, with nothing on
+screen to say so.
+
+Every loaded file is therefore watched. When one changes, its name in
+the catalog turns **red** and the status bar says so. Hover the row for
+the details; right-click it and choose **Reload from disk** to re-open
+the file, re-read its headers, drop cached traces and re-render. The
+dataset keeps its identity through a reload, so toggle groups, the diff
+selection and any renames in its `.sv` survive.
+
+Detection compares file size, mtime and a hash of the first 3600 bytes,
+so it catches in-place edits, atomic replacements and deletions alike.
+Nothing is reloaded automatically — when the reload happens is your
+call, since it resets the view and clears the canvas selection.
 
 ## Full display mode
 

@@ -151,6 +151,12 @@ class DisplayPanel(QTabWidget):
     def view_for(self, group_id: str) -> SeismicView | None:
         return self._views.get(group_id)
 
+    def reload_views_for(self, dataset_id: str) -> None:
+        """Re-render every group that holds the dataset with *dataset_id*."""
+        for view in self._views.values():
+            if any(m.dataset.id == dataset_id for m in view.group.members):
+                view.reload_after_dataset_change()
+
     def toggle_full_display(self) -> None:
         """Flip full display mode (used by the F11 shortcut)."""
         self.full_display_button.toggle()

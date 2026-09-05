@@ -98,6 +98,10 @@ class CatalogModel(QAbstractItemModel):
         dataset.group_index_ready.connect(lambda ds_id=dataset.id: self._on_scan_ready(ds_id))
         if hasattr(dataset, "sv_changed"):
             dataset.sv_changed.connect(lambda ds_id=dataset.id: self._on_sv_changed(ds_id))
+        if hasattr(dataset, "data_stale_changed"):
+            dataset.data_stale_changed.connect(
+                lambda _stale, ds_id=dataset.id: self._emit_data_changed_for(ds_id)
+            )
         if hasattr(dataset, "surange_ready"):
             dataset.surange_ready.connect(
                 lambda ds_id=dataset.id: self._emit_data_changed_for(ds_id)
@@ -193,8 +197,11 @@ class CatalogModel(QAbstractItemModel):
             font = QFont()
             font.setItalic(True)
             return font
-        if role == Qt.ItemDataRole.ForegroundRole and isinstance(ds, DerivedDataset):
-            return QColor("#1E40AF")
+        if role == Qt.ItemDataRole.ForegroundRole:
+            if getattr(ds, "data_stale", False):
+                return QColor("#DC2626")
+            if isinstance(ds, DerivedDataset):
+                return QColor("#1E40AF")
         if role == Qt.ItemDataRole.DecorationRole:
             if getattr(ds, "sv_stale", False):
                 return QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
@@ -203,6 +210,12 @@ class CatalogModel(QAbstractItemModel):
                     QStyle.StandardPixmap.SP_MessageBoxInformation
                 )
         if role == Qt.ItemDataRole.ToolTipRole:
+            if getattr(ds, "data_stale", False):
+                return (
+                    "This file changed on disk since it was opened. What you"
+                    " see may mix cached and current data.\nRight-click →"
+                    " Reload from disk."
+                )
             if getattr(ds, "sv_stale", False):
                 return (
                     "The .sv for this file was generated against an older version"
@@ -250,6 +263,7 @@ class CatalogPanel(QWidget):
     remove_requested = Signal(str)  # dataset id
     open_in_new_group_requested = Signal(object)  # Dataset
     add_to_active_group_requested = Signal(object)  # Dataset
+    reload_requested = Signal(object)  # Dataset whose file changed on disk
 
     def __init__(self, project: Project, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -294,6 +308,13 @@ class CatalogPanel(QWidget):
             add_to_active = menu.addAction("Add to active toggle group")
             add_to_active.triggered.connect(lambda: self.add_to_active_group_requested.emit(ds))
             add_to_active.setEnabled(self._project.active_toggle_group() is not None)
+            if getattr(ds, "data_stale", False):
+                menu.addSeparator()
+                reload_action = menu.addAction("Reload from disk")
+                reload_action.setToolTip("Re-open this file and re-read its headers.")
+                reload_action.triggered.connect(
+                    lambda checked=False, d=ds: self.reload_requested.emit(d)
+                )
             menu.addSeparator()
             inspect = menu.addAction("Configure Headers…")
             inspect.setToolTip(self._inspector_tooltip())

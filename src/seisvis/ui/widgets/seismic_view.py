@@ -635,6 +635,40 @@ class SeismicView(QWidget):
             t_max_ms = ds.n_samples * ds.sample_interval_ms
             self.group.update_shared_state(commanded_time_range_ms=(0.0, t_max_ms))
 
+    def reload_after_dataset_change(self) -> None:
+        """Re-render every member after one of them was reloaded from disk.
+
+        The reloaded file may have a different trace or sample count, so any
+        commanded range that no longer fits is dropped and refitted before
+        the refetch — otherwise ``read_slice`` would index past the end of
+        the new file. The selection goes too: it addresses (trace, sample)
+        positions that need not mean the same thing any more.
+        """
+        self.group.set_selection(None)
+        state = self.group.shared_state
+        ref = self.group.reference_index
+        try:
+            ds = self.group.members[ref].dataset
+        except IndexError:
+            return
+
+        trace_range = state.commanded_trace_range
+        if trace_range is not None and trace_range[1] > ds.n_traces:
+            state.commanded_trace_range = None
+            state.zoomed_trace_range = None
+        t_max_ms = ds.n_samples * ds.sample_interval_ms
+        time_range = state.commanded_time_range_ms
+        if time_range is not None and time_range[1] > t_max_ms:
+            state.commanded_time_range_ms = None
+            state.zoomed_time_range_ms = None
+
+        self._fit_to_member(ref)
+        self._apply_plot_ranges()
+        self._refresh_info_track()
+        self._refresh_scale_bar()
+        for i in range(len(self._image_items)):
+            self._request_slice(i)
+
     def _trace_range_from_group_or_cap(self, ds) -> tuple[int, int]:  # noqa: ANN001
         state = self.group.shared_state
         gi = getattr(ds, "group_index", None)

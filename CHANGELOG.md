@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### Detect source files that change on disk
+
+- **A file rewritten while open is now reported.** Handles are held open
+  for a dataset's lifetime and all metadata is read once at load, so
+  nothing revalidated the file afterwards: an in-place rewrite showed a
+  silent mix of cached and fresh bytes, and the usual write-temp-then-
+  rename left the app serving the old inode indefinitely with no visible
+  sign. A truncation surfaced only as a `Slice error`, and for `.su`
+  (np.memmap-backed) it could raise SIGBUS and take the process down.
+- **`FileWatchService`** (`services/file_watch_service.py`) fingerprints
+  each loaded file (size + mtime + SHA-1 of the first 3600 bytes) and
+  re-checks after any `QFileSystemWatcher` notification, debounced 400 ms
+  so one rewrite yields one comparison. It watches the parent directory
+  as well as the file, because an atomic replace drops the file from the
+  watcher — the directory event is what catches it, and the path is
+  re-armed on every check.
+- **`Dataset.data_stale` + `data_stale_changed`** carry the flag;
+  **the catalog renders a stale dataset's name in red**, with a tooltip
+  explaining what happened and a "Reload from disk" context action that
+  appears only while the row is stale.
+- **`reload_dataset`** (`services/dataset_reload.py`) re-opens the file
+  and hands the result to **`Dataset.adopt`**, which swaps in the new
+  handle and metadata while keeping `id`, `name` and the `.sv` sidecar —
+  so toggle-group members, the diff selection and the catalog keep their
+  references. The app then clears the slice cache, re-dispatches the
+  header scan, re-baselines the watcher and re-renders every group
+  holding that dataset, refitting when the trace/sample count changed and
+  clearing the canvas selection.
+- Reload is always explicit; nothing re-reads a file on its own.
+
 ### Full display mode
 
 - **`F11` / `⛶` button gives the canvas the whole screen.** The button
