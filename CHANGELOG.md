@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### More display colorschemes
+
+- **Four new colormaps** in the Appearance dropdown, alongside the
+  existing `gray`, `seismic`, `RdBu` and `petrel`: `gray inverted`,
+  `blue-white-red`, `rainbow` and `viridis`.
+- **`utils/colormaps.py` is now a stop table.** Every map is a list of
+  `(position, rgb)` stops in a single `_STOPS` dict; adding one is a
+  single entry, and `available_colormaps()` derives its order from it.
+  Interpolation now rounds instead of truncating, so a ramp covers all
+  256 levels and a map and its inverse are exact mirrors.
+- **The colormap dropdown shows gradient swatches** next to each name —
+  eight entries are hard to tell apart by name alone.
+
 ### Detect source files that change on disk
 
 - **A file rewritten while open is now reported.** Handles are held open

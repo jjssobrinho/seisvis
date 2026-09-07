@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+import numpy as np
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -14,7 +16,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from seisvis.utils.colormaps import available_colormaps
+from seisvis.utils.colormaps import available_colormaps, get_colormap
+
+_SWATCH_W = 48
+_SWATCH_H = 12
+
+
+def _swatch(name: str) -> QIcon:
+    """Render a colormap as a small left-to-right gradient chip."""
+    lut = get_colormap(name)
+    idxs = np.linspace(0, 255, _SWATCH_W).round().astype(int)
+    row = np.ascontiguousarray(lut[idxs][:, [2, 1, 0, 3]])  # RGBA -> BGRA
+    strip = np.repeat(row[np.newaxis, :, :], _SWATCH_H, axis=0)
+    image = QImage(strip.data, _SWATCH_W, _SWATCH_H, 4 * _SWATCH_W, QImage.Format.Format_ARGB32)
+    # copy() detaches the QImage from the numpy buffer before it is freed.
+    return QIcon(QPixmap.fromImage(image.copy()))
 
 
 class AppearanceGroup(QGroupBox):
@@ -32,8 +48,9 @@ class AppearanceGroup(QGroupBox):
         layout.setContentsMargins(6, 6, 6, 6)
 
         self._colormap = QComboBox(self)
+        self._colormap.setIconSize(QSize(_SWATCH_W, _SWATCH_H))
         for name in available_colormaps():
-            self._colormap.addItem(name)
+            self._colormap.addItem(_swatch(name), name)
         self._colormap.currentTextChanged.connect(self.colormap_changed.emit)
 
         self._clip_low = QDoubleSpinBox(self)
