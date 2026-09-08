@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Open a catalog multi-selection as one toggle group
+
+- **Selecting two or more datasets in the catalog and right-clicking now
+  offers "Open in new toggle group"**, which builds a single group with
+  every selected dataset as a member. Previously a multi-member group
+  meant opening one dataset, then right-clicking each of the others and
+  choosing "Add to active toggle group" one at a time.
+- The first dataset in catalog order seeds the group and stays the
+  reference the rest are measured against for compatibility; the others
+  join in catalog order and inherit its display settings, so the members
+  are directly comparable the moment the tab opens.
+- **"Compute Difference…" still appears for a selection of exactly two**,
+  now below the new action. A three-or-more selection previously offered
+  no menu at all.
+- **`CatalogPanel.selected_datasets()` now reports catalog order**
+  (Loaded before Derived, top-down) and deduplicates.
+  `selectedIndexes` returns ranges in the order they were built, so
+  ctrl-clicking bottom-up handed back a reversed list — harmless for a
+  set, wrong once position carries meaning (member order in the new
+  group, A vs. B in a diff).
+- Menu construction moved to `CatalogPanel.build_context_menu()` so its
+  contents can be asserted without entering `QMenu.exec`'s modal loop.
+
 ### Fix: a new member rendered blank under a live sort
 
 - **Adding a member to a group whose sort was already committed on a

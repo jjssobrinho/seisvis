@@ -215,6 +215,9 @@ class MainWindow(QMainWindow):
         self.catalog_panel.properties_requested.connect(self._on_properties_requested)
         self.catalog_panel.remove_requested.connect(self._on_remove_requested)
         self.catalog_panel.open_in_new_group_requested.connect(self._on_open_in_new_group)
+        self.catalog_panel.open_multi_in_new_group_requested.connect(
+            self._on_open_multi_in_new_group
+        )
         self.catalog_panel.add_to_active_group_requested.connect(self._on_add_to_active_group)
         self.catalog_panel.reload_requested.connect(self._on_reload_dataset)
         self._left_splitter.addWidget(self.catalog_panel)
@@ -757,6 +760,21 @@ class MainWindow(QMainWindow):
 
     def _on_open_in_new_group(self, dataset: Dataset) -> None:
         self._create_group_for(dataset)
+
+    def _on_open_multi_in_new_group(self, datasets: list[Dataset]) -> None:
+        """Open a catalog multi-selection as the members of one new group.
+
+        The first dataset seeds the group (and so becomes the reference the
+        others are measured against for compatibility); the rest join in
+        catalog order and inherit its display settings, which is the point —
+        the members are meant to be toggled against each other.
+        """
+        if not datasets:
+            return
+        group = self._create_group_for(datasets[0])
+        for ds in datasets[1:]:
+            group.add_member(ds)
+        self.statusBar().showMessage(f"Opened {len(datasets)} datasets in {group.name}", 4000)
 
     def _on_add_to_active_group(self, dataset: Dataset) -> None:
         group = self.project.active_toggle_group()

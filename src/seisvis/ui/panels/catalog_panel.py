@@ -34,6 +34,7 @@ GROUP_LOADED = 0
 GROUP_DERIVED = 1
 _GROUP_LABELS = ("Loaded", "Derived")
 
+
 # SEG-Y header fields that, if any are populated, mean shot/inline/crossline
 # grouping is natively available. When the surange scan finishes and none of
 # these are present, the catalog row gets a hint icon so the user knows they
@@ -311,6 +312,7 @@ class CatalogPanel(QWidget):
     properties_requested = Signal(object)  # Dataset
     remove_requested = Signal(str)  # dataset id
     open_in_new_group_requested = Signal(object)  # Dataset
+    open_multi_in_new_group_requested = Signal(object)  # list[Dataset]
     add_to_active_group_requested = Signal(object)  # Dataset
     reload_requested = Signal(object)  # Dataset whose file changed on disk
 
@@ -341,15 +343,36 @@ class CatalogPanel(QWidget):
         return self._model
 
     def selected_datasets(self) -> list[Dataset]:
-        result: list[Dataset] = []
+        """Selected datasets in catalog order (Loaded before Derived, top-down).
+
+        ``selectedIndexes`` reports ranges in the order they were built, so
+        ctrl-clicking bottom-up would otherwise hand back a reversed list —
+        fine for a set, wrong for anything that assigns meaning to position
+        (member order in a new toggle group, A vs. B in a diff).
+        """
+        seen: set[str] = set()
+        rows: list[tuple[int, int, Dataset]] = []
         for idx in self._view.selectionModel().selectedIndexes():
             ds = self._model.dataset_for_index(idx)
-            if ds is not None:
-                result.append(ds)
-        return result
+            if ds is None or ds.id in seen:
+                continue
+            seen.add(ds.id)
+            rows.append((int(idx.internalId()), idx.row(), ds))
+        rows.sort(key=lambda r: (r[0], r[1]))
+        return [ds for _, _, ds in rows]
 
     def _show_context_menu(self, pos) -> None:  # noqa: ANN001
-        datasets = self.selected_datasets()
+        menu = self.build_context_menu(self.selected_datasets())
+        if menu is None:
+            return
+        menu.exec(cast(QTreeView, self._view).viewport().mapToGlobal(pos))
+
+    def build_context_menu(self, datasets: list[Dataset]) -> QMenu | None:
+        """Assemble the context menu for *datasets*, or None when there is none.
+
+        Split out from :meth:`_show_context_menu` so the menu's contents can
+        be asserted without entering ``QMenu.exec``'s modal loop.
+        """
         menu = QMenu(self._view)
         if len(datasets) == 1:
             ds = datasets[0]
@@ -379,20 +402,30 @@ class CatalogPanel(QWidget):
             remove = menu.addAction("Remove")
             props.triggered.connect(lambda: self.properties_requested.emit(ds))
             remove.triggered.connect(lambda: self.remove_requested.emit(ds.id))
-        elif len(datasets) == 2:
+        elif len(datasets) >= 2:
             from seisvis.models.compatibility import are_toggle_compatible
 
-            a, b = datasets[0], datasets[1]
-            compat = are_toggle_compatible(a, b)
-            diff = menu.addAction("Compute Difference…")
-            diff.setEnabled(compat.ok)
-            if not compat.ok:
-                diff.setToolTip(f"Incompatible: {compat.reason}")
-            if compat.ok:
-                diff.triggered.connect(lambda: self._open_diff_dialog(a, b))
+            selected = list(datasets)
+            open_group = menu.addAction("Open in new toggle group")
+            open_group.setToolTip(
+                f"Open all {len(selected)} selected datasets as members of one group."
+            )
+            open_group.triggered.connect(
+                lambda checked=False, d=selected: self.open_multi_in_new_group_requested.emit(d)
+            )
+            if len(selected) == 2:
+                menu.addSeparator()
+                a, b = selected[0], selected[1]
+                compat = are_toggle_compatible(a, b)
+                diff = menu.addAction("Compute Difference…")
+                diff.setEnabled(compat.ok)
+                if not compat.ok:
+                    diff.setToolTip(f"Incompatible: {compat.reason}")
+                if compat.ok:
+                    diff.triggered.connect(lambda: self._open_diff_dialog(a, b))
         else:
-            return
-        menu.exec(cast(QTreeView, self._view).viewport().mapToGlobal(pos))
+            return None
+        return menu
 
     def _open_diff_dialog(self, a: Dataset, b: Dataset) -> None:
         from seisvis.services.derivation import IncompatibleDatasetsError, compute_difference
