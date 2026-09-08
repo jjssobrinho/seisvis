@@ -1485,6 +1485,13 @@ class SeismicView(QWidget):
         gi = getattr(ds, "group_index", None)
         if gi is None:
             return False
+        # A key still being read by a background scan yields an empty result
+        # that says nothing about whether the group exists — a newly added
+        # member is in exactly this state. Stay quiet until the scan lands;
+        # the status bar already reports indexing progress.
+        for row in (state.sort_config.primary, state.sort_config.secondary):
+            if row is not None and row.field and gi.is_field_scanning(row.field):
+                return False
         indices = gi.get_trace_indices(state.sort_config)
         return indices.size == 0
 

@@ -598,9 +598,27 @@ class MainWindow(QMainWindow):
         group.sort_config_committed.connect(
             lambda sc, g=group: self._ensure_sort_fields_scanned(g, sc)
         )
+        # A member joining a group whose sort is already live needs the same
+        # keys materialized. Without this the newcomer's index has no array
+        # for the sort field, the committed config resolves to zero traces,
+        # and the canvas shows "Group not present in this dataset" until some
+        # unrelated command-bar edit re-commits the sort and sweeps every
+        # member again.
+        group.member_added.connect(lambda _i, g=group: self._scan_fields_for_new_member(g))
 
     def _on_toggle_group_removed_for_scan(self, group_id: str) -> None:
         self._sort_scan_wired_groups.discard(group_id)
+
+    def _scan_fields_for_new_member(self, group: ToggleGroup) -> None:
+        """Materialize the group's live sort keys for a freshly added member.
+
+        No-op while the sort is uncommitted — natural file order needs no
+        header arrays, and the eventual commit runs the same sweep.
+        """
+        config = group.shared_state.sort_config
+        if not config.committed:
+            return
+        self._ensure_sort_fields_scanned(group, config)
 
     def _ensure_sort_fields_scanned(self, group: ToggleGroup, config: SortConfig) -> None:
         """Dispatch per-field header scans for any committed sort key that a
@@ -636,6 +654,9 @@ class MainWindow(QMainWindow):
 
     def _start_field_scan(self, dataset: Dataset, group: ToggleGroup, fields: set[str]) -> None:
         self._field_scan_inflight.setdefault(dataset.id, set()).update(fields)
+        gi = getattr(dataset, "group_index", None)
+        if gi is not None:
+            gi.mark_fields_scanning(fields)
         flag: dict[str, bool] = self._field_scan_cancel_flags.setdefault(
             dataset.id, {"cancelled": False}
         )
@@ -679,7 +700,12 @@ class MainWindow(QMainWindow):
                 gi.set_field_array(name, arr)
         except ValueError:
             log.exception("field scan produced a mismatched array for %s", dataset.name)
+            gi.clear_fields_scanning()
             return
+        # A field the worker skipped (unknown name, unreadable header) never
+        # reaches set_field_array, so drop whatever is still marked pending —
+        # otherwise the canvas suppresses the "not present" overlay forever.
+        gi.clear_fields_scanning()
         dataset.group_index_ready.emit()
         # Re-run the committed sort now that the keys are materialized.
         group.shared_state_changed.emit()
@@ -691,6 +717,9 @@ class MainWindow(QMainWindow):
         self._field_scan_workers.discard(worker)
         self._field_scan_inflight.pop(dataset.id, None)
         self._field_scan_cancel_flags.pop(dataset.id, None)
+        gi = getattr(dataset, "group_index", None)
+        if gi is not None:
+            gi.clear_fields_scanning()
         self.statusBar().showMessage(
             f"Header field scan failed for {dataset.name}: {message}", 5000
         )

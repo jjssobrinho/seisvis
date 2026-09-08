@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Fix: a new member rendered blank under a live sort
+
+- **Adding a member to a group whose sort was already committed on a
+  non-default key** (CDP, offset — anything outside the SHOT / INLINE /
+  CROSSLINE / TraceNumber set the default header scan covers) showed
+  "Group not present in this dataset" and rendered nothing. The
+  per-field scan was dispatched only from `sort_config_committed`, so a
+  member that joined *after* the commit never got its key materialized:
+  its `GroupIndex` had no array for the field, the committed config
+  resolved to zero traces, and the canvas concluded the group was
+  absent. Navigating to another CDP appeared to fix it because any
+  command-bar edit re-commits the sort, which sweeps every member and
+  finally scans the newcomer.
+- **`member_added` now triggers the same sweep** (`_scan_fields_for_new_member`),
+  no-op while the sort is uncommitted since natural file order needs no
+  header arrays. Members that already hold the field are skipped, so
+  only the newcomer is read.
+- **The overlay no longer lies while a scan is in flight.**
+  `GroupIndex` tracks pending field scans (`mark_fields_scanning` /
+  `clear_fields_scanning` / `is_field_scanning`, cleared per field by
+  `set_field_array`), and the canvas treats "key still being read" as
+  unknown rather than absent — on a large file the message would
+  otherwise stand for the whole scan. The status bar already reports
+  indexing progress. A genuinely missing group still gets the overlay.
+
 ### New members inherit the display settings of the previous one
 
 - **A member added to a populated toggle group now starts from the

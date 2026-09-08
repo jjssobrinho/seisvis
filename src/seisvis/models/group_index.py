@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from enum import StrEnum
 from typing import overload
 
@@ -108,6 +109,11 @@ class GroupIndex:
         # so caching the result keeps page navigation off the UI thread's
         # critical path.
         self._field_groups_cache: dict[str, tuple[dict[int, np.ndarray], list[int]]] = {}
+        # Field names whose per-trace arrays are currently being read by a
+        # background scan. A field in here is "not available *yet*" rather
+        # than "absent", which is what lets the canvas tell an empty result
+        # caused by a pending scan apart from a genuinely missing group.
+        self._pending_field_scans: set[str] = set()
         self._rebuild()
 
     # --- construction ---
@@ -291,9 +297,29 @@ class GroupIndex:
                 f"expected {self._n_traces}"
             )
         self._field_arrays[field_name] = coerced
+        self._pending_field_scans.discard(field_name)
         self._field_groups_cache.pop(field_name, None)
         self._sort_cache.clear()
         self._rebuild()
+
+    def mark_fields_scanning(self, field_names: Iterable[str]) -> None:
+        """Record that a background scan is materializing *field_names*."""
+        self._pending_field_scans.update(f for f in field_names if f not in self._field_arrays)
+
+    def clear_fields_scanning(self, field_names: Iterable[str] | None = None) -> None:
+        """Drop pending marks — all of them, or just *field_names*.
+
+        Called when a scan fails or is cancelled; the success path clears
+        each field individually through :meth:`set_field_array`.
+        """
+        if field_names is None:
+            self._pending_field_scans.clear()
+            return
+        self._pending_field_scans.difference_update(field_names)
+
+    def is_field_scanning(self, field_name: str) -> bool:
+        """True while *field_name* is queued in a background scan."""
+        return field_name in self._pending_field_scans
 
     def field_value_range(self, field_name: str) -> tuple[int, int] | None:
         """Return ``(min, max)`` of the per-trace values for *field_name*.
