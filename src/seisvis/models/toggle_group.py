@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -157,9 +158,10 @@ class ToggleGroup(QObject):
         self.name_changed.emit(name)
 
     def add_member(self, dataset: Dataset, at_index: int | None = None) -> int:
-        member = Member(dataset=dataset)
         insert_at = len(self._members) if at_index is None else int(at_index)
         insert_at = max(0, min(insert_at, len(self._members)))
+        member = Member(dataset=dataset)
+        self._inherit_appearance(member, insert_at)
         self._members.insert(insert_at, member)
         # Inserting at or before an existing cursor shifts it up by one, but
         # the reference (and therefore the grouping anchor) stays on the
@@ -176,6 +178,32 @@ class ToggleGroup(QObject):
             self._initialize_grouping_from_reference()
         self.member_added.emit(insert_at)
         return insert_at
+
+    def _inherit_appearance(self, member: Member, insert_at: int) -> None:
+        """Seed a new member's look from the member it is added next to.
+
+        A member added to a populated group is almost always there to be
+        toggled against what is already displayed, so it starts from the
+        neighbour's colormap, clip percentiles and processing chain (gain,
+        AGC, bandpass) instead of the app defaults. The group-wide fixed
+        color scale is already shared through ``SharedState`` and needs no
+        copying.
+
+        ``view_hint`` is deliberately not inherited: it records one
+        incompatible member's own axis ranges and means nothing on another
+        dataset.
+        """
+        if not self._members:
+            return
+        template = self._members[insert_at - 1 if insert_at > 0 else 0]
+        src = template.display_state
+        member.display_state = DisplayState(
+            colormap=src.colormap,
+            clip_low_pct=src.clip_low_pct,
+            clip_high_pct=src.clip_high_pct,
+            gain_db=src.gain_db,
+        )
+        member.processing_chain = deepcopy(template.processing_chain)
 
     def remove_member(self, index: int) -> None:
         if not 0 <= index < len(self._members):

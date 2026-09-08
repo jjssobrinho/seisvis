@@ -177,3 +177,87 @@ def test_all_members_compatible_with_same_dataset(group: ToggleGroup, segy_3d: P
         assert group.all_members_compatible() is True
     finally:
         ds.close()
+
+
+def test_new_member_inherits_previous_members_appearance(group: ToggleGroup, segy_3d: Path) -> None:
+    ds = load_segy(segy_3d)
+    try:
+        group.add_member(ds)
+        group.update_member_display_state(
+            0, colormap="seismic", clip_low_pct=5.0, clip_high_pct=95.0, gain_db=6.0
+        )
+        group.update_member_processing_chain(
+            0,
+            gain={"enabled": True, "db": 6.0},
+            agc={"enabled": True, "window_ms": 250.0},
+            bandpass={"enabled": True, "low_hz": 8.0, "high_hz": 60.0},
+        )
+
+        group.add_member(ds)
+        new = group.members[1]
+        assert new.display_state.colormap == "seismic"
+        assert new.display_state.clip_low_pct == 5.0
+        assert new.display_state.clip_high_pct == 95.0
+        assert new.display_state.gain_db == 6.0
+        assert new.processing_chain.gain.db == 6.0
+        assert new.processing_chain.agc.enabled is True
+        assert new.processing_chain.agc.window_ms == 250.0
+        assert new.processing_chain.bandpass.low_hz == 8.0
+        assert new.processing_chain.bandpass.high_hz == 60.0
+    finally:
+        ds.close()
+
+
+def test_inherited_chain_is_a_copy_not_shared(group: ToggleGroup, segy_3d: Path) -> None:
+    ds = load_segy(segy_3d)
+    try:
+        group.add_member(ds)
+        group.update_member_processing_chain(0, agc={"enabled": True, "window_ms": 250.0})
+        group.add_member(ds)
+        group.update_member_processing_chain(1, agc={"window_ms": 400.0})
+        assert group.members[0].processing_chain.agc.window_ms == 250.0
+        assert group.members[1].processing_chain.agc.window_ms == 400.0
+        assert group.members[0].processing_chain is not group.members[1].processing_chain
+    finally:
+        ds.close()
+
+
+def test_inheritance_uses_the_neighbour_at_the_insert_point(
+    group: ToggleGroup, segy_3d: Path
+) -> None:
+    ds = load_segy(segy_3d)
+    try:
+        group.add_member(ds)
+        group.update_member_display_state(0, colormap="seismic")
+        group.add_member(ds)
+        group.update_member_display_state(1, colormap="viridis")
+        # Inserted between the two: takes the member above it (index 0).
+        group.add_member(ds, at_index=1)
+        assert group.members[1].display_state.colormap == "seismic"
+        # Inserted at the head: falls back to the old first member.
+        group.add_member(ds, at_index=0)
+        assert group.members[0].display_state.colormap == "seismic"
+    finally:
+        ds.close()
+
+
+def test_view_hint_is_not_inherited(group: ToggleGroup, segy_3d: Path) -> None:
+    ds = load_segy(segy_3d)
+    try:
+        group.add_member(ds)
+        group.update_member_display_state(0, view_hint={"x": (0.0, 10.0)})
+        group.add_member(ds)
+        assert group.members[1].display_state.view_hint is None
+    finally:
+        ds.close()
+
+
+def test_first_member_keeps_defaults(group: ToggleGroup, segy_3d: Path) -> None:
+    ds = load_segy(segy_3d)
+    try:
+        group.add_member(ds)
+        assert group.members[0].display_state.colormap == "gray"
+        assert group.members[0].display_state.clip_low_pct == 1.0
+        assert group.members[0].processing_chain.agc.enabled is False
+    finally:
+        ds.close()

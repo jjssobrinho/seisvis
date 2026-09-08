@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### New members inherit the display settings of the previous one
+
+- **A member added to a populated toggle group now starts from the
+  neighbouring member's look**, not the app defaults. Adding a second
+  dataset used to reset to `gray` / 1–99 % clip / no gain / no AGC /
+  no bandpass, so toggling between members compared two different
+  displays and the settings had to be dialled in again by hand — which
+  defeats the point of a toggle group.
+- **Inherited**: colormap, clip percentiles, `gain_db`, and a deep copy
+  of the processing chain (constant gain, AGC, bandpass). The copy is
+  independent — editing the new member afterwards leaves the original
+  alone.
+- **Not inherited**: `view_hint`, which records one incompatible
+  member's own axis ranges and means nothing on another dataset. The
+  group-wide fixed color scale needs no copying; it already lives on
+  `SharedState` and applies to every member.
+- The template is the member immediately above the insertion point
+  (the last one added, for a plain append), falling back to the old
+  first member when inserting at the head. The first member of an empty
+  group keeps the defaults.
+
 ### More display colorschemes
 
 - **Four new colormaps** in the Appearance dropdown, alongside the
