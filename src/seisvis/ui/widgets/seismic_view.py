@@ -20,6 +20,7 @@ from seisvis.ui.widgets.selection_overlay import SelectionOverlay, selection_fro
 from seisvis.ui.widgets.toggle_bar import ToggleBar
 from seisvis.utils.colormaps import get_colormap
 from seisvis.utils.member_colors import member_color
+from seisvis.utils.mime import DATASET_MIME_TYPE, decode_dataset_ids
 from seisvis.workers.slice_worker import SliceWorker
 
 log = logging.getLogger(__name__)
@@ -170,6 +171,11 @@ class SeismicView(QWidget):
     # Emits (trace, t_ms, amp); each may be None when the cursor is outside data.
     cursor_readout = Signal(object, object, object)
     status_message = Signal(str)
+    # Catalog datasets dropped onto this canvas: list[str] of dataset ids.
+    # The view holds no Project reference, so resolving ids to datasets and
+    # mutating the group is left to MainWindow, alongside the menu-driven
+    # add paths.
+    datasets_dropped = Signal(object)
 
     def __init__(
         self,
@@ -198,6 +204,8 @@ class SeismicView(QWidget):
         # PlotItem (data-coord space) and reads its current state from
         # ``group.selection``.
         self._selection_mode_active: bool = False
+
+        self.setAcceptDrops(True)
 
         self._build_ui()
         self._wire_group_signals()
@@ -306,6 +314,16 @@ class SeismicView(QWidget):
         )
         self.group_missing_label.setVisible(False)
         self.group_missing_label.adjustSize()
+
+        # Drop hint: shown only while a catalog drag hovers this canvas, so
+        # the user can see which tab will receive the dataset.
+        self.drop_hint_label = QLabel("Add to this toggle group", self.plot_widget)
+        self.drop_hint_label.setStyleSheet(
+            "background-color: rgba(30, 90, 160, 220); color: white; padding: 6px 12px;"
+            "border-radius: 4px; font-weight: bold;"
+        )
+        self.drop_hint_label.setVisible(False)
+        self.drop_hint_label.adjustSize()
 
         # "Parent dataset missing" overlay: centered, shown when the active
         # member is a DerivedDataset with parents_missing == True.
@@ -1495,6 +1513,54 @@ class SeismicView(QWidget):
         indices = gi.get_trace_indices(state.sort_config)
         return indices.size == 0
 
+    # --- Catalog drag and drop ---
+
+    def _dropped_dataset_ids(self, mime) -> list[str]:  # noqa: ANN001
+        """Dataset ids carried by *mime*, or [] when it is not a catalog drag."""
+        if not mime.hasFormat(DATASET_MIME_TYPE):
+            return []
+        return decode_dataset_ids(mime.data(DATASET_MIME_TYPE))
+
+    def dragEnterEvent(self, event) -> None:  # noqa: ANN001
+        if self._dropped_dataset_ids(event.mimeData()):
+            event.acceptProposedAction()
+            self._show_drop_hint(True)
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: ANN001
+        if self._dropped_dataset_ids(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: ANN001
+        self._show_drop_hint(False)
+        event.accept()
+
+    def dropEvent(self, event) -> None:  # noqa: ANN001
+        self._show_drop_hint(False)
+        ids = self._dropped_dataset_ids(event.mimeData())
+        if not ids:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        self.datasets_dropped.emit(ids)
+
+    def _show_drop_hint(self, visible: bool) -> None:
+        self.drop_hint_label.setVisible(visible)
+        if visible:
+            self.drop_hint_label.raise_()
+            self._reposition_drop_hint()
+
+    def _reposition_drop_hint(self) -> None:
+        self.drop_hint_label.adjustSize()
+        w = self.plot_widget.width()
+        h = self.plot_widget.height()
+        lw = self.drop_hint_label.width()
+        lh = self.drop_hint_label.height()
+        self.drop_hint_label.move(max(0, (w - lw) // 2), max(0, (h - lh) // 3))
+
     def eventFilter(self, watched, event):  # noqa: ANN001, D401
         if watched is self.plot_widget and event.type() == QEvent.Type.Resize:
             if self.independent_axes_badge.isVisible():
@@ -1503,4 +1569,6 @@ class SeismicView(QWidget):
                 self._reposition_group_missing()
             if self.parent_missing_label.isVisible():
                 self._reposition_parent_missing()
+            if self.drop_hint_label.isVisible():
+                self._reposition_drop_hint()
         return super().eventFilter(watched, event)

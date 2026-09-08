@@ -34,6 +34,7 @@ class DisplayPanel(QTabWidget):
     status_message = Signal(str)
     cursor_readout = Signal(object, object, object)  # trace, t_ms, amp
     close_group_requested = Signal(str)  # group id
+    datasets_dropped = Signal(str, object)  # group id, list[str] of dataset ids
     full_display_toggled = Signal(bool)
 
     def __init__(
@@ -81,6 +82,7 @@ class DisplayPanel(QTabWidget):
         view = SeismicView(group, self._pool, self._cache, parent=self)
         view.status_message.connect(self.status_message)
         view.cursor_readout.connect(self.cursor_readout)
+        view.datasets_dropped.connect(lambda ids, g=group: self.datasets_dropped.emit(g.id, ids))
         view.set_selection_mode_active(self._selection_mode_active)
         group.name_changed.connect(lambda name, g=group: self._on_group_renamed(g, name))
         self._views[group.id] = view

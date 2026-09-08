@@ -241,6 +241,7 @@ class MainWindow(QMainWindow):
         display_layout.setSpacing(0)
 
         self.display_panel = DisplayPanel(self.project, self._pool, self._slice_cache)
+        self.display_panel.datasets_dropped.connect(self._on_datasets_dropped)
         self.display_panel.status_message.connect(self._on_status_message)
         self.display_panel.cursor_readout.connect(self._on_cursor_readout)
         self.display_panel.close_group_requested.connect(self._on_close_group_requested)
@@ -760,6 +761,26 @@ class MainWindow(QMainWindow):
 
     def _on_open_in_new_group(self, dataset: Dataset) -> None:
         self._create_group_for(dataset)
+
+    def _on_datasets_dropped(self, group_id: str, dataset_ids: list[str]) -> None:
+        """Add catalog datasets dropped on a canvas to that canvas's group.
+
+        Ids are resolved here rather than in the view: a dataset removed
+        between the drag starting and the drop landing simply resolves to
+        nothing, and the group mutation stays alongside the menu-driven add
+        paths.
+        """
+        group = self.project.find_toggle_group(group_id)
+        if group is None:
+            return
+        added = [ds for ds in (self.project.find(i) for i in dataset_ids) if ds is not None]
+        for ds in added:
+            group.add_member(ds)
+        if not added:
+            self.statusBar().showMessage("Dropped datasets are no longer loaded", 4000)
+            return
+        names = ", ".join(ds.name for ds in added)
+        self.statusBar().showMessage(f"Added {names} to {group.name}", 4000)
 
     def _on_open_multi_in_new_group(self, datasets: list[Dataset]) -> None:
         """Open a catalog multi-selection as the members of one new group.

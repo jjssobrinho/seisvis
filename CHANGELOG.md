@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Drag datasets from the catalog onto a canvas
+
+- **Dragging one or more catalog datasets onto a display canvas adds
+  them to that canvas's toggle group**, alongside the existing
+  right-click routes. A drop hint appears over the canvas while a drag
+  hovers it, so it is clear which tab will receive the datasets.
+- **The drop lands in the group of the canvas it was released over**,
+  which need not be the active tab — dropping on a background tab's
+  canvas adds there.
+- Multi-selection drags carry every selected dataset, in catalog order.
+- **The payload is dataset ids under a private mime type**
+  (`application/x-seisvis-dataset-ids`, in `utils/mime.py`), so a
+  catalog drag can't be mistaken for the file-path drops the main
+  window accepts, and a foreign drag can't be dropped on a canvas. Ids
+  rather than object references: a dataset removed between the drag
+  starting and the drop landing resolves to nothing instead of
+  resurrecting a closed handle.
+- `SeismicView` emits `datasets_dropped`, `DisplayPanel` re-emits it
+  with the group id, and `MainWindow` resolves the ids and mutates the
+  group — keeping group mutation in one place with the menu-driven add
+  paths, and the canvas free of a `Project` reference.
+
 ### Open a catalog multi-selection as one toggle group
 
 - **Selecting two or more datasets in the catalog and right-clicking now

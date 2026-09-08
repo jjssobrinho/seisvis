@@ -6,6 +6,7 @@ from typing import cast
 from PySide6.QtCore import (
     QAbstractItemModel,
     QEvent,
+    QMimeData,
     QModelIndex,
     QObject,
     Qt,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
 from seisvis.models.dataset import Dataset
 from seisvis.models.derived_dataset import DerivedDataset
 from seisvis.models.project import Project
+from seisvis.utils.mime import DATASET_MIME_TYPE, encode_dataset_ids
 
 log = logging.getLogger(__name__)
 
@@ -182,7 +184,9 @@ class CatalogModel(QAbstractItemModel):
         if index.internalId() == 0:
             # Group row — selectable off, only expandable.
             return Qt.ItemFlag.ItemIsEnabled
-        return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        return (
+            Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsDragEnabled
+        )
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):  # noqa: ANN201
         if not index.isValid():
@@ -255,6 +259,29 @@ class CatalogModel(QAbstractItemModel):
 
     # --- Helpers used by the panel ---
 
+    def mimeTypes(self) -> list[str]:
+        return [DATASET_MIME_TYPE]
+
+    def mimeData(self, indexes: list[QModelIndex]) -> QMimeData:
+        """Package the dragged rows as dataset ids, in catalog order.
+
+        Ids rather than object references: the drop handler resolves them
+        against the project, so a dataset removed mid-drag simply resolves
+        to nothing instead of resurrecting a closed handle.
+        """
+        seen: set[str] = set()
+        rows: list[tuple[int, int, str]] = []
+        for index in indexes:
+            ds = self.dataset_for_index(index)
+            if ds is None or ds.id in seen:
+                continue
+            seen.add(ds.id)
+            rows.append((int(index.internalId()), index.row(), ds.id))
+        rows.sort(key=lambda r: (r[0], r[1]))
+        data = QMimeData()
+        data.setData(DATASET_MIME_TYPE, encode_dataset_ids([ds_id for _, _, ds_id in rows]))
+        return data
+
     def dataset_for_index(self, index: QModelIndex) -> Dataset | None:
         if not index.isValid() or index.internalId() == 0:
             return None
@@ -324,6 +351,9 @@ class CatalogPanel(QWidget):
         self._view = QTreeView(self)
         self._view.setModel(self._model)
         self._view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._view.setDragEnabled(True)
+        self._view.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+        self._view.setDefaultDropAction(Qt.DropAction.CopyAction)
         self._view.setHeaderHidden(False)
         self._view.setRootIsDecorated(True)
         self._view.setUniformRowHeights(True)
