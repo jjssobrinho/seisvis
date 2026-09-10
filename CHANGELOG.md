@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### Model Window for depth-domain data (v5.2)
+
+Depth datasets now render, in metres, in a window of their own. The
+Display Canvas stays milliseconds and time-down — no domain branch runs
+through it.
+
+- **A new Model Window** holds one model per tab, closing when its last
+  tab closes. Reopening a dataset raises its existing tab rather than
+  adding a second. Its toolbar is local, since the global one is bound
+  to toggle groups a model never joins.
+- **Axes are physical**: the image is placed with `ImageItem.setRect`
+  over the grid the file declared, so the axes read "Distance (m)" and
+  "Depth (m)" directly, with z=0 at the top. `F` fits the view.
+- **The colour scale is explicit, in physical units** — two spinboxes
+  and a Fit button, seeded from the data's own range — rather than clip
+  percentiles. A model's absolute values are the content, and a locked
+  scale is what will make v5.4's flicker between two models meaningful:
+  a percentile scale recomputes per dataset, so equal velocities would
+  render as different colours.
+- Default colormap is `rainbow`, the convention for velocity. Gain is
+  not offered: scaling a velocity is not an operation, and bandpass and
+  AGC are Hz operations that say nothing about metres, so the read runs
+  with an empty processing chain.
+- **Crosshair readout in physical units** — `x = 625 m | z = 250 m |
+  3420 m/s` — using the unit the file declared, and omitting it when
+  none was.
+- **Catalog rows for depth datasets are badged `[z]`** with a tooltip
+  naming the grid and where the dataset opens. The "only trace-range
+  grouping is available" hint is suppressed for them: a model has no
+  shot or inline to go configure.
+- **Every toggle-group entry point refuses depth data with a message
+  naming the Model Window** — open, add-to-active, multi-select open,
+  and drag-onto-canvas. A mixed multi-selection opens the time datasets
+  and reports the rest.
+- Model tabs are filled through `SliceWorker` on the shared pool, like
+  every other read, and the window closes on `aboutToQuit` before its
+  datasets' handles do.
+
 ### Depth-domain datasets recognised (v5.1)
 
 Groundwork for the Model Window (v5.2). A file may now declare that its

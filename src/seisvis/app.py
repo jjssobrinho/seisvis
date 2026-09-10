@@ -37,9 +37,12 @@ from seisvis.ui.panels.catalog_panel import CatalogPanel
 from seisvis.ui.panels.display_panel import DisplayPanel
 from seisvis.ui.panels.viewport_manager_panel import ViewportManagerPanel
 from seisvis.ui.toolbar.global_toolbar import GlobalToolbar
+from seisvis.ui.widgets.model_view import ModelView
+from seisvis.ui.windows.model_window import ModelWindow
 from seisvis.workers.field_scan_worker import FieldScanWorker
 from seisvis.workers.header_scan_worker import HeaderScanWorker
 from seisvis.workers.load_worker import LoadWorker
+from seisvis.workers.slice_worker import SliceWorker
 
 _LOG_PATH = Path("logs/seisvis.log")
 _SUPPORTED_SUFFIXES = SUPPORTED_SUFFIXES
@@ -126,6 +129,10 @@ class MainWindow(QMainWindow):
         # Python, so without this reference it can be collected mid-run and its
         # queued finished/failed signals are dropped.
         self._field_scan_workers: set[FieldScanWorker] = set()
+        # Same retention reason for the reads that fill Model Window tabs.
+        self._model_slice_workers: set[SliceWorker] = set()
+        # The app's single Model Window, created on the first depth dataset.
+        self._model_window: ModelWindow | None = None
         self._sort_scan_wired_groups: set[str] = set()
         # Track which toggle-group ids we've wired status-bar signals to,
         # so we don't accumulate duplicate handlers when the active group
@@ -760,7 +767,71 @@ class MainWindow(QMainWindow):
                 ds.mark_parents_missing()
 
     def _on_open_in_new_group(self, dataset: Dataset) -> None:
+        if self._route_if_depth(dataset):
+            return
         self._create_group_for(dataset)
+
+    # --- depth-domain routing --------------------------------------------
+
+    def _route_if_depth(self, dataset: Dataset) -> bool:
+        """Send a depth-domain dataset to the Model Window; report handled.
+
+        The Display Canvas is milliseconds, time-down. A model measured in
+        metres has its own window rather than a branch through the canvas.
+        """
+        if getattr(dataset, "vertical_domain", "time") != "depth":
+            return False
+        self.model_window.open_dataset(dataset)
+        self.model_window.show()
+        self.model_window.raise_()
+        self.statusBar().showMessage(f"Opened {dataset.name} in the Model Window", 4000)
+        return True
+
+    @property
+    def model_window(self) -> ModelWindow:
+        """The app's single Model Window, created on first use."""
+        if self._model_window is None:
+            self._model_window = ModelWindow(self)
+            self._model_window.slice_requested.connect(self._on_model_slice_requested)
+        return self._model_window
+
+    def _on_model_slice_requested(self, view: ModelView, dataset: Dataset) -> None:
+        """Fill a model tab off the UI thread, like any other slice read."""
+        trace_slice, time_slice, chain = view.slice_request()
+        worker = SliceWorker(
+            group_id=f"model:{dataset.id}",
+            member_index=0,
+            dataset=dataset,
+            trace_indices=trace_slice,
+            time_slice=time_slice,
+            processing_chain=chain,
+        )
+        worker.signals.finished.connect(lambda _g, _m, arr, _tr, _sr, v=view: v.set_array(arr))
+        worker.signals.failed.connect(
+            lambda _g, _m, msg, name=dataset.name: self.statusBar().showMessage(
+                f"Failed to read {name}: {msg}", 5000
+            )
+        )
+        self._model_slice_workers.add(worker)
+        for sig in (worker.signals.finished, worker.signals.failed):
+            sig.connect(lambda *_a, w=worker: self._model_slice_workers.discard(w))
+        self._pool.start(worker)
+
+    def _close_model_window(self) -> None:
+        """Shut the Model Window on exit, before parents' handles close."""
+        if self._model_window is not None:
+            self._model_window.close()
+
+    def _refuse_depth(self, datasets: list[Dataset]) -> list[Dataset]:
+        """Split off depth datasets, reporting them. Returns the time ones."""
+        depth = [d for d in datasets if getattr(d, "vertical_domain", "time") == "depth"]
+        if depth:
+            names = ", ".join(d.name for d in depth)
+            self.statusBar().showMessage(
+                f"{names} is depth-domain data — open it in the Model Window, not a toggle group",
+                5000,
+            )
+        return [d for d in datasets if d not in depth]
 
     def _on_datasets_dropped(self, group_id: str, dataset_ids: list[str]) -> None:
         """Add catalog datasets dropped on a canvas to that canvas's group.
@@ -773,11 +844,16 @@ class MainWindow(QMainWindow):
         group = self.project.find_toggle_group(group_id)
         if group is None:
             return
-        added = [ds for ds in (self.project.find(i) for i in dataset_ids) if ds is not None]
+        resolved = [ds for ds in (self.project.find(i) for i in dataset_ids) if ds is not None]
+        if not resolved:
+            self.statusBar().showMessage("Dropped datasets are no longer loaded", 4000)
+            return
+        added = self._refuse_depth(resolved)
         for ds in added:
             group.add_member(ds)
         if not added:
-            self.statusBar().showMessage("Dropped datasets are no longer loaded", 4000)
+            # _refuse_depth already reported why; don't overwrite it with a
+            # "no longer loaded" that isn't true.
             return
         names = ", ".join(ds.name for ds in added)
         self.statusBar().showMessage(f"Added {names} to {group.name}", 4000)
@@ -790,6 +866,7 @@ class MainWindow(QMainWindow):
         catalog order and inherit its display settings, which is the point —
         the members are meant to be toggled against each other.
         """
+        datasets = self._refuse_depth(datasets)
         if not datasets:
             return
         group = self._create_group_for(datasets[0])
@@ -798,6 +875,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Opened {len(datasets)} datasets in {group.name}", 4000)
 
     def _on_add_to_active_group(self, dataset: Dataset) -> None:
+        if not self._refuse_depth([dataset]):
+            return
         group = self.project.active_toggle_group()
         if group is None:
             self._create_group_for(dataset)
@@ -882,6 +961,7 @@ def main() -> int:
     app.aboutToQuit.connect(lambda: qsettings.save(window))
     app.aboutToQuit.connect(window._cancel_all_scans)
     app.aboutToQuit.connect(window.transforms_coordinator.shutdown)
+    app.aboutToQuit.connect(window._close_model_window)
     app.aboutToQuit.connect(project.close_all)
     window.show()
     return app.exec()

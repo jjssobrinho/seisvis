@@ -44,6 +44,11 @@ _GROUP_LABELS = ("Loaded", "Derived")
 _ROLE_FIELDS = ("FieldRecord", "INLINE_3D", "CROSSLINE_3D")
 
 
+def _is_depth(ds: Dataset) -> bool:
+    """True when this dataset renders in metres rather than milliseconds."""
+    return getattr(ds, "vertical_domain", "time") == "depth"
+
+
 def _shows_trace_range_hint(ds: Dataset) -> bool:
     """Return True when the dataset's catalog row should display the hint icon.
 
@@ -52,6 +57,10 @@ def _shows_trace_range_hint(ds: Dataset) -> bool:
     any role via the .sv sidecar. Derived datasets never show the hint.
     """
     if isinstance(ds, DerivedDataset):
+        return False
+    # A model has no shot/inline/crossline to configure; telling the user to
+    # go remap headers would send them somewhere with nothing to do.
+    if _is_depth(ds):
         return False
     fields = getattr(ds, "header_fields_available", None)
     if fields is None:
@@ -201,9 +210,12 @@ class CatalogModel(QAbstractItemModel):
             return None
         ds = bucket[index.row()]
         if role == Qt.ItemDataRole.DisplayRole:
+            # Depth-domain rows are badged: they open in the Model Window
+            # rather than a toggle group, so the routing shouldn't surprise.
+            suffix = "  [z]" if _is_depth(ds) else ""
             if ds.id in self._scanning:
-                return f"{ds.name}  (indexing…)"
-            return ds.name
+                return f"{ds.name}  (indexing…){suffix}"
+            return f"{ds.name}{suffix}"
         if role == Qt.ItemDataRole.FontRole and ds.id in self._scanning:
             font = QFont()
             font.setItalic(True)
@@ -223,6 +235,12 @@ class CatalogModel(QAbstractItemModel):
                     QStyle.StandardPixmap.SP_MessageBoxInformation
                 )
         if role == Qt.ItemDataRole.ToolTipRole:
+            if _is_depth(ds):
+                g = ds.depth_geometry
+                grid = f"dz = {g.dz:g} m, dx = {g.dx:g} m" if g else "grid unknown"
+                return (
+                    f"Depth-domain data ({grid}).\nOpens in the Model Window, not a toggle group."
+                )
             if getattr(ds, "data_stale", False):
                 return (
                     "This file changed on disk since it was opened. What you"
