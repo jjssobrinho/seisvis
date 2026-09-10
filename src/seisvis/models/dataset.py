@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, Signal
 
 from seisvis.io.surange import FieldSample, scan_populated_fields
 from seisvis.models.group_index import GroupIndex, GroupingMode, ModeState
+from seisvis.models.layer_kind import LayerKind
 from seisvis.models.sv_sidecar import SVSidecar
 from seisvis.models.vertical_domain import DepthGeometry, VerticalDomain
 
@@ -96,6 +97,9 @@ class Dataset(QObject):
         # is meaningless for the latter — ``depth_geometry.dz`` replaces it.
         self.vertical_domain: VerticalDomain = vertical_domain
         self.depth_geometry: DepthGeometry | None = depth_geometry
+        # Declared override for how a depth layer is painted; None means
+        # the Model Window decides from the data. See models.layer_kind.
+        self.layer_kind: LayerKind | None = None
         self.id = id if id is not None else str(uuid.uuid4())
         self.name = name if name else Path(source_path).stem
         self._closed = False
@@ -295,6 +299,7 @@ class Dataset(QObject):
         self.unavailable_header_fields = other.unavailable_header_fields
         self.vertical_domain = other.vertical_domain
         self.depth_geometry = other.depth_geometry
+        self.layer_kind = other.layer_kind
         self.sv_stale = other.sv_stale
         self._closed = False
         # Neutralize the donor so its close() can't shut the handle we took.

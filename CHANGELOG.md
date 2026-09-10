@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+### Depth seismic, and velocity overlaid on it (v5.5)
+
+Depth-domain seismic images belong in the Model Window too, in grey, and
+a velocity model can now be drawn over one. Comparing a migration
+against the velocity field that produced it is the QC this window was
+missing: a mispositioned reflector under a velocity error is only
+obvious when the two are superimposed.
+
+- **Layers have a kind** — `image` (seismic reflectivity) or `model` (a
+  property field such as velocity) — which decides the default colormap:
+  grey for a section, rainbow for a model.
+- **Colour scale and colormap are now shared per kind, not per group.**
+  v5.4 shared them group-wide so a flicker compares like with like, and
+  that still holds within a kind — but a migrated section and its
+  velocity field have no common range (±1e-4 against 1500-4540), so they
+  each get their own. The toolbar names the kind it is editing, so
+  rescaling velocity cannot silently rescale the seismic.
+- **The kind is guessed from the data and can be declared.** A property
+  field is all-positive with a mean far from zero; reflectivity
+  oscillates about zero. This is the amplitude heuristic that would be
+  wrong for time-vs-depth — a depth-migrated section is zero-mean and
+  still in metres — and right here, because the question really is
+  image-vs-model. It runs on the array already fetched, so it costs no
+  I/O, and the Domain panel's `Data kind` selector overrides it,
+  persisted as `domain.layer_kind` in **`.sv` schema v4** (additive
+  again; v3 sidecars read as Auto).
+- **Overlay**, off until asked: the seismic below, the model above at an
+  adjustable opacity. 0% leaves the seismic bare and 100% the model
+  alone, so the slider sweeps the whole comparison without touching
+  anything else.
+- **Overlay requires shared axes.** A badge is enough when members
+  merely take turns, but superimposing two different grids draws a lie,
+  so enabling it against a mismatched pair refuses and names the
+  difference.
+- **The cursor reports both layers under an overlay** —
+  `x = 4500 m | z = 1200 m | 3820 m/s | -4.2e-05` — which is the
+  comparison being made.
+- **Flicker cycles within the active member's kind**, so a model
+  flickers over a fixed seismic (the FWI-iteration QC) rather than
+  blinking the seismic in and out of the stack.
+
 ### Compare models on shared axes, and flicker between them (v5.4)
 
 A model tab now holds more than one model. Comparing FWI or tomography

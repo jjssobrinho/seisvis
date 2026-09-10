@@ -1,15 +1,21 @@
-"""A set of depth models shown on one pair of axes, flickered between.
+"""Depth-domain layers on one pair of axes — flickered, or superimposed.
 
 Comparing FWI or tomography iterations is what the Model Window exists
-for; a single model per tab only ever answers "what does this look like",
-never "what changed".
+for; a single layer per tab only ever answers "what does this look like",
+never "what changed". A group holds seismic images (migrated sections)
+and property models (velocity fields) alike.
 
-The colour scale lives here rather than on each view, and is shared by
-every member. That is not a convenience — it is what makes the comparison
-honest. Alternating two models under independently-derived scales shows
-scale differences, not velocity differences: a 3000 m/s layer has to be
-the same colour in every member or the flicker lies. The explicit
-physical scale chosen in v5.2 is what makes sharing possible.
+Appearance is shared **per layer kind**, not per group. Sharing is what
+makes a flicker honest — a 3000 m/s layer must be the same colour in
+every velocity member or the comparison lies — but a migrated section and
+the velocity field that produced it have no common range: ±1e-4 against
+1500-4540 says nothing on one scale. So every model shares one style and
+every image shares another, and like still compares with like.
+
+Overlay draws one of each at once, the model over the image at an
+adjustable opacity. It requires shared axes: a badge suffices when
+members merely take turns, but superimposing two different grids draws a
+lie.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from dataclasses import dataclass
 from PySide6.QtCore import QObject, Signal
 
 from seisvis.models.dataset import Dataset
+from seisvis.models.layer_kind import LayerKind, LayerStyle, classify_layer
 
 log = logging.getLogger(__name__)
 
@@ -69,13 +76,14 @@ def models_share_axes(a: Dataset, b: Dataset) -> AxesCompat:
 
 
 class ModelGroup(QObject):
-    """An ordered set of depth models sharing axes, scale and colormap."""
+    """An ordered set of depth layers sharing axes; style is per kind."""
 
     member_added = Signal(int)
     member_removed = Signal(int)
     active_index_changed = Signal(int)
     levels_changed = Signal()
     colormap_changed = Signal()
+    overlay_changed = Signal()
     name_changed = Signal(str)
 
     def __init__(
@@ -83,7 +91,7 @@ class ModelGroup(QObject):
         dataset: Dataset,
         *,
         name: str = "",
-        colormap: str = "rainbow",
+        colormap: str | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -93,12 +101,14 @@ class ModelGroup(QObject):
         self._name = name or dataset.name
         self._members: list[Dataset] = [dataset]
         self._active_index = 0
-        self._colormap = colormap
-        self._levels: tuple[float, float] = (0.0, 1.0)
-        # While True the scale follows the data, widening as members arrive
-        # so a later member's extremes are never clipped. A number the user
-        # types turns it off; Fit turns it back on.
-        self.levels_are_auto: bool = True
+        # Appearance is per layer kind, not per group — see style().
+        self._styles: dict[LayerKind, LayerStyle] = {}
+        if colormap is not None:
+            self._styles["model"] = LayerStyle(colormap=colormap)
+        self._guessed_kinds: dict[str, LayerKind] = {}
+        self._last_selected: dict[LayerKind, int] = {}
+        self._overlay_enabled = False
+        self._overlay_alpha = 0.5
         self.flicker_hz: float = 2.0
 
     # --- identity --------------------------------------------------------
@@ -175,38 +185,174 @@ class ModelGroup(QObject):
         if index == self._active_index:
             return
         self._active_index = index
+        self._last_selected[self.kind_of(index)] = index
         self.active_index_changed.emit(index)
 
     def advance_active(self) -> None:
-        """Step to the next member, wrapping. What the flicker timer calls."""
-        if len(self._members) < 2:
-            return
-        self.set_active_index((self._active_index + 1) % len(self._members))
+        """Step to the next member of the active kind, wrapping.
 
-    # --- shared appearance ----------------------------------------------
+        Within a kind rather than across all members, so a model flickers
+        over a fixed seismic — the FWI-iteration comparison — instead of
+        blinking the seismic in and out of the stack.
+        """
+        kind = self.active_kind
+        peers = [i for i in range(len(self._members)) if self.kind_of(i) == kind]
+        if len(peers) < 2:
+            return
+        position = peers.index(self._active_index)
+        self.set_active_index(peers[(position + 1) % len(peers)])
+
+    def flickerable_count(self) -> int:
+        """How many members the flicker would cycle through right now."""
+        kind = self.active_kind
+        return sum(1 for i in range(len(self._members)) if self.kind_of(i) == kind)
+
+    # --- layer kinds -----------------------------------------------------
+
+    def kind_of(self, index: int) -> LayerKind:
+        """The kind of member *index* — declared, else guessed from its data.
+
+        Falls back to "model" before any array has arrived, since that is
+        what a tab in this window usually holds.
+        """
+        ds = self._members[index]
+        declared = getattr(ds, "layer_kind", None)
+        if declared is not None:
+            return declared
+        return self._guessed_kinds.get(ds.id, "model")
+
+    def note_array(self, index: int, array) -> LayerKind:  # noqa: ANN001 - ndarray
+        """Record the fetched array's implied kind; return the kind in force."""
+        if 0 <= index < len(self._members):
+            ds = self._members[index]
+            if getattr(ds, "layer_kind", None) is None:
+                self._guessed_kinds[ds.id] = classify_layer(array)
+        return self.kind_of(index)
+
+    def kinds_present(self) -> set[LayerKind]:
+        return {self.kind_of(i) for i in range(len(self._members))}
+
+    def last_selected_of(self, kind: LayerKind) -> int | None:
+        """Index of the member of *kind* the user most recently looked at."""
+        remembered = self._last_selected.get(kind)
+        if remembered is not None and 0 <= remembered < len(self._members):
+            if self.kind_of(remembered) == kind:
+                return remembered
+        for i in range(len(self._members)):
+            if self.kind_of(i) == kind:
+                return i
+        return None
+
+    # --- per-kind appearance ---------------------------------------------
+
+    def style(self, kind: LayerKind) -> LayerStyle:
+        """Appearance shared by every layer of *kind*.
+
+        Style is per kind rather than per group because a migrated section
+        and a velocity field have no common range — forcing ±1e-4 and
+        1500-4540 onto one scale says nothing. Two velocity iterations
+        still share, which is what keeps a flicker honest.
+        """
+        if kind not in self._styles:
+            self._styles[kind] = LayerStyle.for_kind(kind)
+        return self._styles[kind]
+
+    @property
+    def active_kind(self) -> LayerKind:
+        return self.kind_of(self._active_index)
 
     @property
     def levels(self) -> tuple[float, float]:
-        return self._levels
+        """The active kind's scale — what the toolbar edits."""
+        return self.style(self.active_kind).levels
 
-    def set_levels(self, low: float, high: float) -> None:
+    def set_levels(self, low: float, high: float, kind: LayerKind | None = None) -> None:
+        target = self.active_kind if kind is None else kind
         low, high = float(low), float(high)
         if high <= low:
             high = low + 1e-9
-        if (low, high) == self._levels:
+        style = self.style(target)
+        if (low, high) == style.levels:
             return
-        self._levels = (low, high)
+        style.levels = (low, high)
         self.levels_changed.emit()
 
     @property
-    def colormap(self) -> str:
-        return self._colormap
+    def levels_are_auto(self) -> bool:
+        return self.style(self.active_kind).levels_are_auto
 
-    def set_colormap(self, name: str) -> None:
-        if name == self._colormap:
+    @levels_are_auto.setter
+    def levels_are_auto(self, value: bool) -> None:
+        self.style(self.active_kind).levels_are_auto = bool(value)
+
+    @property
+    def colormap(self) -> str:
+        return self.style(self.active_kind).colormap
+
+    def set_colormap(self, name: str, kind: LayerKind | None = None) -> None:
+        target = self.active_kind if kind is None else kind
+        style = self.style(target)
+        if name == style.colormap:
             return
-        self._colormap = name
+        style.colormap = name
         self.colormap_changed.emit()
+
+    # --- overlay ---------------------------------------------------------
+
+    def overlay_pair(self) -> tuple[int, int] | None:
+        """``(image_index, model_index)`` for an overlay, or None."""
+        base = self.last_selected_of("image")
+        top = self.last_selected_of("model")
+        if base is None or top is None:
+            return None
+        return base, top
+
+    def can_overlay(self) -> AxesCompat:
+        """Whether an image and a model can be superimposed here.
+
+        A badge is enough when members merely take turns, but drawing two
+        different grids on top of each other is a lie, so this refuses.
+        """
+        pair = self.overlay_pair()
+        if pair is None:
+            return AxesCompat(False, "needs one seismic image and one property model")
+        base, top = pair
+        return models_share_axes(self._members[base], self._members[top])
+
+    def set_overlay_enabled(self, enabled: bool) -> AxesCompat:
+        """Turn overlay on or off; report why if it could not go on."""
+        if not enabled:
+            if self._overlay_enabled:
+                self._overlay_enabled = False
+                self.overlay_changed.emit()
+            return AxesCompat(True, "")
+        allowed = self.can_overlay()
+        if not allowed.ok:
+            return allowed
+        if not self._overlay_enabled:
+            self._overlay_enabled = True
+            self.overlay_changed.emit()
+        return allowed
+
+    @property
+    def overlay_enabled(self) -> bool:
+        return self._overlay_enabled
+
+    @property
+    def overlay_alpha(self) -> float:
+        return self._overlay_alpha
+
+    def set_overlay_alpha(self, alpha: float) -> None:
+        """Opacity of the model drawn over the image, 0-1.
+
+        0 leaves the seismic bare and 1 the model alone, so the slider
+        sweeps the whole comparison without touching anything else.
+        """
+        alpha = max(0.0, min(1.0, float(alpha)))
+        if alpha == self._overlay_alpha:
+            return
+        self._overlay_alpha = alpha
+        self.overlay_changed.emit()
 
     # --- compatibility ---------------------------------------------------
 

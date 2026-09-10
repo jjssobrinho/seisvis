@@ -28,6 +28,7 @@ from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from seisvis.models.dataset import Dataset
+from seisvis.models.layer_kind import LayerKind
 from seisvis.models.model_group import ModelGroup
 from seisvis.models.processing_chain import ProcessingChain
 from seisvis.models.vertical_domain import DepthGeometry
@@ -44,25 +45,32 @@ MAX_TRACES_ON_OPEN = 5000
 DEFAULT_MODEL_COLORMAP = "rainbow"
 
 
+def _format_value(value: float, unit: str | None) -> str:
+    return f"{value:.4g} {unit}" if unit else f"{value:.4g}"
+
+
 def format_readout(
     geometry: DepthGeometry,
     x_m: float,
     z_m: float,
     value: float | None,
     member_name: str | None = None,
+    second_value: float | None = None,
+    second_unit: str | None = None,
 ) -> str:
     """Build the crosshair readout string.
 
     The value's unit is whatever the file declared; without one the number
     is shown bare rather than guessed at. The member name is included once
     a group holds more than one, so a flicker's readout is unambiguous.
+    Under an overlay both layers report, model first — comparing the two is
+    the point of superimposing them.
     """
     parts = [f"x = {x_m:.0f} m", f"z = {z_m:.0f} m"]
     if value is not None:
-        if geometry.value_unit:
-            parts.append(f"{value:.4g} {geometry.value_unit}")
-        else:
-            parts.append(f"{value:.4g}")
+        parts.append(_format_value(value, geometry.value_unit))
+    if second_value is not None:
+        parts.append(_format_value(second_value, second_unit))
     if member_name:
         parts.append(member_name)
     return "  |  ".join(parts)
@@ -122,6 +130,7 @@ class ModelView(QWidget):
         group.active_index_changed.connect(lambda _i: self._apply_visibility())
         group.levels_changed.connect(self._apply_levels)
         group.colormap_changed.connect(self._apply_colormap)
+        group.overlay_changed.connect(self._apply_visibility)
 
     # --- construction ---------------------------------------------------
 
@@ -189,13 +198,15 @@ class ModelView(QWidget):
         if not 0 <= index < len(self._image_items):
             return
         self._arrays[index] = array
+        kind = self.group.note_array(index, array)
+        style = self.group.style(kind)
         item = self._image_items[index]
-        item.setImage(array, autoLevels=False, levels=self.group.levels)
-        item.setLookupTable(get_colormap(self.group.colormap))
+        item.setImage(array, autoLevels=False, levels=style.levels)
+        item.setLookupTable(get_colormap(style.colormap))
         item.setRect(QRectF(*self.image_extent(index)))
-        item.setVisible(index == self.group.active_index)
         if index == 0:
             self.fit_to_data()
+        self._apply_visibility()
         self.data_loaded.emit(index)
 
     def arrays(self) -> list[np.ndarray | None]:
@@ -226,26 +237,44 @@ class ModelView(QWidget):
     # --- appearance -----------------------------------------------------
 
     def _apply_visibility(self) -> None:
+        """Show the active member, or both layers of an overlay."""
+        pair = self.group.overlay_pair() if self.group.overlay_enabled else None
+        if pair is not None:
+            base, top = pair
+            for i, item in enumerate(self._image_items):
+                item.setVisible(i in (base, top))
+                item.setZValue(1 if i == top else 0)
+                item.setOpacity(self.group.overlay_alpha if i == top else 1.0)
+            return
+
         active = self.group.active_index
         for i, item in enumerate(self._image_items):
             item.setVisible(i == active)
+            item.setZValue(0)
+            item.setOpacity(1.0)
         # An incompatible member lives on another grid; refit so it is on
         # screen at all rather than silently off-view.
         if not self.group.compat_for(active).ok:
             self.fit_to_data()
 
     def _apply_levels(self) -> None:
-        for item in self._image_items:
-            item.setLevels(self.group.levels)
+        for i, item in enumerate(self._image_items):
+            item.setLevels(self.group.style(self.group.kind_of(i)).levels)
 
     def _apply_colormap(self) -> None:
-        lut = get_colormap(self.group.colormap)
-        for item in self._image_items:
-            item.setLookupTable(lut)
+        for i, item in enumerate(self._image_items):
+            item.setLookupTable(get_colormap(self.group.style(self.group.kind_of(i)).colormap))
 
-    def data_range(self) -> tuple[float, float]:
-        """The range spanning every fetched member — what `Fit` resets to."""
-        return combined_levels(self._arrays)
+    def data_range(self, kind: LayerKind | None = None) -> tuple[float, float]:
+        """The range spanning every fetched member of one kind.
+
+        Per kind, because `Fit` on the velocity scale must not be dragged by
+        a seismic amplitude seven orders of magnitude away.
+        """
+        target = self.group.active_kind if kind is None else kind
+        return combined_levels(
+            [a for i, a in enumerate(self._arrays) if self.group.kind_of(i) == target]
+        )
 
     # --- readout --------------------------------------------------------
 
@@ -279,15 +308,39 @@ class ModelView(QWidget):
         geometry = ds.depth_geometry
         assert geometry is not None
 
-        value: float | None = None
-        idx = self.sample_at(x_m, z_m)
-        array = self._arrays[active]
-        if idx is not None and array is not None:
-            trace, sample = idx
-            if trace < array.shape[0] and sample < array.shape[1]:
-                value = float(array[trace, sample])
-        name = ds.name if len(self.group) > 1 else None
-        self.readout_label.setText(format_readout(geometry, x_m, z_m, value, name))
+        # Under an overlay both layers report — comparing them is the point.
+        pair = self.group.overlay_pair() if self.group.overlay_enabled else None
+        primary = pair[1] if pair is not None else active
+        secondary = pair[0] if pair is not None else None
+
+        geometry = self.group.members[primary].depth_geometry or geometry
+        value = self._value_at(primary, x_m, z_m)
+        second_value = self._value_at(secondary, x_m, z_m) if secondary is not None else None
+        second_unit = None
+        if secondary is not None:
+            second_geometry = self.group.members[secondary].depth_geometry
+            second_unit = second_geometry.value_unit if second_geometry else None
+
+        if pair is not None:
+            name = f"{self.group.members[primary].name} / {self.group.members[secondary].name}"
+        else:
+            name = ds.name if len(self.group) > 1 else None
+        self.readout_label.setText(
+            format_readout(geometry, x_m, z_m, value, name, second_value, second_unit)
+        )
+
+    def _value_at(self, index: int, x_m: float, z_m: float) -> float | None:
+        """Sample member *index* at a scene position, or None outside it."""
+        if not 0 <= index < len(self._arrays):
+            return None
+        array = self._arrays[index]
+        idx = self.sample_at(x_m, z_m, index)
+        if idx is None or array is None:
+            return None
+        trace, sample = idx
+        if trace >= array.shape[0] or sample >= array.shape[1]:
+            return None
+        return float(array[trace, sample])
 
     # --- input ----------------------------------------------------------
 

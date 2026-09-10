@@ -18,13 +18,15 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QLabel,
     QMainWindow,
     QPushButton,
+    QSlider,
     QTabWidget,
     QToolBar,
     QVBoxLayout,
@@ -32,9 +34,10 @@ from PySide6.QtWidgets import (
 )
 
 from seisvis.models.dataset import Dataset
+from seisvis.models.layer_kind import DEFAULT_MODEL_COLORMAP
 from seisvis.models.model_group import ModelGroup
 from seisvis.ui.widgets.model_toggle_bar import ModelToggleBar
-from seisvis.ui.widgets.model_view import DEFAULT_MODEL_COLORMAP, ModelView
+from seisvis.ui.widgets.model_view import ModelView
 from seisvis.utils.colormaps import available_colormaps
 
 log = logging.getLogger(__name__)
@@ -100,6 +103,9 @@ class ModelWindow(QMainWindow):
         # absolute values are the content, and one scale shared by every
         # member is what makes a flicker show velocity differences rather
         # than scale differences.
+        self._kind_label = QLabel(" ")
+        bar.addWidget(self._kind_label)
+
         bar.addWidget(QLabel(" Min "))
         self._min_spin = self._make_level_spin()
         bar.addWidget(self._min_spin)
@@ -114,6 +120,29 @@ class ModelWindow(QMainWindow):
 
         self._unit_label = QLabel("")
         bar.addWidget(self._unit_label)
+
+        bar.addSeparator()
+
+        # Overlay is off until asked: joining a model to a seismic tab makes
+        # an ordinary second member, and the user decides to superimpose.
+        self._overlay_check = QCheckBox("Overlay")
+        self._overlay_check.setToolTip(
+            "Draw the velocity model over the seismic image. Needs both kinds on the same grid."
+        )
+        self._overlay_check.toggled.connect(self._on_overlay_toggled)
+        bar.addWidget(self._overlay_check)
+
+        self._alpha_slider = QSlider(Qt.Orientation.Horizontal)
+        self._alpha_slider.setRange(0, 100)
+        self._alpha_slider.setValue(50)
+        self._alpha_slider.setFixedWidth(110)
+        self._alpha_slider.setToolTip(
+            "Model opacity. 0% leaves the seismic bare, 100% the model alone."
+        )
+        self._alpha_slider.valueChanged.connect(self._on_alpha_changed)
+        bar.addWidget(self._alpha_slider)
+        self._alpha_label = QLabel("50%")
+        bar.addWidget(self._alpha_label)
 
         self._set_controls_enabled(False)
 
@@ -138,6 +167,7 @@ class ModelWindow(QMainWindow):
         group = ModelGroup(dataset, name=f"Models {self._tab_count}")
         tab = ModelTab(group, self)
         tab.view.data_loaded.connect(lambda _i, t=tab: self._on_member_loaded(t))
+        group.active_index_changed.connect(lambda _i, t=tab: self._rebind_if_current(t))
         index = self._tabs.addTab(tab, group.name)
         self._tabs.setCurrentIndex(index)
         self.slice_requested.emit(tab.view, 0)
@@ -211,6 +241,8 @@ class ModelWindow(QMainWindow):
     def _set_controls_enabled(self, enabled: bool) -> None:
         for w in (self._colormap_combo, self._min_spin, self._max_spin, self._fit_button):
             w.setEnabled(enabled)
+        self._overlay_check.setEnabled(enabled)
+        self._alpha_slider.setEnabled(enabled)
 
     def _on_current_changed(self, _index: int) -> None:
         self._rebind_controls()
@@ -223,8 +255,13 @@ class ModelWindow(QMainWindow):
         and a saturated member is exactly what a flicker must not show. A
         scale the user typed is left alone.
         """
-        if tab.group.levels_are_auto:
-            tab.group.set_levels(*tab.view.data_range())
+        for kind in tab.group.kinds_present():
+            if tab.group.style(kind).levels_are_auto:
+                tab.group.set_levels(*tab.view.data_range(kind), kind=kind)
+        if tab is self._current_tab():
+            self._rebind_controls()
+
+    def _rebind_if_current(self, tab: ModelTab) -> None:
         if tab is self._current_tab():
             self._rebind_controls()
 
@@ -247,6 +284,25 @@ class ModelWindow(QMainWindow):
         unit = geometry.value_unit if geometry else None
         self._unit_label.setText(f" {unit}" if unit else "")
 
+        # Say which layer kind the scale controls edit, so changing the
+        # velocity range cannot silently rescale the seismic.
+        kind = tab.group.active_kind
+        self._kind_label.setText(" seismic:" if kind == "image" else " model:")
+
+        can = tab.group.can_overlay()
+        self._overlay_check.blockSignals(True)
+        self._overlay_check.setChecked(tab.group.overlay_enabled)
+        self._overlay_check.setEnabled(can.ok or tab.group.overlay_enabled)
+        self._overlay_check.blockSignals(False)
+        if not can.ok:
+            self._overlay_check.setToolTip(f"Overlay unavailable — {can.reason}")
+        alpha = int(round(tab.group.overlay_alpha * 100))
+        self._alpha_slider.blockSignals(True)
+        self._alpha_slider.setValue(alpha)
+        self._alpha_slider.blockSignals(False)
+        self._alpha_label.setText(f"{alpha}%")
+        self._alpha_slider.setEnabled(tab.group.overlay_enabled)
+
     def _on_colormap_changed(self, name: str) -> None:
         tab = self._current_tab()
         if tab is not None:
@@ -266,6 +322,25 @@ class ModelWindow(QMainWindow):
         tab.group.levels_are_auto = True
         tab.group.set_levels(*tab.view.data_range())
         self._rebind_controls()
+
+    def _on_overlay_toggled(self, checked: bool) -> None:
+        tab = self._current_tab()
+        if tab is None:
+            return
+        result = tab.group.set_overlay_enabled(checked)
+        if checked and not result.ok:
+            # Superimposing two different grids would draw a lie.
+            self._overlay_check.blockSignals(True)
+            self._overlay_check.setChecked(False)
+            self._overlay_check.blockSignals(False)
+            self.statusBar().showMessage(f"Overlay unavailable — {result.reason}", 6000)
+        self._rebind_controls()
+
+    def _on_alpha_changed(self, value: int) -> None:
+        self._alpha_label.setText(f"{value}%")
+        tab = self._current_tab()
+        if tab is not None:
+            tab.group.set_overlay_alpha(value / 100.0)
 
 
 __all__ = ["ModelTab", "ModelWindow"]

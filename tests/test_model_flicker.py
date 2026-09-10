@@ -155,3 +155,46 @@ def test_badge_appears_only_for_a_mismatched_member(
     finally:
         a.close()
         odd.close()
+
+
+def test_flicker_cycles_within_the_active_kind(qapp, bars, tmp_path: Path) -> None:
+    """A model flickers over a fixed seismic — the FWI comparison — rather
+    than blinking the seismic in and out of the stack."""
+    import numpy as np
+
+    from seisvis.ui.widgets.model_view import ModelView
+
+    seis = load_su(_depth_su(tmp_path, "s.su"))
+    v1 = load_su(_depth_su(tmp_path, "v1.su"))
+    v2 = load_su(_depth_su(tmp_path, "v2.su"))
+    try:
+        g = ModelGroup(seis)
+        g.add_member(v1)
+        g.add_member(v2)
+        view = ModelView(g)
+        rng = np.random.default_rng(2)
+        view.set_array(0, (rng.standard_normal((8, 24)) * 1e-4).astype(np.float32))
+        for i in (1, 2):
+            view.set_array(i, np.full((8, 24), 3000.0, dtype=np.float32))
+
+        assert [g.kind_of(i) for i in range(3)] == ["image", "model", "model"]
+        bars(g)
+
+        g.set_active_index(1)
+        assert g.flickerable_count() == 2
+        g.advance_active()
+        assert g.active_index == 2
+        g.advance_active()
+        assert g.active_index == 1  # wraps within the models
+
+        # The lone seismic has no peer to cycle to.
+        g.set_active_index(0)
+        assert g.flickerable_count() == 1
+        g.advance_active()
+        assert g.active_index == 0
+
+        view.close()
+        view.deleteLater()
+    finally:
+        for d in (seis, v1, v2):
+            d.close()

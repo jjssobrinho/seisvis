@@ -42,8 +42,8 @@ def _v2_payload(segy: Path) -> dict:
     }
 
 
-def test_current_schema_version_is_3() -> None:
-    assert CURRENT_SCHEMA_VERSION == 3
+def test_current_schema_version_is_4() -> None:
+    assert CURRENT_SCHEMA_VERSION == 4
 
 
 def test_v1_parses_and_drops_last_sort(tmp_path: Path) -> None:
@@ -66,10 +66,10 @@ def test_v2_parses(tmp_path: Path) -> None:
     assert sv.role_mappings == {"shot": "FieldRecord"}
 
 
-def test_v4_refused(tmp_path: Path) -> None:
+def test_v5_refused(tmp_path: Path) -> None:
     sv_path = tmp_path / "line.sv"
-    sv_path.write_text(json.dumps({"schema_version": 4}), encoding="utf-8")
-    with pytest.raises(ValueError, match="schema version 4"):
+    sv_path.write_text(json.dumps({"schema_version": 5}), encoding="utf-8")
+    with pytest.raises(ValueError, match="schema version 5"):
         SVSidecar.from_json(sv_path)
 
 
@@ -97,3 +97,22 @@ def test_v1_and_v2_carry_no_domain(tmp_path: Path) -> None:
         sv_path = tmp_path / f"v{version}.sv"
         sv_path.write_text(json.dumps(payload), encoding="utf-8")
         assert SVSidecar.from_json(sv_path).depth_geometry is None
+
+
+def test_v3_sidecar_reads_layer_kind_as_auto(tmp_path: Path) -> None:
+    """v4 migration is additive: an older domain block has no opinion on kind."""
+    sv_path = tmp_path / "v3.sv"
+    sv_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "role_mappings": {},
+                "display_names": {},
+                "domain": {"kind": "depth", "dz": 10.0, "dx": 10.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    sv = SVSidecar.from_json(sv_path)
+    assert sv.depth_geometry is not None
+    assert sv.layer_kind is None

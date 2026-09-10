@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from seisvis.models.dataset import Dataset
+from seisvis.models.layer_kind import LayerKind
 from seisvis.models.sv_sidecar import build_sidecar_for
 from seisvis.models.vertical_domain import DEFAULT_SPACING, DepthGeometry
 
@@ -125,6 +126,17 @@ class HeaderInspectorDialog(QDialog):
         grid.addWidget(QLabel("Value unit:"), 3, 0)
         grid.addWidget(self._unit_edit, 3, 1, 1, 2)
 
+        # How the Model Window paints this layer, and which other layers it
+        # shares a colour scale with. Auto decides from the data: a property
+        # field is all-positive with a mean far from zero, reflectivity
+        # oscillates about zero.
+        self._kind_combo = QComboBox(box)
+        self._kind_combo.addItem("Auto (from the data)", None)
+        self._kind_combo.addItem("Seismic image — grey", "image")
+        self._kind_combo.addItem("Property model — rainbow", "model")
+        grid.addWidget(QLabel("Data kind:"), 3, 3)
+        grid.addWidget(self._kind_combo, 3, 4, 1, 2)
+
         self._domain_error = QLabel("", box)
         self._domain_error.setStyleSheet("color: #DC2626;")
         grid.addWidget(self._domain_error, 4, 0, 1, 6)
@@ -156,7 +168,10 @@ class HeaderInspectorDialog(QDialog):
             self._dx_spin.setValue(geometry.dx)
             self._x0_spin.setValue(geometry.x0)
             self._unit_edit.setText(geometry.value_unit or "")
-        else:
+        declared_kind = getattr(self._dataset, "layer_kind", None)
+        kind_index = self._kind_combo.findData(declared_kind)
+        self._kind_combo.setCurrentIndex(max(0, kind_index))
+        if geometry is None:
             # Matches the loader's fallback for a model with no spacing.
             self._dz_spin.setValue(DEFAULT_SPACING)
             self._dx_spin.setValue(DEFAULT_SPACING)
@@ -170,10 +185,17 @@ class HeaderInspectorDialog(QDialog):
             self._dx_spin,
             self._x0_spin,
             self._unit_edit,
+            self._kind_combo,
         ):
             w.setEnabled(depth)
         if not depth:
             self._domain_error.setText("")
+
+    def _layer_kind_from_panel(self) -> LayerKind | None:
+        """The declared kind, or None for Auto (and always None for Time)."""
+        if self._domain_combo.currentData() != "depth":
+            return None
+        return self._kind_combo.currentData()
 
     def _geometry_from_panel(self) -> DepthGeometry | None:
         """The declared geometry, or None for Time. Raises on an unusable grid."""
@@ -337,8 +359,10 @@ class HeaderInspectorDialog(QDialog):
             role_mappings=role_mappings,
             display_names=display_names,
             depth_geometry=geometry,
+            layer_kind=self._layer_kind_from_panel(),
         )
         ds.sv = sidecar
+        ds.layer_kind = sidecar.layer_kind
         # Apply in memory regardless of whether the sidecar lands: the user
         # gets the right axis this session even on a read-only directory.
         ds.vertical_domain = "depth" if geometry is not None else "time"

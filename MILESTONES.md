@@ -1,127 +1,128 @@
-Milestone v5.4 — Multi-Model Members + Flicker
-Prerequisite: v53-done.
+Milestone v5.5 — Depth Seismic + Velocity Overlay
+Prerequisite: v54-done.
 
-Put more than one model on the same axes and flicker between them.
-Comparing FWI or tomography iterations is the reason the Model Window
-exists at all — a single model per tab only ever answers "what does this
-look like", never "what changed".
+Depth-domain seismic images belong in the Model Window too, in grey, and
+a velocity model has to be viewable *over* one. Comparing a migration
+against the velocity field that produced it is the QC this window was
+missing: a mispositioned reflector under a velocity error is only
+obvious when the two are superimposed.
+
+Reference case (Marmousi II, both 901 × 351, dz = dx = 10 m, origin 0):
+
+```
+lsrtm_ref.su              -1.2e-4 … 1.4e-4, mean 1.4e-7   → seismic image
+marm_ii_vp_smooth_10m.su   1500  … 4540,    mean 2657     → velocity model
+```
 
 ---
 
-Why the colour scale has to move
+The conflict with v5.4, and the way out
 
-v5.2 put levels and colormap on `ModelView`, one per tab. Flicker makes
-that wrong: alternating two models under independently-derived scales
-shows scale differences, not velocity differences. A 3000 m/s layer must
-be the same colour in every member or the comparison lies.
+v5.4 gave a group one shared colour scale and colormap so that
+flickering compares like with like. Overlay needs the opposite: two
+members visible at once, in different colormaps, on different scales —
+±1e-4 and 1500-4540 share no meaningful range.
 
-So both move up to the group and are **shared by every member**. This is
-what the explicit physical scale chosen in v5.2 was for.
+So style moves from the group to the **layer kind**. Members are either
+an `image` (seismic reflectivity) or a `model` (a property field such as
+velocity). All `model` members share one style; all `image` members
+share another. Like still compares with like, and flicker between FWI
+iterations stays honest, but the two kinds no longer fight over one
+scale.
 
+```
+LayerKind = "image" | "model"
+
+LayerStyle
+    colormap        str      "gray" for image, "rainbow" for model
+    levels          (lo, hi)
+    levels_are_auto bool     as v5.4
+```
+
+Classifying a layer
+
+`classify_layer(array) -> LayerKind` in `models/layer_kind.py`. A
+property field is all-positive with a mean far from zero; a
+reflectivity image oscillates about zero. On the reference pair the two
+separate by seven orders of magnitude, so the test is not delicate:
+
+```
+model  iff  min >= 0  and  mean > 3 * std
+```
+
+This is the heuristic dismissed back when the question was time-vs-depth
+— where it answered the wrong question, since a depth-migrated section
+is zero-mean and still in metres. Here the question *is* image-vs-model,
+which is exactly what it discriminates.
+
+It runs on the array already fetched for display, so it costs no I/O,
+and it is a **default, not a verdict**: the Domain panel carries a
+`Data kind` selector (Auto / Seismic image / Property model) persisted as
+`domain.layer_kind` in `.sv` **schema v4**. Migration is additive again;
+absent means Auto.
+
+Overlay
+
+Per-group, **off until asked** — joining a model to a seismic tab makes
+it an ordinary second member, and the user turns overlay on:
+
+```
 ModelGroup
-
-New file `src/seisvis/models/model_group.py`:
-
-```
-ModelGroup(QObject)
-    id, name                  uuid; "Models N"
-    members     list[Dataset] ordered, N ≥ 1
-    active_index int          which member is visible
-    levels      (float,float) SHARED colour scale, physical units
-    colormap    str           SHARED
-    flicker_hz  float
-
-    member_added(int) / member_removed(int) / active_index_changed(int)
-    levels_changed() / colormap_changed() / name_changed(str)
+    overlay_enabled bool     default False
+    overlay_alpha   float    0.0 - 1.0, default 0.5
 ```
 
-No `ModelMember` wrapper: there is no per-member display state to hold,
-and a one-field class would be noise. Members are `Dataset` directly.
+When on, two members render at once: the last-selected `image` at
+`zValue=0`, opaque, and the last-selected `model` above it at
+`zValue=1`, painted through `overlay_alpha`. Alpha at 0 leaves the
+seismic bare, at 1 the model alone — so the slider sweeps the whole
+comparison without touching anything else.
 
-Geometry compatibility
+**Overlay requires shared axes.** A badge is enough when members merely
+take turns, but superimposing two different grids draws a lie. Enabling
+it against a mismatched pair refuses and names the difference, reusing
+`models_share_axes`.
+
+Flicker cycles within the active member's kind, so a model flickers over
+a fixed seismic — the FWI-iteration QC — rather than alternating the
+seismic in and out.
+
+Readout with both layers
+
+With overlay on, the cursor reports both values, which is the thing
+actually being compared:
 
 ```
-models_share_axes(a, b) -> CompatResult
+x = 4500 m  |  z = 1200 m  |  3820 m/s  |  -4.2e-05
 ```
 
-in `models/model_group.py` — same shape as `are_toggle_compatible`, but
-comparing what a model grid is made of: `n_traces`, `n_samples`, and
-`dz`/`dx`/`z0`/`x0` within a float tolerance. Different FWI iterations
-of one survey match exactly; a model on another grid does not.
+Toolbar
 
-Incompatible members are **allowed**, mirroring the canvas: they join
-the group and get an "Independent axes" badge, and the view refits when
-switching to them rather than pretending they overlay. Flickering
-between differently-gridded models is meaningless, so the badge is the
-warning, not a refusal.
-
-ModelView becomes multi-member
-
-`ModelView` takes a `ModelGroup` rather than a `Dataset`:
-
-- One `ImageItem` per member, all on the same `PlotItem`; switching is
-  `setVisible()` only, exactly as `SeismicView` does.
-- Levels and colormap are read from the group, so every member paints
-  through the same scale.
-- Each member's slice is read once, on join, and kept. Switching never
-  re-reads.
-- The readout names the active member alongside the value.
-- `F` fits; on an incompatible member it fits to that member's own
-  extent.
-
-ModelToggleBar
-
-New file `src/seisvis/ui/widgets/model_toggle_bar.py`. Small, like
-`ModelView` — the canvas `ToggleBar` is typed on `ToggleGroup` and puts
-its numbered buttons in the Viewport Manager, which the Model Window
-does not have. So this one carries both:
-
-- Numbered member buttons `[1] [2] [3]`, coloured from `member_color()`
-  (tab10), the active one checked. Tooltip gives the dataset name.
-- `Auto` checkbox + rate spinbox, reusing `FLICKER_MIN_HZ` /
-  `FLICKER_MAX_HZ` / `FLICKER_DEFAULT_HZ` from the canvas toggle bar so
-  both windows flicker at the same rates.
-- The "Independent axes" badge for the active member.
-- Keys `1`..`9` switch members when the view has focus, matching the
-  canvas.
-
-Adding members
-
-Mirrors the toggle-group pair the catalog already offers, so the two
-windows behave alike:
-
-- "Open in new model tab" — the default, and what double-click does.
-- "Add to active model tab" — enabled only when a model tab is open.
-  Emits `add_to_active_model_requested`.
-
-Both appear only for depth datasets. The existing toggle-group actions
-stay hidden for them, as v5.2 established.
-
-Window toolbar
-
-The min/max/Fit and colormap controls now act on the current tab's
-group, so a change repaints every member at once. `Fit` computes the
-range over **all** members' fetched arrays, not just the active one —
-fitting to one member would clip another.
+Colormap, min/max and Fit act on **the kind of the active member**, with
+a label saying which, so editing the velocity scale cannot silently
+rescale the seismic. Overlay gains a checkbox and an alpha slider.
 
 ---
 
 Tests
 
-- `test_model_group.py` — add/remove members, active_index clamping on
-  removal, signals fire, N ≥ 1 enforced.
-- `test_model_axes_compat.py` — identical grids match; differing
-  `n_samples`, `dz`, `dx` or origin do not; tolerance is float-aware.
-- `test_model_shared_scale.py` — levels set on the group reach every
-  member; `Fit` spans all members' data, not just the active one.
-- `test_model_flicker.py` — the timer advances `active_index` and wraps;
-  stopping leaves the last member visible; a one-member group is a no-op.
-- `test_model_multi_routing.py` — "add to active model tab" joins the
-  group rather than opening a tab; the action is disabled with no tab
-  open; a mixed selection still refuses time datasets.
+- `test_layer_kind.py` — the classifier on synthetic reflectivity and
+  property fields, and on constant, all-negative and empty arrays;
+  `.sv` v4 round-trip of `layer_kind`; v3 sidecars read as Auto.
+- `test_layer_styles.py` — image and model members carry independent
+  colormaps and levels; setting one does not disturb the other;
+  auto-widening stays per kind.
+- `test_overlay.py` — enabling requires shared axes and reports the
+  mismatch; both items visible with the model on top; alpha reaches the
+  item; alpha 0 and 1 are the pure end members; disabling restores
+  single-member visibility.
+- `test_overlay_readout.py` — both values in the string, in the right
+  order, with the model's unit when declared.
+- Extend `test_model_flicker.py` — flicker cycles within the active
+  kind, leaving the other layer alone.
 
-Out of scope for v5.4
+Out of scope for v5.5
 
-The v0.5.0 release (v5.5); per-member colormaps (defeats the
-comparison); selection and transforms over a model; difference of two
-models — worth its own milestone if wanted.
+Colour-plus-luminance compositing (chosen against: alpha's end points
+are worth more than crisp reflectors here); more than two layers at
+once; per-member alpha; the v0.5.0 release, which moves to v5.6.

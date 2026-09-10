@@ -131,7 +131,7 @@ def test_declaring_depth_applies_and_persists(qapp, dialogs, segy_2d: Path) -> N
 
         sv_path = segy_2d.with_suffix(".sv")
         written = json.loads(sv_path.read_text())
-        assert written["schema_version"] == 3
+        assert written["schema_version"] == 4
         assert written["domain"]["kind"] == "depth"
         assert SVSidecar.from_json(sv_path).depth_geometry == ds.depth_geometry
     finally:

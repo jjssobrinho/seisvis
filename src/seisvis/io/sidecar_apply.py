@@ -44,6 +44,9 @@ def apply_sidecar(ds: Dataset, path: Path) -> None:
         ds.sv_stale = True
         log.warning("stale .sv for %s — proceeding with cached metadata", path.name)
 
+    if sidecar.layer_kind is not None:
+        ds.layer_kind = sidecar.layer_kind
+
     if sidecar.depth_geometry is not None:
         ds.vertical_domain = "depth"
         ds.depth_geometry = sidecar.depth_geometry

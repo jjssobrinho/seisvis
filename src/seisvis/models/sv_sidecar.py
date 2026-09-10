@@ -6,11 +6,12 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from seisvis.models.layer_kind import LayerKind
 from seisvis.models.vertical_domain import DepthGeometry
 
 log = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 
 def compute_sha1_prefix(path: Path, n_bytes: int = 3600) -> str:
@@ -19,6 +20,19 @@ def compute_sha1_prefix(path: Path, n_bytes: int = 3600) -> str:
     with open(path, "rb") as fh:
         h.update(fh.read(n_bytes))
     return h.hexdigest()
+
+
+def _parse_layer_kind(raw: object, path: Path) -> LayerKind | None:
+    """Read the optional ``layer_kind`` override. None means Auto."""
+    if not isinstance(raw, dict):
+        return None
+    value = raw.get("layer_kind")
+    if value is None:
+        return None
+    if value in ("image", "model"):
+        return value  # type: ignore[return-value]
+    log.warning("%s: unknown layer_kind %r; deciding from the data", path.name, value)
+    return None
 
 
 def _parse_domain(raw: object, path: Path) -> DepthGeometry | None:
@@ -87,7 +101,9 @@ class SVSidecar:
     unmapped. ``display_names`` maps field names to user-visible labels.
 
     v3 adds ``depth_geometry``: when non-None the file is declared to live in
-    the depth domain with that physical grid. This is the only way to mark a
+    the depth domain with that physical grid. v4 adds ``layer_kind``,
+    overriding whether a depth layer is painted as a seismic image or as a
+    property field. This is the only way to mark a
     SEG-Y file as depth (SEG-Y has no d1/d2 in any byte), and the override
     for a ``.su`` whose ``trid`` is wrong or unset. A v2 sidecar has no
     domain block, which reads as time — migration is purely additive.
@@ -100,6 +116,8 @@ class SVSidecar:
     role_mappings: dict[str, str | None] = field(default_factory=dict)
     display_names: dict[str, str] = field(default_factory=dict)
     depth_geometry: DepthGeometry | None = None
+    # None means "decide from the data" — see models.layer_kind.
+    layer_kind: LayerKind | None = None
 
     # --- serialisation ---
 
@@ -126,6 +144,8 @@ class SVSidecar:
             }
             if g.value_unit:
                 domain["value_unit"] = g.value_unit
+            if self.layer_kind is not None:
+                domain["layer_kind"] = self.layer_kind
             data["domain"] = domain
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -154,6 +174,7 @@ class SVSidecar:
             role_mappings=role_mappings,
             display_names=dict(raw.get("display_names", {})),
             depth_geometry=_parse_domain(raw.get("domain"), path),
+            layer_kind=_parse_layer_kind(raw.get("domain"), path),
         )
 
     # --- staleness ---
@@ -175,6 +196,7 @@ def build_sidecar_for(
     role_mappings: dict[str, str | None],
     display_names: dict[str, str],
     depth_geometry: DepthGeometry | None = None,
+    layer_kind: LayerKind | None = None,
 ) -> SVSidecar:
     """Convenience constructor that fills ``sha1_prefix`` and ``mtime`` from disk.
 
@@ -191,6 +213,7 @@ def build_sidecar_for(
         role_mappings=role_mappings,
         display_names=display_names,
         depth_geometry=depth_geometry,
+        layer_kind=layer_kind,
     )
 
 
