@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from seisvis.models.sv_sidecar import SVSidecar, build_sidecar_for, compute_sha1_prefix
+from seisvis.models.sv_sidecar import (
+    CURRENT_SCHEMA_VERSION,
+    SVSidecar,
+    build_sidecar_for,
+    compute_sha1_prefix,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -55,7 +60,7 @@ def test_round_trip_json(tmp_path: Path) -> None:
     original.to_json(sv_path)
 
     loaded = SVSidecar.from_json(sv_path)
-    assert loaded.schema_version == 2
+    assert loaded.schema_version == CURRENT_SCHEMA_VERSION
     assert loaded.segy_path == str(segy)
     assert loaded.sha1_prefix == original.sha1_prefix
     assert abs(loaded.mtime - original.mtime) < 1.0

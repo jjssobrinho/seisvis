@@ -87,6 +87,11 @@ def _make_su(
     interval_us: int = 4000,
     endian: str = "<",
     first_field_record: int = 1,
+    trid: int = 1,
+    d1: float | None = None,
+    f1: float | None = None,
+    d2: float | None = None,
+    f2: float | None = None,
 ) -> None:
     """Write a tiny synthetic Seismic Unix (.su) file for tests.
 
@@ -94,7 +99,9 @@ def _make_su(
     IEEE float32 samples in the given byte order. Trace values follow the same
     deterministic pattern as ``_make_segy``: ``trace[t, s] = 100 * t + s``.
     Headers carry FieldRecord, TraceNumber and CDP so header reads can be
-    asserted.
+    asserted. ``trid`` (byte 29) and SU's float locals d1/f1/d2/f2 (bytes
+    181/185/189/193) are written when supplied, so depth-domain detection
+    can be exercised.
     """
     import struct
 
@@ -102,8 +109,11 @@ def _make_su(
     off_fldr = 9 - 1  # FieldRecord (int32)
     off_tracf = 13 - 1  # TraceNumber (int32)
     off_cdp = 21 - 1  # CDP (int32)
+    off_trid = 29 - 1  # TraceIdentificationCode (int16)
     off_ns = 115 - 1  # sample count (uint16)
     off_dt = 117 - 1  # sample interval (uint16)
+    # SU cwp-local floats, aliasing SEG-Y CDP_X / CDP_Y / INLINE_3D / CROSSLINE_3D.
+    su_floats = ((181 - 1, d1), (185 - 1, f1), (189 - 1, d2), (193 - 1, f2))
 
     with open(path, "wb") as fh:
         for t in range(n_traces):
@@ -113,6 +123,10 @@ def _make_su(
             struct.pack_into(endian + "i", header, off_cdp, 100 + t)
             struct.pack_into(endian + "H", header, off_ns, n_samples)
             struct.pack_into(endian + "H", header, off_dt, interval_us)
+            struct.pack_into(endian + "h", header, off_trid, trid)
+            for off, value in su_floats:
+                if value is not None:
+                    struct.pack_into(endian + "f", header, off, value)
             fh.write(header)
             samples = (100 * t + np.arange(n_samples)).astype(endian + "f4")
             fh.write(samples.tobytes())
@@ -122,6 +136,24 @@ def _make_su(
 def su_line(tmp_path: Path) -> Path:
     p = tmp_path / "line.su"
     _make_su(p, n_traces=8, n_samples=24, interval_us=2000)
+    return p
+
+
+@pytest.fixture
+def su_depth_model(tmp_path: Path) -> Path:
+    """A .su marked as depth-range (trid=130) with a full d1/f1/d2/f2 grid."""
+    p = tmp_path / "vel.su"
+    _make_su(
+        p,
+        n_traces=8,
+        n_samples=24,
+        interval_us=2000,
+        trid=130,
+        d1=5.0,
+        f1=0.0,
+        d2=12.5,
+        f2=100.0,
+    )
     return p
 
 

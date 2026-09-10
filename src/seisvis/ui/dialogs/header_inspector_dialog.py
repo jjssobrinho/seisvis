@@ -196,10 +196,15 @@ class HeaderInspectorDialog(QDialog):
             if text and text != fname:
                 display_names[fname] = text
 
+        # Carry any existing depth declaration through: build_sidecar_for
+        # makes a fresh record, so a domain set earlier would be dropped.
+        # The Domain panel that edits it arrives in v5.3.
+        existing_sv = self._dataset.sv
         sidecar = build_sidecar_for(
             self._dataset.source_path,
             role_mappings=role_mappings,
             display_names=display_names,
+            depth_geometry=existing_sv.depth_geometry if existing_sv else None,
         )
         self._dataset.sv = sidecar
         self._dataset.persist_sv()

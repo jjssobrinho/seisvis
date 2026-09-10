@@ -50,6 +50,32 @@ def _build_field_widths() -> dict[int, str]:
 
 _FIELD_WIDTHS: dict[int, str] = _build_field_widths()
 
+# SU's "cwp local assignments" occupy the bytes that SEG-Y assigns to
+# CDP_X / CDP_Y / INLINE_3D / CROSSLINE_3D, but hold IEEE float32 rather than
+# signed integers:
+#
+#   byte 181  d1  sample spacing down the trace   (SEG-Y CDP_X)
+#   byte 185  f1  first sample position           (SEG-Y CDP_Y)
+#   byte 189  d2  trace spacing                   (SEG-Y INLINE_3D)
+#   byte 193  f2  first trace position            (SEG-Y CROSSLINE_3D)
+#
+# Reading these through ``__getitem__`` yields nonsense (d2=5.0 comes back as
+# 1084227584), so they get a separate accessor. ``__getitem__`` keeps its
+# integer contract — the rest of the app depends on it.
+SU_D1_OFFSET = 181
+SU_F1_OFFSET = 185
+SU_D2_OFFSET = 189
+SU_F2_OFFSET = 193
+
+# Offsets whose SU meaning is float32. ungpow (197) and unscale (201) are
+# listed for completeness; nothing reads them yet.
+_SU_FLOAT_OFFSETS: frozenset[int] = frozenset({181, 185, 189, 193, 197, 201})
+
+# SEG-Y fields whose bytes SU reuses for the locals above. A .su file can
+# never supply these, so the loader marks them unavailable rather than
+# letting a full scan read float bytes as ints.
+SU_ALIASED_SEGY_FIELDS: frozenset[str] = frozenset({"CDP_X", "CDP_Y", "INLINE_3D", "CROSSLINE_3D"})
+
 
 def _detect_endianness(header: bytes, file_size: int) -> tuple[str, int, int]:
     """Return ``(endian_char, ns, dt_us)`` inferred from the first trace header.
@@ -105,6 +131,17 @@ class _SUHeader:
     def __getitem__(self, offset: int) -> int:
         fmt = _FIELD_WIDTHS.get(int(offset), "i")
         return int(struct.unpack_from(self._endian + fmt, self._raw, int(offset) - 1)[0])
+
+    def float_at(self, offset: int) -> float:
+        """Read a 4-byte IEEE float at a 1-indexed header offset.
+
+        For SU's cwp-local block (d1/f1/d2/f2 at bytes 181/185/189/193),
+        which ``__getitem__`` would misread as a signed integer.
+        """
+        off = int(offset)
+        if off not in _SU_FLOAT_OFFSETS:
+            log.warning("float_at(%d) is not a known SU float field", off)
+        return float(struct.unpack_from(self._endian + "f", self._raw, off - 1)[0])
 
 
 class _HeaderAccessor:

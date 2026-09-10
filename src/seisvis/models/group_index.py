@@ -114,6 +114,9 @@ class GroupIndex:
         # than "absent", which is what lets the canvas tell an empty result
         # caused by a pending scan apart from a genuinely missing group.
         self._pending_field_scans: set[str] = set()
+        # Fields this file structurally cannot supply — see
+        # mark_fields_unavailable(). Distinct from "not scanned yet".
+        self._unavailable_fields: set[str] = set()
         self._rebuild()
 
     # --- construction ---
@@ -288,6 +291,12 @@ class GroupIndex:
 
         Raises ``ValueError`` on a length mismatch with ``n_traces``.
         """
+        if field_name in self._unavailable_fields:
+            log.warning(
+                "ignoring scan result for %r: this file cannot supply it",
+                field_name,
+            )
+            return
         coerced = self._as_int_array(arr)
         if coerced is None:
             return
@@ -301,6 +310,42 @@ class GroupIndex:
         self._field_groups_cache.pop(field_name, None)
         self._sort_cache.clear()
         self._rebuild()
+
+    def mark_fields_unavailable(self, field_names: Iterable[str]) -> None:
+        """Declare that *field_names* can never be read from this file.
+
+        Used by the SU loader: Seismic Unix reuses the bytes SEG-Y assigns to
+        CDP_X / CDP_Y / INLINE_3D / CROSSLINE_3D for its float locals
+        d1 / f1 / d2 / f2, so scanning those offsets as integers yields
+        nonsense. Any mode keyed off such a field is dropped from
+        ``_mode_state`` entirely, which reads as "not applicable to this
+        dataset" rather than "not scanned yet".
+
+        Without this the exclusion holds only by luck: d2 and f2 are constant
+        within a file, so the ``unique_count > 1`` test happens to reject
+        them. A file whose locals vary per trace would otherwise surface a
+        grouping mode built on garbage.
+        """
+        names = {str(f) for f in field_names}
+        if not names:
+            return
+        self._unavailable_fields |= names
+        for name in names:
+            self._field_arrays.pop(name, None)
+            self._field_groups_cache.pop(name, None)
+        self._pending_field_scans.difference_update(names)
+        for mode, field_name in MODE_TO_DEFAULT_FIELD.items():
+            if field_name in names:
+                self._mode_state.pop(mode, None)
+        if self._current_mode not in self._mode_state:
+            self._current_mode = self.default_mode
+        self._sort_cache.clear()
+        self._rebuild()
+
+    @property
+    def unavailable_fields(self) -> set[str]:
+        """Field names this file structurally cannot supply."""
+        return set(self._unavailable_fields)
 
     def mark_fields_scanning(self, field_names: Iterable[str]) -> None:
         """Record that a background scan is materializing *field_names*."""

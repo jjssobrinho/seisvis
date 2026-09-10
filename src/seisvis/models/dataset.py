@@ -11,6 +11,7 @@ from PySide6.QtCore import QObject, Signal
 from seisvis.io.surange import FieldSample, scan_populated_fields
 from seisvis.models.group_index import GroupIndex, GroupingMode, ModeState
 from seisvis.models.sv_sidecar import SVSidecar
+from seisvis.models.vertical_domain import DepthGeometry, VerticalDomain
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +74,8 @@ class Dataset(QObject):
         inline_range: tuple[int, int] | None = None,
         xline_range: tuple[int, int] | None = None,
         group_index: GroupIndex | None = None,
+        vertical_domain: VerticalDomain = "time",
+        depth_geometry: DepthGeometry | None = None,
         id: str | None = None,
         name: str = "",
         parent: QObject | None = None,
@@ -87,10 +90,21 @@ class Dataset(QObject):
         self.inline_range = inline_range
         self.xline_range = xline_range
         self.group_index = group_index
+        # Which axis convention this dataset lives in. "time" datasets render
+        # on the Display Canvas in ms; "depth" datasets are routed to the
+        # Model Window and never enter a toggle group. ``sample_interval_ms``
+        # is meaningless for the latter — ``depth_geometry.dz`` replaces it.
+        self.vertical_domain: VerticalDomain = vertical_domain
+        self.depth_geometry: DepthGeometry | None = depth_geometry
         self.id = id if id is not None else str(uuid.uuid4())
         self.name = name if name else Path(source_path).stem
         self._closed = False
         self.header_fields_available: dict[str, FieldSample] | None = None
+        # SEG-Y field names this file structurally cannot supply, filtered
+        # out of the surange result. SU reuses the CDP_X / CDP_Y / INLINE_3D
+        # / CROSSLINE_3D bytes for float locals, so scanning them as ints
+        # would otherwise offer garbage fields as sort keys.
+        self.unavailable_header_fields: frozenset[str] = frozenset()
         self.sv: SVSidecar | None = None
         self.sv_stale: bool = False
         # True once the watcher sees the source file change underneath us.
@@ -106,7 +120,10 @@ class Dataset(QObject):
         """
         if self.header_fields_available is not None and not force:
             return
-        self.header_fields_available = scan_populated_fields(self.handle)
+        scanned = scan_populated_fields(self.handle)
+        for name in self.unavailable_header_fields:
+            scanned.pop(name, None)
+        self.header_fields_available = scanned
         self.surange_ready.emit()
 
     @property
@@ -262,6 +279,9 @@ class Dataset(QObject):
         self.xline_range = other.xline_range
         self.group_index = other.group_index
         self.header_fields_available = other.header_fields_available
+        self.unavailable_header_fields = other.unavailable_header_fields
+        self.vertical_domain = other.vertical_domain
+        self.depth_geometry = other.depth_geometry
         self.sv_stale = other.sv_stale
         self._closed = False
         # Neutralize the donor so its close() can't shut the handle we took.

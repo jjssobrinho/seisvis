@@ -62,6 +62,16 @@ data. Current capabilities:
 | v4.3  | f-k Transform                                 | `v43-done`       |
 | v4.4  | v0.4.0 Release                                | `v44-done`       |
 
+### v0.5.0 roadmap
+
+| #     | Name                                          | Tag              |
+|-------|-----------------------------------------------|------------------|
+| v5.1  | Depth Domain Foundation (SU floats, `.sv` v3) | `v51-done`       |
+| v5.2  | Model Window + ModelView (single member)      | `v52-done`       |
+| v5.3  | Domain Panel in Header Inspector              | `v53-done`       |
+| v5.4  | Multi-Model Members + Flicker                 | `v54-done`       |
+| v5.5  | v0.5.0 Release                                | `v55-done`       |
+
 Milestones are sequential; each in its own session. Finish, commit,
 tag, stop. **Let tests run to completion** before tagging. Check
 `git tag -l` at session start.
@@ -78,8 +88,11 @@ tests, pre-commit for hooks. No matplotlib in the rendering path.
 
 ## Conventions (non-negotiable)
 
-- **Time axis**: milliseconds, time-down (t=0 at top).
-- **Trace axis**: 0-indexed, left-to-right.
+- **Time axis** (Display Canvas): milliseconds, time-down
+  (t=0 at top). This binds the Display Canvas and everything
+  feeding it. Depth-domain data does not render there — it is
+  routed to the Model Window, whose axes are metres, depth-down.
+- **Trace axis** (Display Canvas): 0-indexed, left-to-right.
 - Sample interval stored as `float` ms (segyio gives µs).
 - Amplitudes: `float32` throughout.
 - Type hints everywhere. `ruff check` and `ruff format` before
@@ -743,7 +756,9 @@ contiguous range. Used by Range-type rows in either position.
 
 - Raw data immutable after load; processing produces new arrays.
 - All file I/O and any processing > 50 ms runs on `QThreadPool`.
-- Time axis is always ms, time-down.
+- Display Canvas time axis is always ms, time-down; the Model
+  Window's vertical axis is always metres, depth-down.
+- A depth-domain dataset never enters a toggle group.
 - `read_slice` is the only trace-data access path.
 - Switching compatible members = `setVisible()` only.
 - Member switching never changes the tab.

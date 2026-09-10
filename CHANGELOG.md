@@ -2,6 +2,50 @@
 
 ## [Unreleased]
 
+### Depth-domain datasets recognised (v5.1)
+
+Groundwork for the Model Window (v5.2). A file may now declare that its
+vertical axis is metres rather than milliseconds — a velocity model in
+depth, say. Nothing renders yet: this milestone is the model layer, and
+depth datasets are held out of toggle groups until they have somewhere
+to go.
+
+- **`Dataset` carries `vertical_domain` (`"time"` / `"depth"`) and a
+  `DepthGeometry`** (`dz`, `z0`, `dx`, `x0`, optional `value_unit`),
+  both defaulting to today's time-domain behaviour.
+  `sample_interval_ms` keeps its meaning and is untouched.
+- **`.su` files are classified by `trid`**, mirroring Seismic Unix's
+  `ISSEISMIC` macro: 0/1/2/3 are time series, everything else (130
+  depth-range, 121/122 k-t and k-omega, the packed and transformed
+  codes) is image domain. The grid comes from SU's cwp-local
+  `d1`/`f1`/`d2`/`f2`. An unset spacing falls back to 1.0 with a
+  warning, as `suximage` does. The decision and the `trid` behind it
+  are always logged.
+- **`.sv` schema v3 adds an optional `domain` block**, which overrides
+  header detection. This is the only route for SEG-Y, which has no
+  spacing headers in any byte, and the override for a `.su` whose
+  `trid` is wrong or unset (`trid` reads as 0 when a producing program
+  never set it, and 0 means time). v1 and v2 sidecars carry no domain
+  and read as time — migration is additive. A depth declaration
+  missing `dz` or `dx` is ignored with a warning rather than filled
+  with a 1.0 the user never asked for.
+- **`SUFile` header views gained `float_at()`** for SU's float locals.
+  `__getitem__` keeps its integer contract, which the rest of the app
+  depends on.
+- **Fixed: SU's `d1`/`f1`/`d2`/`f2` occupy exactly the bytes SEG-Y
+  assigns to `CDP_X` / `CDP_Y` / `INLINE_3D` / `CROSSLINE_3D`**
+  (181/185/189/193). The header scan read those float bytes as int32
+  for every `.su` file — `d2=5.0` came back as 1084227584. It stayed
+  harmless only by luck: the locals are constant within a file, so the
+  `unique_count > 1` test happened to reject them. The SU loader now
+  marks those four fields unavailable outright, so they never reach
+  `available_modes`, the surange result, or a sort dropdown.
+- **A depth-domain dataset is refused from toggle groups**, naming the
+  Model Window in the reason.
+- Both loaders share one `.sv` attachment path, so staleness handling
+  and domain precedence (`.sv` > header detection > time) live in one
+  place.
+
 ### Drag datasets from the catalog onto a canvas
 
 - **Dragging one or more catalog datasets onto a display canvas adds

@@ -139,6 +139,17 @@ def are_toggle_compatible(
     if a is b:
         return CompatResult(True, "same dataset")
 
+    # Depth-domain data never enters a toggle group: the Display Canvas is
+    # milliseconds, time-down, and a velocity model is metres. It is routed
+    # to the Model Window instead. Checked before the shape comparisons so
+    # the reason names the real reason rather than an incidental mismatch.
+    for ds in (a, b):
+        if getattr(ds, "vertical_domain", "time") == "depth":
+            return CompatResult(
+                False,
+                f"{ds.name} is depth-domain data; it opens in the Model Window, not a toggle group",
+            )
+
     if a.n_traces != b.n_traces:
         return CompatResult(False, f"n_traces differ ({a.n_traces} vs {b.n_traces})")
     if a.n_samples != b.n_samples:
