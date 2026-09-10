@@ -87,6 +87,7 @@ class ModelGroup(QObject):
     active_index_changed = Signal(int)
     levels_changed = Signal()
     colormap_changed = Signal()
+    clip_pct_changed = Signal()
     overlay_changed = Signal()
     name_changed = Signal(str)
 
@@ -110,6 +111,9 @@ class ModelGroup(QObject):
         if colormap is not None:
             self._styles["model"] = LayerStyle(colormap=colormap)
         self._guessed_kinds: dict[str, LayerKind] = {}
+        # Per-member scale for image layers, keyed by dataset id. Images
+        # normalise to their own amplitudes; only models share a range.
+        self._image_levels: dict[str, tuple[float, float]] = {}
         self._last_selected: dict[LayerKind, int] = {}
         self._overlay_enabled = False
         self._overlay_mode: OverlayMode = "luminance"
@@ -268,10 +272,55 @@ class ModelGroup(QObject):
     def active_kind(self) -> LayerKind:
         return self.kind_of(self._active_index)
 
+    def levels_for_member(self, index: int) -> tuple[float, float]:
+        """The scale member *index* is painted through.
+
+        Models read the kind's shared fixed range — velocity is absolute, so
+        every iteration must share. Images read their own percentile-derived
+        range, because reflectivity is not absolute: two migrations of one
+        line can differ by orders of magnitude from scaling alone, and a
+        shared range would leave one blank and the other saturated.
+        """
+        if not 0 <= index < len(self._members):
+            return (0.0, 1.0)
+        kind = self.kind_of(index)
+        if kind == "model":
+            return self.style("model").levels
+        return self._image_levels.get(self._members[index].id, (0.0, 1.0))
+
+    def set_image_levels(self, index: int, levels: tuple[float, float]) -> None:
+        """Record the percentile-derived scale computed for one image."""
+        if not 0 <= index < len(self._members):
+            return
+        ds_id = self._members[index].id
+        low, high = float(levels[0]), float(levels[1])
+        if high <= low:
+            high = low + 1e-9
+        if self._image_levels.get(ds_id) == (low, high):
+            return
+        self._image_levels[ds_id] = (low, high)
+        self.levels_changed.emit()
+
+    @property
+    def clip_pct(self) -> float:
+        """Percentile of |amplitude| that sets an image's scale."""
+        return self.style("image").clip_pct
+
+    def set_clip_pct(self, pct: float) -> None:
+        """Change the image clip; every image member rescales to its own data."""
+        pct = max(50.0, min(100.0, float(pct)))
+        style = self.style("image")
+        if pct == style.clip_pct:
+            return
+        style.clip_pct = pct
+        self.clip_pct_changed.emit()
+
     @property
     def levels(self) -> tuple[float, float]:
         """The active kind's scale — what the toolbar edits."""
-        return self.style(self.active_kind).levels
+        if self.active_kind == "image":
+            return self.levels_for_member(self._active_index)
+        return self.style("model").levels
 
     def set_levels(self, low: float, high: float, kind: LayerKind | None = None) -> None:
         target = self.active_kind if kind is None else kind

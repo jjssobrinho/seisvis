@@ -81,7 +81,11 @@ def format_readout(
 IMAGE_CLIP_PCT = 99.0
 
 
-def seed_levels(array: np.ndarray, kind: LayerKind = "model") -> tuple[float, float]:
+def seed_levels(
+    array: np.ndarray,
+    kind: LayerKind = "model",
+    clip_pct: float = IMAGE_CLIP_PCT,
+) -> tuple[float, float]:
     """Colour-scale bounds seeded from the data, by layer kind.
 
     A **model**'s absolute values are the content, so its scale is the
@@ -104,7 +108,7 @@ def seed_levels(array: np.ndarray, kind: LayerKind = "model") -> tuple[float, fl
         return 0.0, 1.0
 
     if kind == "image":
-        extent = float(np.percentile(np.abs(finite), IMAGE_CLIP_PCT))
+        extent = float(np.percentile(np.abs(finite), clip_pct))
         if extent > 0.0:
             return -extent, extent
 
@@ -158,6 +162,7 @@ class ModelView(QWidget):
         group.levels_changed.connect(self._apply_levels)
         group.colormap_changed.connect(self._apply_colormap)
         group.overlay_changed.connect(self._apply_visibility)
+        group.clip_pct_changed.connect(self._reseed_image_levels)
 
     # --- construction ---------------------------------------------------
 
@@ -231,9 +236,13 @@ class ModelView(QWidget):
             return
         self._arrays[index] = array
         kind = self.group.note_array(index, array)
+        if kind == "image":
+            # Each image normalises to its own amplitudes, so two migrations
+            # that differ by orders of magnitude still compare by structure.
+            self.group.set_image_levels(index, seed_levels(array, "image", self.group.clip_pct))
         style = self.group.style(kind)
         item = self._image_items[index]
-        item.setImage(array, autoLevels=False, levels=style.levels)
+        item.setImage(array, autoLevels=False, levels=self.group.levels_for_member(index))
         item.setLookupTable(get_colormap(style.colormap))
         item.setRect(QRectF(*self.image_extent(index)))
         if index == 0:
@@ -312,7 +321,7 @@ class ModelView(QWidget):
             model_arr,
             image_arr,
             model_levels=self.group.style(self.group.kind_of(top)).levels,
-            image_levels=self.group.style(self.group.kind_of(base)).levels,
+            image_levels=self.group.levels_for_member(base),
             lut=get_colormap(self.group.style(self.group.kind_of(top)).colormap),
             weight=self.group.overlay_weight,
         )
@@ -334,9 +343,17 @@ class ModelView(QWidget):
             return None
         return item.image
 
+    def _reseed_image_levels(self) -> None:
+        """Rescale every image member after a clip-percentile change."""
+        for i, array in enumerate(self._arrays):
+            if array is None or self.group.kind_of(i) != "image":
+                continue
+            self.group.set_image_levels(i, seed_levels(array, "image", self.group.clip_pct))
+        self._apply_levels()
+
     def _apply_levels(self) -> None:
         for i, item in enumerate(self._image_items):
-            item.setLevels(self.group.style(self.group.kind_of(i)).levels)
+            item.setLevels(self.group.levels_for_member(i))
         # The composite bakes the scales in, so it has to be rebuilt.
         self._apply_visibility()
 
@@ -352,6 +369,14 @@ class ModelView(QWidget):
         a seismic amplitude seven orders of magnitude away.
         """
         target = self.group.active_kind if kind is None else kind
+        if target == "image":
+            # Images do not share a range; Fit means "this member's own".
+            array = self._arrays[self.group.active_index]
+            return (
+                seed_levels(array, "image", self.group.clip_pct)
+                if array is not None
+                else (0.0, 1.0)
+            )
         return combined_levels(
             [a for i, a in enumerate(self._arrays) if self.group.kind_of(i) == target],
             target,

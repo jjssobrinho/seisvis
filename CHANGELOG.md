@@ -60,6 +60,24 @@ obvious when the two are superimposed.
 - The composite is built in numpy and rebuilt whenever a scale or
   colormap changes, since the levels are baked into the picture rather
   than applied as an opacity.
+#### Seismic images scale per member, by percentile
+
+- **Two seismic images in one tab now each scale to their own
+  amplitudes** rather than sharing a fixed range. Reflectivity has no
+  absolute meaning — two migrations of the same line can differ by
+  orders of magnitude from scaling alone — so a shared range left one
+  blank and the other saturated. Normalising each to its own
+  distribution is what makes a flicker between them compare structure.
+- **Models keep one fixed shared range**, which is the opposite case and
+  deliberately so: velocity is absolute, so 3000 m/s must be the same
+  colour in every iteration, and an overlay's hue depends on it.
+- **The toolbar offers the control that matches the kind** — a clip
+  percentile for images, min/max plus Fit for models. Min/max on an
+  image would invite typing a number its own normalisation immediately
+  overrides.
+- Image scales stay symmetric about zero, which the luminance
+  composite's neutral point depends on.
+
 - **Fixed: seismic images were seeded with a full min/max colour
   scale.** That rule came from models, whose absolute values are the
   content; reflectivity is heavy-tailed, so a lone outlier set the

@@ -59,15 +59,38 @@ def default_colormap_for(kind: LayerKind) -> str:
     return DEFAULT_MODEL_COLORMAP if kind == "model" else DEFAULT_IMAGE_COLORMAP
 
 
+# Percentile of |amplitude| that sets a seismic image's scale. Matches the
+# canvas default (CLAUDE.md UX Defaults).
+DEFAULT_CLIP_PCT = 99.0
+
+
 @dataclass
 class LayerStyle:
-    """Appearance shared by every layer of one kind within a group."""
+    """Appearance shared by every layer of one kind within a group.
+
+    The two kinds scale differently, and deliberately so.
+
+    A **model** uses ``levels`` — one fixed range shared by every model
+    member. Velocity is an absolute quantity: 3000 m/s must be the same
+    colour in every iteration, or a flicker shows scale differences rather
+    than velocity differences, and an overlay's hue means nothing.
+
+    A **seismic image** uses ``clip_pct`` instead, applied per member to
+    that member's own amplitudes. Reflectivity has no absolute meaning —
+    two migrations of the same line can differ by orders of magnitude from
+    scaling alone — so a shared fixed range would leave one blank and the
+    other saturated. Normalising each to its own distribution is what makes
+    two such images comparable by structure.
+    """
 
     colormap: str
     levels: tuple[float, float] = (0.0, 1.0)
     # While True the scale follows the data, widening as members arrive so a
     # later member's extremes are never clipped. A typed number turns it off.
+    # Models only — an image's scale always follows its own data.
     levels_are_auto: bool = True
+    # Images only.
+    clip_pct: float = DEFAULT_CLIP_PCT
 
     @classmethod
     def for_kind(cls, kind: LayerKind) -> LayerStyle:
@@ -75,6 +98,7 @@ class LayerStyle:
 
 
 __all__ = [
+    "DEFAULT_CLIP_PCT",
     "DEFAULT_IMAGE_COLORMAP",
     "DEFAULT_MODEL_COLORMAP",
     "LayerKind",

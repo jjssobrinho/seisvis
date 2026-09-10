@@ -106,17 +106,41 @@ class ModelWindow(QMainWindow):
         self._kind_label = QLabel(" ")
         bar.addWidget(self._kind_label)
 
-        bar.addWidget(QLabel(" Min "))
+        self._min_label = QLabel(" Min ")
+        bar.addWidget(self._min_label)
+        self._min_action = bar.actions()[-1]
         self._min_spin = self._make_level_spin()
         bar.addWidget(self._min_spin)
-        bar.addWidget(QLabel(" Max "))
+        self._min_spin_action = bar.actions()[-1]
+        self._max_label = QLabel(" Max ")
+        bar.addWidget(self._max_label)
+        self._max_action = bar.actions()[-1]
         self._max_spin = self._make_level_spin()
         bar.addWidget(self._max_spin)
+        self._max_spin_action = bar.actions()[-1]
 
         self._fit_button = QPushButton("Fit")
         self._fit_button.setToolTip("Reset the colour scale to span every member's data")
         self._fit_button.clicked.connect(self._on_fit_levels)
         bar.addWidget(self._fit_button)
+        self._fit_action = bar.actions()[-1]
+
+        # Seismic images scale by percentile of their own amplitudes rather
+        # than a fixed range, so two migrations orders of magnitude apart
+        # still compare by structure. The control swaps to match.
+        self._clip_spin = QDoubleSpinBox()
+        self._clip_spin.setRange(50.0, 100.0)
+        self._clip_spin.setDecimals(1)
+        self._clip_spin.setSingleStep(0.5)
+        self._clip_spin.setSuffix(" %")
+        self._clip_spin.setKeyboardTracking(False)
+        self._clip_spin.setToolTip(
+            "Clip percentile. Each seismic image scales to its own amplitudes, "
+            "so images of very different strength stay comparable."
+        )
+        self._clip_spin.valueChanged.connect(self._on_clip_changed)
+        bar.addWidget(self._clip_spin)
+        self._clip_action = bar.actions()[-1]
 
         self._unit_label = QLabel("")
         bar.addWidget(self._unit_label)
@@ -248,7 +272,13 @@ class ModelWindow(QMainWindow):
     # --- toolbar wiring --------------------------------------------------
 
     def _set_controls_enabled(self, enabled: bool) -> None:
-        for w in (self._colormap_combo, self._min_spin, self._max_spin, self._fit_button):
+        for w in (
+            self._colormap_combo,
+            self._min_spin,
+            self._max_spin,
+            self._fit_button,
+            self._clip_spin,
+        ):
             w.setEnabled(enabled)
         self._overlay_check.setEnabled(enabled)
         self._alpha_slider.setEnabled(enabled)
@@ -298,6 +328,11 @@ class ModelWindow(QMainWindow):
         # velocity range cannot silently rescale the seismic.
         kind = tab.group.active_kind
         self._kind_label.setText(" seismic:" if kind == "image" else " model:")
+        self._show_scale_controls_for(kind)
+        if kind == "image":
+            self._clip_spin.blockSignals(True)
+            self._clip_spin.setValue(tab.group.clip_pct)
+            self._clip_spin.blockSignals(False)
 
         can = tab.group.can_overlay()
         self._overlay_check.blockSignals(True)
@@ -365,6 +400,29 @@ class ModelWindow(QMainWindow):
         tab = self._current_tab()
         if tab is not None:
             tab.group.set_overlay_amount(value / 100.0)
+
+    def _show_scale_controls_for(self, kind: str) -> None:
+        """Show the control that matches how this kind is scaled.
+
+        A model has a fixed range to type; an image has a percentile. Showing
+        min/max for an image would invite setting a number that its own
+        normalisation immediately overrides.
+        """
+        is_model = kind == "model"
+        for action in (
+            self._min_action,
+            self._min_spin_action,
+            self._max_action,
+            self._max_spin_action,
+            self._fit_action,
+        ):
+            action.setVisible(is_model)
+        self._clip_action.setVisible(not is_model)
+
+    def _on_clip_changed(self, value: float) -> None:
+        tab = self._current_tab()
+        if tab is not None:
+            tab.group.set_clip_pct(value)
 
     def _on_overlay_mode_changed(self, _index: int) -> None:
         tab = self._current_tab()
