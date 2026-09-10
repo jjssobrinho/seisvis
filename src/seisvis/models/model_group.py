@@ -24,16 +24,20 @@ import logging
 import math
 import uuid
 from dataclasses import dataclass
+from typing import Literal
 
 from PySide6.QtCore import QObject, Signal
 
 from seisvis.models.dataset import Dataset
 from seisvis.models.layer_kind import LayerKind, LayerStyle, classify_layer
+from seisvis.processing.overlay import DEFAULT_WEIGHT
 
 log = logging.getLogger(__name__)
 
 # Grid values are floats read from headers or typed into spinboxes; compare
 # them the way the rest of the app compares sample intervals.
+OverlayMode = Literal["alpha", "luminance"]
+
 _GRID_RTOL = 1e-6
 
 
@@ -108,7 +112,10 @@ class ModelGroup(QObject):
         self._guessed_kinds: dict[str, LayerKind] = {}
         self._last_selected: dict[LayerKind, int] = {}
         self._overlay_enabled = False
+        self._overlay_mode: OverlayMode = "luminance"
+        # One knob per mode, so switching remembers each setting.
         self._overlay_alpha = 0.5
+        self._overlay_weight = DEFAULT_WEIGHT
         self.flicker_hz: float = 2.0
 
     # --- identity --------------------------------------------------------
@@ -339,19 +346,63 @@ class ModelGroup(QObject):
         return self._overlay_enabled
 
     @property
-    def overlay_alpha(self) -> float:
-        return self._overlay_alpha
+    def overlay_mode(self) -> OverlayMode:
+        return self._overlay_mode
 
-    def set_overlay_alpha(self, alpha: float) -> None:
-        """Opacity of the model drawn over the image, 0-1.
+    def set_overlay_mode(self, mode: OverlayMode) -> None:
+        """Choose how the two layers combine.
+
+        ``alpha`` draws the model over the image at an opacity — its end
+        points give each layer bare. ``luminance`` splits them across
+        channels, velocity as hue and seismic as brightness, so reflectors
+        stay crisp instead of washing out.
+        """
+        if mode not in ("alpha", "luminance") or mode == self._overlay_mode:
+            return
+        self._overlay_mode = mode
+        self.overlay_changed.emit()
+
+    @property
+    def overlay_amount(self) -> float:
+        """The single knob for the current mode — opacity, or weight."""
+        return self._overlay_alpha if self._overlay_mode == "alpha" else self._overlay_weight
+
+    def set_overlay_amount(self, value: float) -> None:
+        value = max(0.0, min(1.0, float(value)))
+        if value == self.overlay_amount:
+            return
+        if self._overlay_mode == "alpha":
+            self._overlay_alpha = value
+        else:
+            self._overlay_weight = value
+        self.overlay_changed.emit()
+
+    @property
+    def overlay_alpha(self) -> float:
+        """Opacity of the model drawn over the image in ``alpha`` mode.
 
         0 leaves the seismic bare and 1 the model alone, so the slider
         sweeps the whole comparison without touching anything else.
         """
+        return self._overlay_alpha
+
+    def set_overlay_alpha(self, alpha: float) -> None:
         alpha = max(0.0, min(1.0, float(alpha)))
         if alpha == self._overlay_alpha:
             return
         self._overlay_alpha = alpha
+        self.overlay_changed.emit()
+
+    @property
+    def overlay_weight(self) -> float:
+        """How far the seismic pushes brightness in ``luminance`` mode."""
+        return self._overlay_weight
+
+    def set_overlay_weight(self, weight: float) -> None:
+        weight = max(0.0, min(1.0, float(weight)))
+        if weight == self._overlay_weight:
+            return
+        self._overlay_weight = weight
         self.overlay_changed.emit()
 
     # --- compatibility ---------------------------------------------------
@@ -367,4 +418,4 @@ class ModelGroup(QObject):
         return models_share_axes(self._members[0], self._members[index])
 
 
-__all__ = ["AxesCompat", "ModelGroup", "models_share_axes"]
+__all__ = ["AxesCompat", "ModelGroup", "OverlayMode", "models_share_axes"]

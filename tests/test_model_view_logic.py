@@ -87,3 +87,64 @@ def test_readout_omits_a_unit_that_was_never_declared() -> None:
 def test_readout_outside_the_image_drops_the_value() -> None:
     g = DepthGeometry(dz=5.0, z0=0.0, dx=12.5, x0=500.0, value_unit="m/s")
     assert format_readout(g, 10.0, 20.0, None) == "x = 10 m  |  z = 20 m"
+
+
+# --- kind-aware level seeding ------------------------------------------------
+
+
+def test_a_model_keeps_its_full_range() -> None:
+    """Clipping would hide the very extremes being inspected."""
+    from seisvis.ui.widgets.model_view import seed_levels
+
+    arr = np.linspace(1500.0, 4500.0, 1000, dtype=np.float32)
+    assert seed_levels(arr, "model") == pytest.approx((1500.0, 4500.0))
+
+
+def test_a_seismic_image_gets_a_symmetric_percentile_clip() -> None:
+    """Reflectivity is heavy-tailed: a full-range scale leaves almost
+    everything at mid-grey and the section reads as blank."""
+    from seisvis.ui.widgets.model_view import seed_levels
+
+    rng = np.random.default_rng(3)
+    arr = (rng.standard_normal(20000) * 1e-5).astype(np.float32)
+    arr[0] = 1.0  # a lone outlier that would otherwise set the scale
+    lo, hi = seed_levels(arr, "image")
+    assert lo == pytest.approx(-hi)  # symmetric about zero
+    assert hi < 1e-4  # the outlier does not dominate
+
+
+def test_zero_amplitude_lands_mid_scale_for_an_image() -> None:
+    """The luminance composite's neutral point depends on this symmetry:
+    a sample with no reflection must leave the model's colour untouched."""
+    from seisvis.processing.overlay import normalize
+    from seisvis.ui.widgets.model_view import seed_levels
+
+    rng = np.random.default_rng(4)
+    arr = (rng.standard_normal(5000) * 1e-4).astype(np.float32)
+    levels = seed_levels(arr, "image")
+    assert float(normalize(np.array([0.0], dtype=np.float32), levels)[0]) == pytest.approx(0.5)
+
+
+def test_an_all_positive_image_still_clips_symmetrically() -> None:
+    from seisvis.ui.widgets.model_view import seed_levels
+
+    arr = np.abs(np.random.default_rng(5).standard_normal(5000)).astype(np.float32)
+    lo, hi = seed_levels(arr, "image")
+    assert lo == pytest.approx(-hi)
+
+
+def test_an_all_zero_image_falls_back_rather_than_collapsing() -> None:
+    from seisvis.ui.widgets.model_view import seed_levels
+
+    lo, hi = seed_levels(np.zeros(100, dtype=np.float32), "image")
+    assert lo < hi
+
+
+def test_combined_levels_honour_the_kind() -> None:
+    from seisvis.ui.widgets.model_view import combined_levels
+
+    rng = np.random.default_rng(6)
+    a = (rng.standard_normal(5000) * 1e-5).astype(np.float32)
+    a[0] = 1.0
+    assert combined_levels([a], "image")[1] < 1e-4
+    assert combined_levels([a], "model")[1] == pytest.approx(1.0)

@@ -43,6 +43,33 @@ obvious when the two are superimposed.
   flickers over a fixed seismic (the FWI-iteration QC) rather than
   blinking the seismic in and out of the stack.
 
+#### Two ways to compose the overlay
+
+- **Luminance** (the default) splits the two layers across visual
+  channels: velocity becomes hue, the seismic becomes brightness.
+  Reflectors stay crisp black-and-white lines over a coloured field
+  instead of washing out under it, which alpha could not avoid.
+- **Alpha** remains, for the end points luminance has no equivalent
+  for: 0% is the bare seismic, 100% the bare model. Each mode
+  remembers its own slider setting.
+- The luminance factor is centred on 1.0, so zero amplitude leaves the
+  model's colour untouched and only reflectors modulate it — and
+  polarity survives, peaks brightening and troughs darkening. An
+  `|amplitude|` modulation would discard the phase reversal across an
+  interface, which is what this view exists to catch.
+- The composite is built in numpy and rebuilt whenever a scale or
+  colormap changes, since the levels are baked into the picture rather
+  than applied as an opacity.
+- **Fixed: seismic images were seeded with a full min/max colour
+  scale.** That rule came from models, whose absolute values are the
+  content; reflectivity is heavy-tailed, so a lone outlier set the
+  range and left almost everything at mid-grey. Level seeding is now
+  per kind — models keep the full range, seismic images get a
+  percentile clip taken symmetric about zero. The symmetry is
+  load-bearing: the luminance neutral point depends on zero amplitude
+  landing exactly mid-scale. Depth seismic shown on its own is sharper
+  for the same reason.
+
 ### Compare models on shared axes, and flicker between them (v5.4)
 
 A model tab now holds more than one model. Comparing FWI or tomography

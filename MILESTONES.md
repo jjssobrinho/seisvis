@@ -121,8 +121,30 @@ Tests
 - Extend `test_model_flicker.py` — flicker cycles within the active
   kind, leaving the other layer alone.
 
+Addendum — luminance compositing
+
+Alpha shipped first and its washing-out was felt immediately, so
+luminance was added alongside rather than instead: velocity becomes hue,
+the seismic becomes brightness, and reflectors stay crisp. Both modes
+remain, each remembering its own slider setting. Luminance is the
+default; alpha keeps its end points, which luminance has no equivalent
+for — there is no "bare seismic" when the colour is always present.
+
+The luminance factor is centred on 1.0 so zero amplitude leaves the
+model's colour untouched, and polarity survives: peaks brighten, troughs
+darken. An |amplitude| modulation would discard the phase reversal
+across an interface, which is exactly what this view exists to catch.
+
+This exposed a wrong default from v5.2. `seed_levels` used the full
+min/max range on the grounds that "a model's absolute values are the
+content" — true for velocity, false for reflectivity, which is
+heavy-tailed and left almost everything at mid-grey. Seeding is now per
+kind: models keep the full range, seismic images get a percentile clip
+taken symmetric about zero. The symmetry is load-bearing, not cosmetic —
+the luminance neutral point depends on zero amplitude landing exactly
+mid-scale.
+
 Out of scope for v5.5
 
-Colour-plus-luminance compositing (chosen against: alpha's end points
-are worth more than crisp reflectors here); more than two layers at
-once; per-member alpha; the v0.5.0 release, which moves to v5.6.
+More than two layers at once; per-member alpha; the v0.5.0 release,
+which moves to v5.6.

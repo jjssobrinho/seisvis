@@ -114,6 +114,7 @@ def test_enabling_stacks_the_model_over_the_image(window, tmp_path: Path) -> Non
     seis, vp, tab = _pair(window, tmp_path)
     try:
         assert window._model_window._current_tab() is tab
+        tab.group.set_overlay_mode("alpha")
         window._model_window._overlay_check.setChecked(True)
         items = tab.view._image_items
         assert items[0].isVisible() and items[1].isVisible()
@@ -131,6 +132,7 @@ def test_alpha_reaches_the_item(window, tmp_path: Path, pct: int, expected: floa
     seis, vp, tab = _pair(window, tmp_path)
     try:
         mw = window._model_window
+        tab.group.set_overlay_mode("alpha")
         mw._overlay_check.setChecked(True)
         mw._alpha_slider.setValue(pct)
         assert tab.view._image_items[1].opacity() == pytest.approx(expected)
@@ -144,6 +146,7 @@ def test_disabling_restores_one_member_at_a_time(window, tmp_path: Path) -> None
     seis, vp, tab = _pair(window, tmp_path)
     try:
         mw = window._model_window
+        tab.group.set_overlay_mode("alpha")
         mw._overlay_check.setChecked(True)
         mw._overlay_check.setChecked(False)
         visible = [i for i, it in enumerate(tab.view._image_items) if it.isVisible()]
@@ -227,3 +230,99 @@ def test_readout_uses_the_model_unit_when_declared() -> None:
     g = DepthGeometry(dz=10.0, z0=0.0, dx=10.0, x0=0.0, value_unit="m/s")
     text = format_readout(g, 4500.0, 1200.0, 3820.0, None, -4.2e-05, None)
     assert text == "x = 4500 m  |  z = 1200 m  |  3820 m/s  |  -4.2e-05"
+
+
+# --- luminance composition ---------------------------------------------------
+
+
+def test_luminance_is_the_default_mode(window, tmp_path: Path) -> None:
+    seis, vp, tab = _pair(window, tmp_path)
+    try:
+        assert tab.group.overlay_mode == "luminance"
+    finally:
+        seis.close()
+        vp.close()
+
+
+def test_luminance_replaces_both_layers_with_one_composite(window, tmp_path: Path) -> None:
+    """The two sources go dark; a single RGB picture stands in for them."""
+    seis, vp, tab = _pair(window, tmp_path)
+    try:
+        window._model_window._overlay_check.setChecked(True)
+        rgb = tab.view.composite_rgb()
+        assert rgb is not None
+        assert rgb.shape == (8, 24, 3)
+        assert rgb.dtype == np.uint8
+        assert not any(it.isVisible() for it in tab.view._image_items)
+    finally:
+        seis.close()
+        vp.close()
+
+
+def test_switching_modes_swaps_the_rendering(window, tmp_path: Path) -> None:
+    seis, vp, tab = _pair(window, tmp_path)
+    try:
+        mw = window._model_window
+        mw._overlay_check.setChecked(True)
+        assert tab.view.composite_rgb() is not None
+
+        tab.group.set_overlay_mode("alpha")
+        assert tab.view.composite_rgb() is None
+        assert all(it.isVisible() for it in tab.view._image_items)
+
+        tab.group.set_overlay_mode("luminance")
+        assert tab.view.composite_rgb() is not None
+    finally:
+        seis.close()
+        vp.close()
+
+
+def test_each_mode_keeps_its_own_setting(window, tmp_path: Path) -> None:
+    seis, vp, tab = _pair(window, tmp_path)
+    try:
+        g = tab.group
+        g.set_overlay_mode("luminance")
+        g.set_overlay_amount(0.9)
+        g.set_overlay_mode("alpha")
+        g.set_overlay_amount(0.2)
+        assert g.overlay_alpha == pytest.approx(0.2)
+        assert g.overlay_weight == pytest.approx(0.9)
+        g.set_overlay_mode("luminance")
+        assert g.overlay_amount == pytest.approx(0.9)
+    finally:
+        seis.close()
+        vp.close()
+
+
+def test_the_composite_rebuilds_when_a_scale_changes(window, tmp_path: Path) -> None:
+    """The scales are baked into the picture, unlike an opacity."""
+    seis, vp, tab = _pair(window, tmp_path)
+    try:
+        window._model_window._overlay_check.setChecked(True)
+        before = tab.view.composite_rgb().copy()
+        tab.group.set_levels(1000.0, 2000.0, kind="model")
+        after = tab.view.composite_rgb()
+        assert not np.array_equal(before, after)
+    finally:
+        seis.close()
+        vp.close()
+
+
+def test_composite_waits_for_both_arrays(window, tmp_path: Path) -> None:
+    """Before the second read lands there is nothing to compose."""
+    seis = load_su(_depth_su(tmp_path, "s.su"))
+    vp = load_su(_depth_su(tmp_path, "v.su"))
+    try:
+        for d in (seis, vp):
+            window.project.add(d)
+        window._on_open_in_new_group(seis)
+        window._on_add_to_active_model(vp)
+        tab = window._model_window._current_tab()
+        tab.view.set_array(0, _reflectivity())  # only the image so far
+        tab.view.set_array(1, _velocity())
+        tab.view._arrays[1] = None  # simulate the read not having landed
+        tab.group.set_overlay_enabled(True)
+        assert tab.view.composite_rgb() is None
+    finally:
+        seis.close()
+        vp.close()

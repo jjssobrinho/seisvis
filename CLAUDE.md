@@ -70,7 +70,8 @@ data. Current capabilities:
 | v5.2  | Model Window + ModelView (single member)      | `v52-done`       |
 | v5.3  | Domain Panel in Header Inspector              | `v53-done`       |
 | v5.4  | Multi-Model Members + Flicker                 | `v54-done`       |
-| v5.5  | v0.5.0 Release                                | `v55-done`       |
+| v5.5  | Depth Seismic + Velocity Overlay               | `v55-done`       |
+| v5.6  | v0.5.0 Release                                | `v56-done`       |
 
 Milestones are sequential; each in its own session. Finish, commit,
 tag, stop. **Let tests run to completion** before tagging. Check
@@ -356,7 +357,7 @@ JSON file `<segy_name>.sv` next to the SEG-Y:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 4,
   "segy_path": "shot_line_07.segy",
   "sha1_prefix": "9a3f2b...",
   "mtime": 1738473829.0,
@@ -368,6 +369,13 @@ JSON file `<segy_name>.sv` next to the SEG-Y:
   "display_names": {
     "FieldRecord":  "SP",
     "TraceNumber":  "Channel"
+  },
+  "domain": {
+    "kind": "depth",
+    "dz": 10.0,  "z0": 0.0,
+    "dx": 10.0,  "x0": 0.0,
+    "value_unit": "m/s",
+    "layer_kind": "model"
   }
 }
 ```
@@ -377,6 +385,17 @@ JSON file `<segy_name>.sv` next to the SEG-Y:
 - `display_names` are per-file renames, keyed by standard field
   name. Apply to info track, crosshair, command-bar dropdowns,
   and dialog labels.
+- `domain` (v3) declares the vertical axis. Absent, or
+  `kind: "time"`, means milliseconds. `kind: "depth"` must carry
+  `dz` and `dx`; a declaration missing either is warned about and
+  ignored rather than filled with an invented 1.0. This is the only
+  route to depth for SEG-Y, which has no spacing headers in any
+  byte, and the override when a `.su`'s `trid` is wrong or unset.
+- `layer_kind` (v4) overrides how a depth layer is painted in the
+  Model Window — `"image"` (grey) or `"model"` (rainbow). Absent
+  means decide from the data.
+- Schema migration is additive: v1–v3 sidecars load unchanged, with
+  the fields they predate reading as absent.
 - **Sort is not persisted.** Every session starts fresh: when a
   dataset is loaded into a toggle group, the group's sort is
   uncommitted / natural file order. The user commits whatever

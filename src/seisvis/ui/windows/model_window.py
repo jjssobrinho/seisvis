@@ -132,16 +132,25 @@ class ModelWindow(QMainWindow):
         self._overlay_check.toggled.connect(self._on_overlay_toggled)
         bar.addWidget(self._overlay_check)
 
+        self._mode_combo = QComboBox()
+        self._mode_combo.addItem("Luminance", "luminance")
+        self._mode_combo.addItem("Alpha", "alpha")
+        self._mode_combo.setToolTip(
+            "Luminance: velocity is the colour, the seismic is the brightness — "
+            "reflectors stay crisp.\n"
+            "Alpha: the model over the image at an opacity — the end points give "
+            "each layer bare."
+        )
+        self._mode_combo.currentIndexChanged.connect(self._on_overlay_mode_changed)
+        bar.addWidget(self._mode_combo)
+
         self._alpha_slider = QSlider(Qt.Orientation.Horizontal)
         self._alpha_slider.setRange(0, 100)
-        self._alpha_slider.setValue(50)
+        self._alpha_slider.setValue(70)
         self._alpha_slider.setFixedWidth(110)
-        self._alpha_slider.setToolTip(
-            "Model opacity. 0% leaves the seismic bare, 100% the model alone."
-        )
         self._alpha_slider.valueChanged.connect(self._on_alpha_changed)
         bar.addWidget(self._alpha_slider)
-        self._alpha_label = QLabel("50%")
+        self._alpha_label = QLabel("70%")
         bar.addWidget(self._alpha_label)
 
         self._set_controls_enabled(False)
@@ -243,6 +252,7 @@ class ModelWindow(QMainWindow):
             w.setEnabled(enabled)
         self._overlay_check.setEnabled(enabled)
         self._alpha_slider.setEnabled(enabled)
+        self._mode_combo.setEnabled(enabled)
 
     def _on_current_changed(self, _index: int) -> None:
         self._rebind_controls()
@@ -296,12 +306,26 @@ class ModelWindow(QMainWindow):
         self._overlay_check.blockSignals(False)
         if not can.ok:
             self._overlay_check.setToolTip(f"Overlay unavailable — {can.reason}")
-        alpha = int(round(tab.group.overlay_alpha * 100))
+        self._mode_combo.blockSignals(True)
+        self._mode_combo.setCurrentIndex(self._mode_combo.findData(tab.group.overlay_mode))
+        self._mode_combo.blockSignals(False)
+        self._mode_combo.setEnabled(tab.group.overlay_enabled)
+
+        amount = int(round(tab.group.overlay_amount * 100))
         self._alpha_slider.blockSignals(True)
-        self._alpha_slider.setValue(alpha)
+        self._alpha_slider.setValue(amount)
         self._alpha_slider.blockSignals(False)
-        self._alpha_label.setText(f"{alpha}%")
+        self._alpha_label.setText(f"{amount}%")
         self._alpha_slider.setEnabled(tab.group.overlay_enabled)
+        if tab.group.overlay_mode == "alpha":
+            self._alpha_slider.setToolTip(
+                "Model opacity. 0% leaves the seismic bare, 100% the model alone."
+            )
+        else:
+            self._alpha_slider.setToolTip(
+                "How far the seismic pushes brightness. 0% is the bare velocity "
+                "field; higher lets peaks reach white and troughs black."
+            )
 
     def _on_colormap_changed(self, name: str) -> None:
         tab = self._current_tab()
@@ -340,7 +364,15 @@ class ModelWindow(QMainWindow):
         self._alpha_label.setText(f"{value}%")
         tab = self._current_tab()
         if tab is not None:
-            tab.group.set_overlay_alpha(value / 100.0)
+            tab.group.set_overlay_amount(value / 100.0)
+
+    def _on_overlay_mode_changed(self, _index: int) -> None:
+        tab = self._current_tab()
+        if tab is None:
+            return
+        tab.group.set_overlay_mode(self._mode_combo.currentData())
+        # Each mode keeps its own setting, so the slider re-reads.
+        self._rebind_controls()
 
 
 __all__ = ["ModelTab", "ModelWindow"]

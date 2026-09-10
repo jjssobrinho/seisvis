@@ -32,6 +32,7 @@ from seisvis.models.layer_kind import LayerKind
 from seisvis.models.model_group import ModelGroup
 from seisvis.models.processing_chain import ProcessingChain
 from seisvis.models.vertical_domain import DepthGeometry
+from seisvis.processing.overlay import compose_luminance
 from seisvis.utils.colormaps import get_colormap
 
 log = logging.getLogger(__name__)
@@ -76,17 +77,37 @@ def format_readout(
     return "  |  ".join(parts)
 
 
-def seed_levels(array: np.ndarray) -> tuple[float, float]:
-    """Colour-scale bounds seeded from the data's own range.
+# Matches the canvas default for seismic amplitudes (CLAUDE.md UX Defaults).
+IMAGE_CLIP_PCT = 99.0
 
-    A model's absolute values are the content, so the scale is physical
-    rather than a percentile of the distribution. A constant-valued model
-    would otherwise collapse to a zero-width range that renders as a single
-    flat colour, so it is widened symmetrically.
+
+def seed_levels(array: np.ndarray, kind: LayerKind = "model") -> tuple[float, float]:
+    """Colour-scale bounds seeded from the data, by layer kind.
+
+    A **model**'s absolute values are the content, so its scale is the
+    physical range rather than a percentile of the distribution: clipping
+    would hide the very extremes being inspected.
+
+    A **seismic image** is the opposite. Reflectivity is heavy-tailed — most
+    samples sit near zero and a few outliers set the min/max — so a
+    full-range scale leaves almost everything at mid-grey and the section
+    reads as blank. It gets the canvas's percentile clip, taken symmetric
+    about zero so that zero amplitude lands exactly mid-scale. That
+    symmetry is what the luminance composite's neutral point depends on:
+    a sample with no reflection must leave the model's colour untouched.
+
+    A constant-valued layer would collapse to a zero-width range that
+    renders as one flat colour, so it is widened.
     """
     finite = array[np.isfinite(array)] if array.size else array
     if finite.size == 0:
         return 0.0, 1.0
+
+    if kind == "image":
+        extent = float(np.percentile(np.abs(finite), IMAGE_CLIP_PCT))
+        if extent > 0.0:
+            return -extent, extent
+
     lo = float(finite.min())
     hi = float(finite.max())
     if lo == hi:
@@ -95,14 +116,16 @@ def seed_levels(array: np.ndarray) -> tuple[float, float]:
     return lo, hi
 
 
-def combined_levels(arrays: list[np.ndarray | None]) -> tuple[float, float]:
-    """Scale bounds spanning every fetched member.
+def combined_levels(
+    arrays: list[np.ndarray | None], kind: LayerKind = "model"
+) -> tuple[float, float]:
+    """Scale bounds spanning every fetched member of one kind.
 
     Fitting to the active member alone would clip whichever other member
     reaches further, and the whole point of a shared scale is that the same
     velocity is the same colour everywhere.
     """
-    seeds = [seed_levels(a) for a in arrays if a is not None and a.size]
+    seeds = [seed_levels(a, kind) for a in arrays if a is not None and a.size]
     if not seeds:
         return 0.0, 1.0
     return min(s[0] for s in seeds), max(s[1] for s in seeds)
@@ -120,6 +143,10 @@ class ModelView(QWidget):
         self.group = group
         self._image_items: list[pg.ImageItem] = []
         self._arrays: list[np.ndarray | None] = []
+        # Holds the numpy-composited RGB picture in luminance mode. A
+        # separate item because it replaces both layers rather than
+        # sitting over them.
+        self._composite_item: pg.ImageItem | None = None
 
         self._build_ui()
         for i in range(len(group)):
@@ -151,6 +178,11 @@ class ModelView(QWidget):
         self.readout_label = QLabel("")
         self.readout_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         layout.addWidget(self.readout_label)
+
+        self._composite_item = pg.ImageItem(axisOrder="col-major")
+        self._composite_item.setVisible(False)
+        self._composite_item.setZValue(2)
+        self.plot_item.addItem(self._composite_item)
 
         self.plot_widget.scene().sigMouseMoved.connect(self._on_mouse_moved)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -239,6 +271,11 @@ class ModelView(QWidget):
     def _apply_visibility(self) -> None:
         """Show the active member, or both layers of an overlay."""
         pair = self.group.overlay_pair() if self.group.overlay_enabled else None
+        if pair is not None and self.group.overlay_mode == "luminance":
+            if self._render_composite(*pair):
+                return
+        self._hide_composite()
+
         if pair is not None:
             base, top = pair
             for i, item in enumerate(self._image_items):
@@ -257,13 +294,56 @@ class ModelView(QWidget):
         if not self.group.compat_for(active).ok:
             self.fit_to_data()
 
+    def _render_composite(self, base: int, top: int) -> bool:
+        """Paint the numpy-composited picture; report whether it could.
+
+        Returns False before both arrays have arrived, so the caller falls
+        back to plain visibility rather than showing an empty item.
+        """
+        item = self._composite_item
+        image_arr = self._arrays[base] if 0 <= base < len(self._arrays) else None
+        model_arr = self._arrays[top] if 0 <= top < len(self._arrays) else None
+        if item is None or image_arr is None or model_arr is None:
+            return False
+        if image_arr.shape != model_arr.shape:
+            return False
+
+        rgb = compose_luminance(
+            model_arr,
+            image_arr,
+            model_levels=self.group.style(self.group.kind_of(top)).levels,
+            image_levels=self.group.style(self.group.kind_of(base)).levels,
+            lut=get_colormap(self.group.style(self.group.kind_of(top)).colormap),
+            weight=self.group.overlay_weight,
+        )
+        item.setImage(rgb, autoLevels=False)
+        item.setRect(QRectF(*self.image_extent(top)))
+        item.setVisible(True)
+        for source in self._image_items:
+            source.setVisible(False)
+        return True
+
+    def _hide_composite(self) -> None:
+        if self._composite_item is not None:
+            self._composite_item.setVisible(False)
+
+    def composite_rgb(self) -> np.ndarray | None:
+        """The composited picture currently on screen, if any."""
+        item = self._composite_item
+        if item is None or not item.isVisible():
+            return None
+        return item.image
+
     def _apply_levels(self) -> None:
         for i, item in enumerate(self._image_items):
             item.setLevels(self.group.style(self.group.kind_of(i)).levels)
+        # The composite bakes the scales in, so it has to be rebuilt.
+        self._apply_visibility()
 
     def _apply_colormap(self) -> None:
         for i, item in enumerate(self._image_items):
             item.setLookupTable(get_colormap(self.group.style(self.group.kind_of(i)).colormap))
+        self._apply_visibility()
 
     def data_range(self, kind: LayerKind | None = None) -> tuple[float, float]:
         """The range spanning every fetched member of one kind.
@@ -273,7 +353,8 @@ class ModelView(QWidget):
         """
         target = self.group.active_kind if kind is None else kind
         return combined_levels(
-            [a for i, a in enumerate(self._arrays) if self.group.kind_of(i) == target]
+            [a for i, a in enumerate(self._arrays) if self.group.kind_of(i) == target],
+            target,
         )
 
     # --- readout --------------------------------------------------------
@@ -359,6 +440,7 @@ class ModelView(QWidget):
 
 __all__ = [
     "DEFAULT_MODEL_COLORMAP",
+    "IMAGE_CLIP_PCT",
     "MAX_TRACES_ON_OPEN",
     "ModelView",
     "combined_levels",
