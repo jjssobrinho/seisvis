@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -18,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from seisvis.models.dataset import Dataset
 from seisvis.models.sv_sidecar import build_sidecar_for
+from seisvis.models.vertical_domain import DEFAULT_SPACING, DepthGeometry
 
 # SEG-Y standard role→field defaults shown in the dropdowns.
 _DEFAULT_ROLE_FIELDS: dict[str, str] = {
@@ -34,7 +37,19 @@ _ROLE_LABELS: list[tuple[str, str]] = [
 
 
 class HeaderInspectorDialog(QDialog):
-    """Header inspector with role-mapping and display-name rename panels."""
+    """Header inspector: domain, role mapping and display-name rename."""
+
+    # Emitted on Apply when the dataset's vertical domain actually changed,
+    # so the main window can re-route it (a model leaves its toggle group
+    # for the Model Window; a dataset returned to time leaves the Model
+    # Window). Carries the Dataset, already updated.
+    domain_changed = Signal(object)
+
+    # Emitted when the sidecar could not be written (read-only directory,
+    # dead mount). The in-memory change still applied; only persistence was
+    # lost, and the user should hear that rather than discover it next
+    # session. Carries the .sv filename.
+    sv_write_failed = Signal(str)
 
     def __init__(self, dataset: Dataset, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -51,6 +66,7 @@ class HeaderInspectorDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
+        layout.addWidget(self._build_domain_panel())
         layout.addWidget(self._build_role_panel())
         layout.addWidget(self._build_fields_table())
         layout.addWidget(self._build_preview_panel())
@@ -68,6 +84,114 @@ class HeaderInspectorDialog(QDialog):
         self._update_preview()
 
     # --- panel builders ---
+
+    def _build_domain_panel(self) -> QGroupBox:
+        """Declare the vertical axis and, for depth, the physical grid.
+
+        The only route to depth for SEG-Y, which has no spacing headers in
+        any byte, and the override when a .su's trid is wrong or unset.
+        """
+        box = QGroupBox("Vertical Domain", self)
+        grid = QGridLayout(box)
+
+        self._domain_combo = QComboBox(box)
+        self._domain_combo.addItem("Time (ms)", "time")
+        self._domain_combo.addItem("Depth (m)", "depth")
+        self._domain_combo.currentIndexChanged.connect(self._on_domain_kind_changed)
+        grid.addWidget(QLabel("Domain:"), 0, 0)
+        grid.addWidget(self._domain_combo, 0, 1)
+
+        self._dz_spin = self._make_grid_spin(box)
+        self._z0_spin = self._make_grid_spin(box, allow_negative=True)
+        self._dx_spin = self._make_grid_spin(box)
+        self._x0_spin = self._make_grid_spin(box, allow_negative=True)
+
+        grid.addWidget(QLabel("Sample spacing dz:"), 1, 0)
+        grid.addWidget(self._dz_spin, 1, 1)
+        grid.addWidget(QLabel("m"), 1, 2)
+        grid.addWidget(QLabel("First sample z0:"), 1, 3)
+        grid.addWidget(self._z0_spin, 1, 4)
+        grid.addWidget(QLabel("m"), 1, 5)
+
+        grid.addWidget(QLabel("Trace spacing dx:"), 2, 0)
+        grid.addWidget(self._dx_spin, 2, 1)
+        grid.addWidget(QLabel("m"), 2, 2)
+        grid.addWidget(QLabel("First trace x0:"), 2, 3)
+        grid.addWidget(self._x0_spin, 2, 4)
+        grid.addWidget(QLabel("m"), 2, 5)
+
+        self._unit_edit = QLineEdit(box)
+        self._unit_edit.setPlaceholderText("optional — e.g. m/s")
+        grid.addWidget(QLabel("Value unit:"), 3, 0)
+        grid.addWidget(self._unit_edit, 3, 1, 1, 2)
+
+        self._domain_error = QLabel("", box)
+        self._domain_error.setStyleSheet("color: #DC2626;")
+        grid.addWidget(self._domain_error, 4, 0, 1, 6)
+
+        self._seed_domain_panel()
+        return box
+
+    @staticmethod
+    def _make_grid_spin(parent: QWidget, *, allow_negative: bool = False) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox(parent)
+        spin.setRange(-1e7 if allow_negative else 0.0, 1e7)
+        spin.setDecimals(4)
+        spin.setKeyboardTracking(False)
+        return spin
+
+    def _seed_domain_panel(self) -> None:
+        """Fill from the dataset's current geometry, however it was arrived at.
+
+        A .su detected as depth from its trid seeds the same way a previous
+        declaration does, so the user edits real numbers rather than retyping
+        what the file already said.
+        """
+        geometry = self._dataset.depth_geometry
+        is_depth = self._dataset.vertical_domain == "depth" and geometry is not None
+        self._domain_combo.setCurrentIndex(1 if is_depth else 0)
+        if geometry is not None:
+            self._dz_spin.setValue(geometry.dz)
+            self._z0_spin.setValue(geometry.z0)
+            self._dx_spin.setValue(geometry.dx)
+            self._x0_spin.setValue(geometry.x0)
+            self._unit_edit.setText(geometry.value_unit or "")
+        else:
+            # Matches the loader's fallback for a model with no spacing.
+            self._dz_spin.setValue(DEFAULT_SPACING)
+            self._dx_spin.setValue(DEFAULT_SPACING)
+        self._on_domain_kind_changed()
+
+    def _on_domain_kind_changed(self) -> None:
+        depth = self._domain_combo.currentData() == "depth"
+        for w in (
+            self._dz_spin,
+            self._z0_spin,
+            self._dx_spin,
+            self._x0_spin,
+            self._unit_edit,
+        ):
+            w.setEnabled(depth)
+        if not depth:
+            self._domain_error.setText("")
+
+    def _geometry_from_panel(self) -> DepthGeometry | None:
+        """The declared geometry, or None for Time. Raises on an unusable grid."""
+        if self._domain_combo.currentData() != "depth":
+            return None
+        dz, dx = self._dz_spin.value(), self._dx_spin.value()
+        bad = [name for name, v in (("dz", dz), ("dx", dx)) if v <= 0.0]
+        if bad:
+            raise ValueError(
+                f"{' and '.join(bad)} must be greater than zero to describe a depth grid"
+            )
+        return DepthGeometry(
+            dz=dz,
+            z0=self._z0_spin.value(),
+            dx=dx,
+            x0=self._x0_spin.value(),
+            value_unit=self._unit_edit.text().strip() or None,
+        )
 
     def _build_role_panel(self) -> QGroupBox:
         box = QGroupBox("Role Mapping", self)
@@ -186,6 +310,15 @@ class HeaderInspectorDialog(QDialog):
     # --- apply ---
 
     def _on_apply(self) -> None:
+        # Validate the grid before touching anything: a half-applied dialog
+        # is worse than a refused one.
+        try:
+            geometry = self._geometry_from_panel()
+        except ValueError as exc:
+            self._domain_error.setText(str(exc))
+            return
+        self._domain_error.setText("")
+
         role_mappings: dict[str, str | None] = {
             role_key: self._role_combos[role_key].currentData() for role_key, _ in _ROLE_LABELS
         }
@@ -196,16 +329,24 @@ class HeaderInspectorDialog(QDialog):
             if text and text != fname:
                 display_names[fname] = text
 
-        # Carry any existing depth declaration through: build_sidecar_for
-        # makes a fresh record, so a domain set earlier would be dropped.
-        # The Domain panel that edits it arrives in v5.3.
-        existing_sv = self._dataset.sv
+        ds = self._dataset
+        was_depth = ds.vertical_domain == "depth"
+
         sidecar = build_sidecar_for(
-            self._dataset.source_path,
+            ds.source_path,
             role_mappings=role_mappings,
             display_names=display_names,
-            depth_geometry=existing_sv.depth_geometry if existing_sv else None,
+            depth_geometry=geometry,
         )
-        self._dataset.sv = sidecar
-        self._dataset.persist_sv()
+        ds.sv = sidecar
+        # Apply in memory regardless of whether the sidecar lands: the user
+        # gets the right axis this session even on a read-only directory.
+        ds.vertical_domain = "depth" if geometry is not None else "time"
+        ds.depth_geometry = geometry
+
+        if not ds.persist_sv():
+            self.sv_write_failed.emit(ds.source_path.with_suffix(".sv").name)
+
+        if (geometry is not None) != was_depth:
+            self.domain_changed.emit(ds)
         self.accept()

@@ -360,6 +360,8 @@ class CatalogPanel(QWidget):
     open_multi_in_new_group_requested = Signal(object)  # list[Dataset]
     add_to_active_group_requested = Signal(object)  # Dataset
     reload_requested = Signal(object)  # Dataset whose file changed on disk
+    domain_changed = Signal(object)  # Dataset whose vertical domain flipped
+    sv_write_failed = Signal(str)  # .sv filename that could not be written
 
     def __init__(self, project: Project, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -509,6 +511,8 @@ class CatalogPanel(QWidget):
         settings = QSettings("SeismicView", "App")
         settings.setValue("header_inspector_opened", True)
         dlg = HeaderInspectorDialog(dataset, parent=self)
+        dlg.domain_changed.connect(self.domain_changed)
+        dlg.sv_write_failed.connect(self.sv_write_failed)
         dlg.exec()
 
     def _on_double_clicked(self, index) -> None:  # noqa: ANN001

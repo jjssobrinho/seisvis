@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+### Declare a file's vertical domain by hand (v5.3)
+
+A "Vertical Domain" panel in the header inspector opens the `.sv`
+override that v5.1 built. Three things needed it: SEG-Y depth data,
+which has no spacing headers in any byte and so can only be declared;
+a `.su` whose `trid` is wrong or unset (it reads as 0, which means
+time, so an untagged model opens on a millisecond axis); and
+`value_unit`, which SU has nowhere to store — every `.su` model read
+out a bare number until now.
+
+- **The panel declares Time or Depth**, plus dz / z0 / dx / x0 and an
+  optional value unit. It seeds from whatever the dataset already has,
+  so a `.su` detected from its `trid` shows real numbers to edit rather
+  than a blank grid. Selecting Time clears a previous declaration,
+  which is how a mistaken depth call is undone.
+- **Apply refuses a depth declaration with a non-positive dz or dx**,
+  naming the offending field inline — the same rule the `.sv` parser
+  enforces. Nothing is applied or written when it refuses.
+- **The change takes effect without a reload.** The dataset is normally
+  open when its domain is declared — the user opened a model, saw a
+  millisecond axis, and went to fix it — so the viewports are
+  rearranged rather than the change refused: a dataset declared depth
+  leaves every toggle group holding it (groups left empty are closed)
+  and opens in the Model Window; one returned to time loses its Model
+  Window tab and stays in the catalog. The status bar names what closed.
+- Role mappings and display names set in the same dialog still go out
+  in one `.sv` write.
+- **Fixed: `persist_sv` wrote with no error handling**, so a read-only
+  directory or a dead network mount raised through the dialog's Apply
+  handler. It now returns whether the write landed and reports failure
+  on the status bar. The in-memory change still applies, so the session
+  shows the right axis even when the sidecar can't be saved.
+
 ### Model Window for depth-domain data (v5.2)
 
 Depth datasets now render, in metres, in a window of their own. The

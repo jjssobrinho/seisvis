@@ -227,6 +227,12 @@ class MainWindow(QMainWindow):
         )
         self.catalog_panel.add_to_active_group_requested.connect(self._on_add_to_active_group)
         self.catalog_panel.reload_requested.connect(self._on_reload_dataset)
+        self.catalog_panel.domain_changed.connect(self._on_domain_changed)
+        self.catalog_panel.sv_write_failed.connect(
+            lambda name: self.statusBar().showMessage(
+                f"Could not write {name} — the change applies to this session only", 6000
+            )
+        )
         self._left_splitter.addWidget(self.catalog_panel)
 
         self.viewport_manager = ViewportManagerPanel(self.project)
@@ -816,6 +822,49 @@ class MainWindow(QMainWindow):
         for sig in (worker.signals.finished, worker.signals.failed):
             sig.connect(lambda *_a, w=worker: self._model_slice_workers.discard(w))
         self._pool.start(worker)
+
+    def _on_domain_changed(self, dataset: Dataset) -> None:
+        """Re-route a dataset whose declared vertical domain just flipped.
+
+        The dataset is normally open when the user declares its domain —
+        that is the case the panel exists for: they opened a velocity model,
+        saw a millisecond axis, and went to fix it. So the viewports are
+        rearranged rather than the change being refused.
+        """
+        if getattr(dataset, "vertical_domain", "time") == "depth":
+            closed = self._evict_from_toggle_groups(dataset)
+            self._route_if_depth(dataset)
+            if closed:
+                self.statusBar().showMessage(
+                    f"{dataset.name} is now depth-domain — opened in the Model Window; "
+                    f"closed {', '.join(closed)}",
+                    6000,
+                )
+            return
+
+        # Back to time: drop its Model Window tab. It stays in the catalog,
+        # and the user opens it on the canvas when they want it there.
+        if self._model_window is not None:
+            self._model_window.close_dataset(dataset.id)
+        self.statusBar().showMessage(
+            f"{dataset.name} is now time-domain — open it on a canvas", 5000
+        )
+
+    def _evict_from_toggle_groups(self, dataset: Dataset) -> list[str]:
+        """Remove *dataset* from every group holding it; return groups closed.
+
+        A group left with no members is closed: ToggleGroup's contract is
+        N ≥ 1, and an empty tab has nothing to show.
+        """
+        closed: list[str] = []
+        for group in list(self.project.toggle_groups):
+            indices = [i for i, m in enumerate(group.members) if m.dataset.id == dataset.id]
+            for i in reversed(indices):
+                group.remove_member(i)
+            if indices and not group.members:
+                closed.append(group.name)
+                self.project.remove_toggle_group(group.id)
+        return closed
 
     def _close_model_window(self) -> None:
         """Shut the Model Window on exit, before parents' handles close."""

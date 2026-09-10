@@ -240,14 +240,27 @@ class Dataset(QObject):
             return ""
         return self.display_name_for(field)
 
-    def persist_sv(self) -> None:
-        """Write ``self.sv`` to ``<source_path>.sv`` and emit ``sv_changed``."""
+    def persist_sv(self) -> bool:
+        """Write ``self.sv`` to ``<source_path>.sv``; report whether it landed.
+
+        Returns False on an unwritable target — a read-only directory or a
+        dead network mount — rather than raising through the caller's UI
+        handler. The in-memory ``sv`` is left applied either way, so the
+        session still reflects what the user asked for; only the persistence
+        is lost. ``sv_changed`` fires only on a successful write, since
+        subscribers redraw from the sidecar on disk.
+        """
         if self.sv is None:
-            return
+            return False
         sv_path = self.source_path.with_suffix(".sv")
-        self.sv.to_json(sv_path)
+        try:
+            self.sv.to_json(sv_path)
+        except OSError:
+            log.warning("could not write %s", sv_path, exc_info=True)
+            return False
         self.sv_stale = False
         self.sv_changed.emit()
+        return True
 
     def set_data_stale(self, stale: bool) -> None:
         """Flag (or clear) "the file changed on disk". Emits on transitions."""
