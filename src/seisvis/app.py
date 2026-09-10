@@ -228,6 +228,10 @@ class MainWindow(QMainWindow):
         self.catalog_panel.add_to_active_group_requested.connect(self._on_add_to_active_group)
         self.catalog_panel.reload_requested.connect(self._on_reload_dataset)
         self.catalog_panel.domain_changed.connect(self._on_domain_changed)
+        self.catalog_panel.add_to_active_model_requested.connect(self._on_add_to_active_model)
+        self.catalog_panel.set_model_tab_probe(
+            lambda: self._model_window is not None and self._model_window.has_open_tab
+        )
         self.catalog_panel.sv_write_failed.connect(
             lambda name: self.statusBar().showMessage(
                 f"Could not write {name} — the change applies to this session only", 6000
@@ -793,6 +797,21 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Opened {dataset.name} in the Model Window", 4000)
         return True
 
+    def _on_add_to_active_model(self, dataset: Dataset) -> None:
+        """Join a model to the current tab, for side-by-side QC."""
+        if getattr(dataset, "vertical_domain", "time") != "depth":
+            self.statusBar().showMessage(
+                f"{dataset.name} is time-domain data — open it on a canvas", 5000
+            )
+            return
+        if self._model_window is None or not self._model_window.has_open_tab:
+            self._route_if_depth(dataset)
+            return
+        self._model_window.add_to_active(dataset)
+        self._model_window.show()
+        self._model_window.raise_()
+        self.statusBar().showMessage(f"Added {dataset.name} to the current model tab", 4000)
+
     @property
     def model_window(self) -> ModelWindow:
         """The app's single Model Window, created on first use."""
@@ -801,18 +820,19 @@ class MainWindow(QMainWindow):
             self._model_window.slice_requested.connect(self._on_model_slice_requested)
         return self._model_window
 
-    def _on_model_slice_requested(self, view: ModelView, dataset: Dataset) -> None:
-        """Fill a model tab off the UI thread, like any other slice read."""
-        trace_slice, time_slice, chain = view.slice_request()
+    def _on_model_slice_requested(self, view: ModelView, member_index: int) -> None:
+        """Fill one model member off the UI thread, like any other slice read."""
+        dataset = view.group.members[member_index]
+        trace_slice, time_slice, chain = view.slice_request(member_index)
         worker = SliceWorker(
-            group_id=f"model:{dataset.id}",
-            member_index=0,
+            group_id=f"model:{view.group.id}",
+            member_index=member_index,
             dataset=dataset,
             trace_indices=trace_slice,
             time_slice=time_slice,
             processing_chain=chain,
         )
-        worker.signals.finished.connect(lambda _g, _m, arr, _tr, _sr, v=view: v.set_array(arr))
+        worker.signals.finished.connect(lambda _g, m, arr, _tr, _sr, v=view: v.set_array(m, arr))
         worker.signals.failed.connect(
             lambda _g, _m, msg, name=dataset.name: self.statusBar().showMessage(
                 f"Failed to read {name}: {msg}", 5000

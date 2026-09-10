@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+### Compare models on shared axes, and flicker between them (v5.4)
+
+A model tab now holds more than one model. Comparing FWI or tomography
+iterations is the reason the Model Window exists at all — a single model
+per tab only ever answers "what does this look like", never "what
+changed".
+
+- **A `ModelGroup` per tab** holds N models, one visible at a time.
+  Switching is `setVisible()` only, as on the canvas; each member's
+  slice is read once when it joins and kept.
+- **The colour scale and colormap are shared by every member.** This is
+  what makes the comparison honest: alternating two models under
+  independently-derived scales would show scale differences, not
+  velocity differences — a 3000 m/s layer has to be the same colour in
+  every member. The explicit physical scale chosen in v5.2 is what made
+  sharing possible.
+- **The scale widens as members arrive** rather than staying fitted to
+  the first, since a scale fitted to one member saturates whichever
+  other reaches further — exactly what a flicker must not show. A value
+  typed into the min/max boxes pins it; `Fit` hands control back to the
+  data and spans every member.
+- **Member buttons and auto-flicker** in a bar above the image:
+  numbered, tab10-coloured, `1`–`9` to switch, and a rate spinbox
+  sharing the canvas's 0.5–10 Hz bounds so both windows cycle alike. A
+  one-member group disables the controls instead of spinning.
+- **Members on a different grid are allowed but badged.** Axes
+  compatibility compares trace and sample counts plus dz/dx/z0/x0
+  against member 0; a mismatch gets an "Independent axes" badge naming
+  what differs, and the view refits when switching to it rather than
+  leaving it off-screen. Flickering across grids compares different
+  things, so it is warned about rather than forbidden.
+- **"Add to active model tab"** in the catalog, mirroring the toggle
+  group pair — enabled only when a tab is open, and offered only for
+  depth datasets, whose "Open in new model tab" also now reads
+  correctly rather than naming a toggle group.
+- Closing a member leaves the tab open; only an empty group closes one.
+
 ### Declare a file's vertical domain by hand (v5.3)
 
 A "Vertical Domain" panel in the header inspector opens the `.sv`

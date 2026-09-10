@@ -360,6 +360,7 @@ class CatalogPanel(QWidget):
     open_multi_in_new_group_requested = Signal(object)  # list[Dataset]
     add_to_active_group_requested = Signal(object)  # Dataset
     reload_requested = Signal(object)  # Dataset whose file changed on disk
+    add_to_active_model_requested = Signal(object)  # depth Dataset
     domain_changed = Signal(object)  # Dataset whose vertical domain flipped
     sv_write_failed = Signal(str)  # .sv filename that could not be written
 
@@ -426,11 +427,26 @@ class CatalogPanel(QWidget):
         menu = QMenu(self._view)
         if len(datasets) == 1:
             ds = datasets[0]
-            open_group = menu.addAction("Open in new toggle group")
+            open_group = menu.addAction(
+                "Open in new model tab" if _is_depth(ds) else "Open in new toggle group"
+            )
             open_group.triggered.connect(lambda: self.open_in_new_group_requested.emit(ds))
-            add_to_active = menu.addAction("Add to active toggle group")
-            add_to_active.triggered.connect(lambda: self.add_to_active_group_requested.emit(ds))
-            add_to_active.setEnabled(self._project.active_toggle_group() is not None)
+            if _is_depth(ds):
+                # A model opens in the Model Window, so its second action
+                # joins the current model tab rather than a toggle group —
+                # mirroring the pair offered for time data.
+                add_to_active = menu.addAction("Add to active model tab")
+                add_to_active.setToolTip(
+                    "Show this model on the same axes as the current tab, to flicker between them."
+                )
+                add_to_active.triggered.connect(
+                    lambda checked=False, d=ds: self.add_to_active_model_requested.emit(d)
+                )
+                add_to_active.setEnabled(self._model_tab_open())
+            else:
+                add_to_active = menu.addAction("Add to active toggle group")
+                add_to_active.triggered.connect(lambda: self.add_to_active_group_requested.emit(ds))
+                add_to_active.setEnabled(self._project.active_toggle_group() is not None)
             if getattr(ds, "data_stale", False):
                 menu.addSeparator()
                 reload_action = menu.addAction("Reload from disk")
@@ -502,6 +518,18 @@ class CatalogPanel(QWidget):
             "Lets you remap which field provides the shot / inline / crossline\n"
             "number and rename labels for this file only."
         )
+
+    def set_model_tab_probe(self, probe) -> None:  # noqa: ANN001 - Callable[[], bool]
+        """Tell the panel how to ask whether a model tab is open.
+
+        A callable rather than a ModelWindow reference: the catalog has no
+        business holding a window, and the window is created lazily.
+        """
+        self._model_tab_probe = probe
+
+    def _model_tab_open(self) -> bool:
+        probe = getattr(self, "_model_tab_probe", None)
+        return bool(probe()) if probe is not None else False
 
     def _open_header_inspector(self, dataset: Dataset) -> None:
         from PySide6.QtCore import QSettings

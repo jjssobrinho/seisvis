@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from seisvis.io.loader import load_dataset  # noqa: E402
 from seisvis.io.su_loader import load_su  # noqa: E402
+from seisvis.models.model_group import ModelGroup  # noqa: E402
 from seisvis.ui.widgets.model_view import ModelView as _ModelView  # noqa: E402
 from seisvis.ui.windows.model_window import ModelWindow as _ModelWindow  # noqa: E402
 
@@ -49,12 +50,12 @@ def ModelWindow(*args, **kwargs):  # noqa: N802
     raise AssertionError("use the `widgets` fixture: widgets(_ModelWindow, ...)")
 
 
-def test_model_view_refuses_a_time_dataset(qapp, su_line: Path) -> None:
-    """The widget's contract is depth; a time dataset here is a routing bug."""
+def test_model_group_refuses_a_time_dataset(qapp, su_line: Path) -> None:
+    """The contract is depth; a time dataset here is a routing bug."""
     ds = load_su(su_line)
     try:
         with pytest.raises(ValueError, match="not a depth-domain"):
-            _ModelView(ds)
+            ModelGroup(ds)
     finally:
         ds.close()
 
@@ -62,12 +63,12 @@ def test_model_view_refuses_a_time_dataset(qapp, su_line: Path) -> None:
 def test_model_view_reads_geometry_from_the_dataset(qapp, widgets, su_depth_model: Path) -> None:
     ds = load_su(su_depth_model)
     try:
-        view = widgets(_ModelView, ds)
+        view = widgets(_ModelView, ModelGroup(ds))
         x0, z0, width, height = view.image_extent()
         assert x0 == pytest.approx(100.0)  # f2
         assert width == pytest.approx(8 * 12.5)  # n_traces * d2
         assert height == pytest.approx(24 * 5.0)  # n_samples * d1
-        trace_slice, time_slice, chain = view.slice_request()
+        trace_slice, time_slice, chain = view.slice_request(0)
         assert (trace_slice.start, trace_slice.stop) == (0, 8)
         assert (time_slice.start, time_slice.stop) == (0, 24)
         # A model gets no bandpass or AGC: those are Hz operations.
@@ -103,7 +104,7 @@ def test_two_models_get_two_tabs(qapp, widgets, su_depth_model: Path, tmp_path: 
         win.open_dataset(b)
         assert win._tabs.count() == 2
         assert win.current_view is not None
-        assert win.current_view.dataset is b
+        assert win.current_view.group.members[0] is b
     finally:
         a.close()
         b.close()
@@ -129,14 +130,15 @@ def test_levels_are_explicit_not_percentile(qapp, widgets, su_depth_model: Path)
 
     ds = load_su(su_depth_model)
     try:
-        view = widgets(_ModelView, ds)
-        view.set_array(np.linspace(1500, 4500, 8 * 24, dtype=np.float32).reshape(8, 24))
-        assert view.levels == pytest.approx((1500.0, 4500.0))
-        view.set_levels(2000.0, 3000.0)
-        assert view.levels == pytest.approx((2000.0, 3000.0))
+        view = widgets(_ModelView, ModelGroup(ds))
+        view.set_array(0, np.linspace(1500, 4500, 8 * 24, dtype=np.float32).reshape(8, 24))
+        view.group.set_levels(*view.data_range())
+        assert view.group.levels == pytest.approx((1500.0, 4500.0))
+        view.group.set_levels(2000.0, 3000.0)
+        assert view.group.levels == pytest.approx((2000.0, 3000.0))
         # An inverted range is repaired rather than rendering nothing.
-        view.set_levels(5000.0, 1000.0)
-        low, high = view.levels
+        view.group.set_levels(5000.0, 1000.0)
+        low, high = view.group.levels
         assert low < high
     finally:
         ds.close()
@@ -145,7 +147,7 @@ def test_levels_are_explicit_not_percentile(qapp, widgets, su_depth_model: Path)
 def test_sample_inversion_at_the_grid_edges(qapp, widgets, su_depth_model: Path) -> None:
     ds = load_su(su_depth_model)
     try:
-        view = widgets(_ModelView, ds)
+        view = widgets(_ModelView, ModelGroup(ds))
         # x0=100, dx=12.5, 8 traces → [100, 200); z0=0, dz=5, 24 samples → [0, 120)
         assert view.sample_at(100.0, 0.0) == (0, 0)
         assert view.sample_at(112.5, 5.0) == (1, 1)
