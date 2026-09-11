@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [v0.5.0] Depth domain, the Model Window, and overlays
+
+Depth-domain data becomes a first-class citizen: recognised on load,
+rendered in metres in a window of its own, and composable — a velocity
+model over a migrated section, in colour over brightness. The Display
+Canvas is untouched and still milliseconds, time-down.
+
 ### Depth seismic, and velocity overlaid on it (v5.5)
 
 Depth-domain seismic images belong in the Model Window too, in grey, and

@@ -14,6 +14,8 @@ Desktop viewer for 2D/3D SEG-Y reflection seismic data.
 - Zoom restricted to the currently loaded traces (no re-fetch on pan/zoom)
 - Per-member processing: colormap, clip, gain, bandpass, AGC
 - Rectangle selection feeding live FFT and f-k transforms in a separate window per group
+- Depth-domain data in a Model Window of its own — metres on both axes
+- Velocity models over migrated sections, composed by luminance or alpha
 - Detection of source files that change on disk, with in-place reload
 - Always-visible Appearance / Analysis / Processing toolbar
 - Full display mode (`F11`) — canvas takes the whole screen, navigation controls stay
@@ -118,6 +120,85 @@ The transform window has its own title that follows the group's
 name; closing the last tab closes the window, and closing the
 toggle group closes the transform window with it.
 
+## Depth-domain data and the Model Window
+
+The Display Canvas is milliseconds, time-down, and everything feeding it
+assumes that. A velocity model is metres. Rather than branch the whole
+render path on a domain flag, depth-domain files are routed to a
+separate **Model Window** whose axes are metres, depth-down. A catalog
+row marked `[z]` opens there; the tooltip names its grid.
+
+### Telling SeisVis a file is in depth
+
+Seismic Unix files are classified by `trid`, exactly as `suximage` does:
+0–3 mean a time series, anything else (130 depth-range, 121/122 k-t and
+k-ω, the packed and transformed codes) is image domain. The grid comes
+from SU's cwp-local `d1`/`f1`/`d2`/`f2`.
+
+That covers well-tagged files, but `trid` reads as 0 when the producing
+program never set it — and 0 means time, so an untagged depth model
+opens on a millisecond axis. SEG-Y is worse: it has no spacing headers
+in any byte, so a model stored as SEG-Y can only ever be declared.
+
+So *Configure Headers…* carries a **Vertical Domain** panel: Time or
+Depth, plus `dz` / `z0` / `dx` / `x0` and an optional value unit
+(`m/s`). It seeds from whatever the file already said, so a tagged `.su`
+shows real numbers to edit. The declaration is saved in the `.sv`
+sidecar and takes effect without a reload — the dataset leaves any
+toggle group holding it and opens in the Model Window, and the status
+bar says what closed.
+
+### Layers
+
+A model tab holds one or more layers on shared axes, one visible at a
+time, with the same numbered buttons and auto-flicker as the canvas.
+Flickering between FWI or tomography iterations is what the window
+exists for.
+
+Layers are either a **seismic image** (a migrated section) or a
+**property model** (velocity, say). SeisVis guesses from the data — a
+property field is all-positive with a mean far from zero, reflectivity
+oscillates about zero — and the Domain panel's *Data kind* selector
+overrides it. The kind decides the colormap (grey, or rainbow) and how
+the layer is scaled:
+
+- **Models share one fixed range.** Velocity is absolute: 3000 m/s has
+  to be the same colour in every iteration, or a flicker shows scale
+  differences instead of velocity differences. Set it with Min / Max, or
+  press Fit to span every model member.
+- **Images scale per member, by percentile.** Reflectivity has no
+  absolute meaning — two migrations of one line can differ by orders of
+  magnitude from scaling alone — so each normalises to its own
+  amplitudes and a flicker between them compares structure. Set the clip
+  percentile instead; the toolbar swaps controls to match the layer in
+  front.
+
+Flicker cycles within the active layer's kind, so a model flickers over
+a fixed seismic rather than blinking the seismic in and out. Layers on a
+different grid are allowed but badged *Independent axes*.
+
+### Overlaying a model on a section
+
+With one image and one model on the same grid in a tab, tick
+**Overlay**. Two ways to combine them:
+
+- **Luminance** (default) — velocity becomes the colour, the seismic
+  becomes the brightness. Reflectors stay crisp black-and-white lines
+  over a coloured field. The weight slider sets how far the seismic
+  pushes brightness; zero amplitude always leaves the model's colour
+  untouched, and polarity survives, so a phase reversal across an
+  interface is still visible.
+- **Alpha** — the model over the image at an opacity. It washes the
+  reflectors out in between, but its end points are worth having: 0 % is
+  the bare seismic, 100 % the bare model.
+
+Each mode remembers its own slider setting. The cursor reports both
+layers — `x = 4500 m | z = 1200 m | 3820 m/s | -4.2e-05`.
+
+Overlay requires the two layers to share a grid. A badge is enough when
+layers merely take turns, but superimposing two different grids draws a
+lie, so it refuses and names the difference.
+
 ## Files that change on disk
 
 SEG-Y and SU handles stay open for as long as the dataset is loaded, and
@@ -173,10 +254,10 @@ were. `Esc` is only bound while the mode is active.
 | `F11`             | Toggle full display mode                         |
 | `Esc`             | Leave full display mode                          |
 | `Delete` / `Backspace` | Clear the canvas selection                  |
-| `1` … `9`         | Switch to member 1–9 (canvas focus)              |
+| `1` … `9`         | Switch to member 1–9 (canvas or model focus)     |
 | `Space`           | Toggle auto-flicker on/off (canvas focus)        |
 | `C`               | Toggle crosshair lines on/off (off by default)   |
-| `F`               | Fit to command-bar view / reset zoom             |
+| `F`               | Fit to command-bar view / reset zoom (canvas or model) |
 | `g`               | Increase gain +3 dB                              |
 | `G`               | Decrease gain −3 dB                              |
 | `Left` / `Right`  | Step First by Count × Skip                       |
