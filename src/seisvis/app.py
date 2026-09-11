@@ -32,11 +32,13 @@ from seisvis.models.sort_config import TRACE_RANGE_FIELD, RowSelection, SortConf
 from seisvis.models.toggle_group import ToggleGroup
 from seisvis.services.dataset_reload import ReloadError, reload_dataset
 from seisvis.services.file_watch_service import FileWatchService
+from seisvis.ui.dialogs.crosshair_fields_dialog import CrosshairFieldsDialog
 from seisvis.ui.dialogs.dataset_properties_dialog import DatasetPropertiesDialog
 from seisvis.ui.panels.catalog_panel import CatalogPanel
 from seisvis.ui.panels.display_panel import DisplayPanel
 from seisvis.ui.panels.viewport_manager_panel import ViewportManagerPanel
 from seisvis.ui.toolbar.global_toolbar import GlobalToolbar
+from seisvis.ui.widgets.crosshair_readout import CrosshairReadout
 from seisvis.ui.widgets.model_view import ModelView
 from seisvis.ui.windows.model_window import ModelWindow
 from seisvis.workers.field_scan_worker import FieldScanWorker
@@ -165,6 +167,12 @@ class MainWindow(QMainWindow):
         # Permanent right-side status label (group / member / state info).
         self._status_group_label = QLabel("", self)
         self._status_group_label.setStyleSheet("padding: 0 6px;")
+        # The crosshair readout gets a widget of its own rather than sharing
+        # showMessage() with every transient message — they used to overwrite
+        # each other, and a temporary message has no widget to double-click.
+        self.crosshair_readout = CrosshairReadout(self)
+        self.crosshair_readout.double_clicked.connect(self._on_choose_crosshair_fields)
+        self.statusBar().addPermanentWidget(self.crosshair_readout)
         self.statusBar().addPermanentWidget(self._status_group_label)
 
         self.statusBar().showMessage("Ready")
@@ -261,6 +269,7 @@ class MainWindow(QMainWindow):
         self.display_panel.datasets_dropped.connect(self._on_datasets_dropped)
         self.display_panel.status_message.connect(self._on_status_message)
         self.display_panel.cursor_readout.connect(self._on_cursor_readout)
+        self.display_panel.crosshair_readout.connect(self._on_crosshair_readout)
         self.display_panel.close_group_requested.connect(self._on_close_group_requested)
         self.toolbar.analysis.selection_mode_toggled.connect(
             self.display_panel.set_selection_mode_active
@@ -989,11 +998,32 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(message, 5000)
 
     def _on_cursor_readout(self, trace, t_ms, amp) -> None:  # noqa: ANN001
+        """Clear the readout when the cursor leaves the canvas.
+
+        The text itself arrives through ``crosshair_readout``, already
+        formatted by the view, which is the only place that can resolve a
+        display column to a header value.
+        """
         if trace is None:
-            self.statusBar().clearMessage()
+            self.crosshair_readout.clear_readout()
+
+    def _on_crosshair_readout(self, text: str) -> None:
+        self.crosshair_readout.set_readout(text)
+
+    def _on_choose_crosshair_fields(self) -> None:
+        """Pick which header fields the crosshair adds, for the active group."""
+        group = self.project.active_toggle_group()
+        if group is None or group.n_members == 0:
+            self.statusBar().showMessage("Open a dataset first", 4000)
             return
-        amp_str = f"{amp:.4g}" if amp is not None else "—"
-        self.statusBar().showMessage(f"Trace {trace} | t = {t_ms:.1f} ms | amp = {amp_str}")
+        dataset = group.members[group.active_index].dataset
+        if getattr(dataset, "handle", None) is None:
+            self.statusBar().showMessage(f"{dataset.name} has no header of its own to read", 4000)
+            return
+        dlg = CrosshairFieldsDialog(dataset, group.crosshair_fields, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        group.set_crosshair_fields(dlg.selected_fields())
 
     # --- Drag and drop ---
 

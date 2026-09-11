@@ -73,6 +73,12 @@ data. Current capabilities:
 | v5.5  | Depth Seismic + Velocity Overlay               | `v55-done`       |
 | v5.6  | v0.5.0 Release                                | `v56-done`       |
 
+### v0.6.0 roadmap
+
+| #     | Name                                          | Tag              |
+|-------|-----------------------------------------------|------------------|
+| v6.1  | Configurable Crosshair Readout                | `v61-done`       |
+
 Milestones are sequential; each in its own session. Finish, commit,
 tag, stop. **Let tests run to completion** before tagging. Check
 `git tag -l` at session start.

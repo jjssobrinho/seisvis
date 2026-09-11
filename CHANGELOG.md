@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### Choose which headers the crosshair shows (v6.1)
+
+Double-click the crosshair readout to pick any populated header field to
+appear alongside it on hover.
+
+- **The readout gets a status-bar widget of its own.** It used to go
+  through `showMessage`, shared with every transient message the app
+  emits — so moving the mouse wiped "Added X to Group 1", and a status
+  message flickered over the readout. They no longer compete, and the
+  double-click has a stable widget to land on, which the temporary
+  message area could not offer.
+- **The picker lists the populated fields** of the group's active
+  member, with the same columns as the Header Inspector plus the `.sv`
+  display name, so a renamed field reads the way it will in the
+  readout. Table order is readout order.
+- **Values are read on the fly, for the traces on screen.** The
+  full-file route already existed — `FieldScanWorker` reads every trace
+  header so a sort can group on an arbitrary field — but that is
+  minutes of work on a multi-GB line to answer a question about the few
+  thousand traces visible. Trace data is not read that way and headers
+  are not either: a new `TraceHeaderWorker` reads the chosen fields for
+  the displayed traces only, in one pass that pulls every requested
+  field out of each header block as it goes.
+- Results align to the displayed traces element by element, so the
+  cursor's lookup is an array index by column. They are dropped and
+  re-read whenever the view moves, so a stale value cannot outlive the
+  frame it described. A field still in flight shows an ellipsis rather
+  than vanishing.
+- Fields that grouping already materialised (FieldRecord, TraceNumber,
+  INLINE_3D, CROSSLINE_3D) keep coming from their scanned arrays: those
+  exist for sorting, are already in memory, and cover every trace.
+- The choice belongs to the toggle group and lasts the session, the
+  same line sort draws — the `.sv` holds facts about the file, the
+  session holds what the user currently wants to look at.
+- **The readout's spelling is now a pure function**
+  (`models/crosshair_format.py`), extracted from a 60-line if/elif that
+  was reachable only through a Qt widget and so had no coverage.
+
 ## [v0.5.0] Depth domain, the Model Window, and overlays
 
 Depth-domain data becomes a first-class citizen: recognised on load,

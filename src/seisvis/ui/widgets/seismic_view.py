@@ -9,6 +9,7 @@ from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from seisvis.io.slice_cache import SliceCache, SliceKey
+from seisvis.models.crosshair_format import format_crosshair
 from seisvis.models.group_index import GroupIndex, GroupingMode
 from seisvis.models.selection import Selection
 from seisvis.models.sort_config import TRACE_RANGE_FIELD, RowSelection, SortConfig
@@ -22,8 +23,20 @@ from seisvis.utils.colormaps import get_colormap
 from seisvis.utils.member_colors import member_color
 from seisvis.utils.mime import DATASET_MIME_TYPE, decode_dataset_ids
 from seisvis.workers.slice_worker import SliceWorker
+from seisvis.workers.trace_header_worker import MISSING as _MISSING_HEADER
+from seisvis.workers.trace_header_worker import TraceHeaderWorker
 
 log = logging.getLogger(__name__)
+
+# Header that naturally pairs with a given primary in the readout: a shot
+# is read with its channel, an inline with its crossline. A generic
+# primary (CDP, offset) has no partner and shows alone.
+_PRIMARY_PARTNER: dict[str, str] = {
+    "FieldRecord": "TraceNumber",
+    "TraceNumber": "FieldRecord",
+    "INLINE_3D": "CROSSLINE_3D",
+    "CROSSLINE_3D": "INLINE_3D",
+}
 
 
 # Map the ``sort_config.primary.field`` SEG-Y field name to the
@@ -171,6 +184,7 @@ class SeismicView(QWidget):
     # Emits (trace, t_ms, amp); each may be None when the cursor is outside data.
     cursor_readout = Signal(object, object, object)
     status_message = Signal(str)
+    crosshair_readout = Signal(str)
     # Catalog datasets dropped onto this canvas: list[str] of dataset ids.
     # The view holds no Project reference, so resolving ids to datasets and
     # mutating the group is left to MainWindow, alongside the menu-driven
@@ -189,6 +203,12 @@ class SeismicView(QWidget):
         self._pool = pool
         self._cache = cache
         self._image_items: list[pg.ImageItem] = []
+        # Header values for the traces currently on screen, aligned to
+        # _current_trace_indices so a lookup is an index by column. Read
+        # on the fly like the traces themselves — nothing outside the
+        # view is touched.
+        self._header_values: dict[str, object] = {}
+        self._header_workers: list[object] = []
         self._active_workers: list[SliceWorker] = []
         self._last_arrays: list[np.ndarray | None] = []
         self._last_rects: list[QRectF | None] = []
@@ -524,6 +544,7 @@ class SeismicView(QWidget):
     # --- Group signal wiring ---
 
     def _wire_group_signals(self) -> None:
+        self.group.crosshair_fields_changed.connect(self._refresh_header_values)
         self.group.member_added.connect(self._on_member_added)
         self.group.member_removed.connect(self._on_member_removed)
         self.group.active_index_changed.connect(self._on_active_index_changed)
@@ -1019,6 +1040,7 @@ class SeismicView(QWidget):
         )
         worker.signals.finished.connect(self._on_slice_finished)
         worker.signals.failed.connect(self._on_slice_failed)
+        self._refresh_header_values()
         self._active_workers.append(worker)
         self.loading_label.setVisible(True)
         self._pool.start(worker)
@@ -1253,84 +1275,133 @@ class SeismicView(QWidget):
         ds = self._active_dataset()
         state = self.group.shared_state
         primary_field = _primary_field(state.sort_config) if state.sort_config.committed else None
-        amp_str = f"{amp:.4g}" if amp is not None else "—"
-        t_str = f"{t_ms:.2f}"
-        readout = f"Trace {trace} | t = {t_str} ms | amp = {amp_str}"
+        # In packed multi-group layouts the x-axis starts at the first
+        # physical trace but display columns map to non-contiguous physical
+        # traces. Translate before resolving anything header-shaped.
+        physical = self._display_x_to_physical_trace(trace)
+
+        primary: tuple[str, int] | None = None
+        secondary: tuple[str, int] | None = None
         if ds is not None and primary_field is not None:
             gi = getattr(ds, "group_index", None)
             if gi is not None:
-                # In packed multi-group layouts the x-axis starts at the first
-                # physical trace but display columns map to non-contiguous
-                # physical traces.  Translate before resolving the group.
-                physical = self._display_x_to_physical_trace(trace)
                 g = gi.field_group_for_trace(primary_field, physical)
                 if g is not None:
                     group_id, ch = g
-                    readout = self._format_field_readout(
-                        ds, primary_field, group_id, ch, physical, t_str, amp_str
-                    )
-        self.status_message.emit(readout)
+                    primary = (self._field_name(ds, primary_field), group_id)
+                    secondary = self._secondary_for(ds, primary_field, group_id, ch, physical)
 
-    def _format_field_readout(
+        extras = self._extra_header_values(ds, trace, physical)
+        self.crosshair_readout.emit(
+            format_crosshair(
+                primary=primary,
+                secondary=secondary,
+                extras=extras,
+                trace=trace,
+                t_ms=t_ms,
+                amp=amp,
+            )
+        )
+
+    @staticmethod
+    def _field_name(ds, field: str) -> str:  # noqa: ANN001
+        if hasattr(ds, "display_name_for"):
+            return ds.display_name_for(field)
+        from seisvis.models.dataset import _DEFAULT_FIELD_NAMES
+
+        return _DEFAULT_FIELD_NAMES.get(field, field)
+
+    def _secondary_for(
         self,
-        ds,  # noqa: ANN001 - dataset is a QObject with dynamic attrs
+        ds,  # noqa: ANN001
         field: str,
         group_id: int,
         ch: int,
         trace: int,
-        t_str: str,
-        amp_str: str,
-    ) -> str:
-        def _field_name(f: str) -> str:
-            if hasattr(ds, "display_name_for"):
-                return ds.display_name_for(f)
-            from seisvis.models.dataset import _DEFAULT_FIELD_NAMES
+    ) -> tuple[str, int] | None:
+        """The companion header that pairs with this primary, if any.
 
-            return _DEFAULT_FIELD_NAMES.get(f, f)
-
-        def _header_at(f: str) -> int | None:
-            if hasattr(ds, "header_value_at"):
-                return ds.header_value_at(f, trace)
+        Shot pairs with channel, inline with crossline, and so on. A generic
+        primary (CDP, offset) has no natural partner and gets none.
+        """
+        partner = _PRIMARY_PARTNER.get(field)
+        if partner is None:
             return None
+        value = ds.header_value_at(partner, trace) if hasattr(ds, "header_value_at") else None
+        if value is None:
+            return None
+        return (self._field_name(ds, partner), int(value))
 
-        primary_name = _field_name(field)
-        if field == "FieldRecord":
-            ch = _header_at("TraceNumber")
-            ch_name = _field_name("TraceNumber")
-            if ch is not None:
-                return (
-                    f"{primary_name} {group_id}, {ch_name} {ch} | t = {t_str} ms | amp = {amp_str}"
-                )
-            return f"{primary_name} {group_id} | t = {t_str} ms | amp = {amp_str}"
-        if field == "TraceNumber":
-            ffid = _header_at("FieldRecord")
-            shot_name = _field_name("FieldRecord")
-            if ffid is not None:
-                return (
-                    f"{primary_name} {group_id}, {shot_name} {ffid} "
-                    f"| t = {t_str} ms | amp = {amp_str}"
-                )
-            return f"{primary_name} {group_id} | t = {t_str} ms | amp = {amp_str}"
-        if field == "INLINE_3D":
-            xl = ds.crossline_at(trace) if hasattr(ds, "crossline_at") else None
-            xl_name = _field_name("CROSSLINE_3D")
-            if xl is not None:
-                return (
-                    f"{primary_name} {group_id}, {xl_name} {xl} | t = {t_str} ms | amp = {amp_str}"
-                )
-            return f"{primary_name} {group_id} | t = {t_str} ms | amp = {amp_str}"
-        if field == "CROSSLINE_3D":
-            il = ds.inline_at(trace) if hasattr(ds, "inline_at") else None
-            il_name = _field_name("INLINE_3D")
-            if il is not None:
-                return (
-                    f"{primary_name} {group_id}, {il_name} {il} | t = {t_str} ms | amp = {amp_str}"
-                )
-            return f"{primary_name} {group_id} | t = {t_str} ms | amp = {amp_str}"
-        # Generic field: single-line readout keyed off the field's display
-        # name. Covers CDP, offset, and any other populated primary the user
-        # picks for which we don't have a meaningful secondary header.
-        return f"{primary_name} {group_id} | t = {t_str} ms | amp = {amp_str}"
+    def _extra_header_values(
+        self, ds, display_x: int, physical: int
+    ) -> list[tuple[str, int | None]]:  # noqa: ANN001
+        """Chosen extra fields at the cursor, in the group's display order.
+
+        Reads the on-the-fly cache by column. Falls back to a scanned array
+        when grouping already materialised the field for the whole file — it
+        is in memory and covers every trace, not just the visible ones.
+        """
+        fields = self.group.crosshair_fields
+        if not fields or ds is None:
+            return []
+        column = self._column_for_display_x(display_x)
+        out: list[tuple[str, int | None]] = []
+        for field in fields:
+            value: int | None = None
+            arr = self._header_values.get(field)
+            if arr is not None and column is not None and 0 <= column < len(arr):
+                raw = int(arr[column])
+                value = None if raw == _MISSING_HEADER else raw
+            elif hasattr(ds, "header_value_at"):
+                value = ds.header_value_at(field, physical)
+            out.append((self._field_name(ds, field), value))
+        return out
+
+    def _column_for_display_x(self, display_x: int) -> int | None:
+        """Which fetched column a display x lands on, or None if off-view."""
+        indices = self._current_trace_indices
+        state = self.group.shared_state
+        if indices is None or state.commanded_trace_range is None:
+            return None
+        col = int(display_x) - int(state.commanded_trace_range[0])
+        return col if 0 <= col < len(indices) else None
+
+    # --- on-the-fly header reads -----------------------------------------
+
+    def _refresh_header_values(self) -> None:
+        """Read the chosen fields for the traces on screen.
+
+        Dispatched on the two events that change what the answer would be: a
+        new fetch (the commanded traces moved) and a change to the chosen
+        fields. The cache is dropped first so a stale value can never outlive
+        the frame it described.
+        """
+        for w in self._header_workers:
+            w.is_cancelled = True
+        self._header_workers.clear()
+        self._header_values = {}
+
+        fields = list(self.group.crosshair_fields)
+        ds = self._active_dataset()
+        indices = self._current_trace_indices
+        if not fields or ds is None or indices is None or len(indices) == 0:
+            return
+        if getattr(ds, "handle", None) is None or ds.is_closed:
+            return
+
+        worker = TraceHeaderWorker(ds, indices, fields)
+        worker.signals.finished.connect(self._on_header_values_ready)
+        worker.signals.failed.connect(self._on_header_values_failed)
+        self._header_workers.append(worker)
+        self._pool.start(worker)
+
+    def _on_header_values_ready(self, _dataset_id: str, arrays: dict) -> None:
+        self._header_values = arrays
+        self._header_workers.clear()
+
+    def _on_header_values_failed(self, _dataset_id: str, message: str) -> None:
+        log.warning("crosshair header read failed: %s", message)
+        self._header_workers.clear()
 
     def _build_group_x_positions(
         self, gi: GroupIndex | None, primary_field: str | None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
@@ -80,6 +81,8 @@ class ToggleGroup(QObject):
     color_scale_changed = Signal()
     auto_color_scale_requested = Signal()
     sort_config_committed = Signal(object)  # SortConfig
+    # Extra header fields the crosshair readout shows on hover.
+    crosshair_fields_changed = Signal()
     selection_changed = Signal(object)  # Selection | None
 
     def __init__(self, name: str, parent: QObject | None = None) -> None:
@@ -87,6 +90,11 @@ class ToggleGroup(QObject):
         self.id: str = str(uuid.uuid4())
         self._name: str = name
         self._members: list[Member] = []
+        # Populated header fields the crosshair readout adds on hover,
+        # in the order they are shown. Session-scoped and not persisted:
+        # the .sv holds facts about the file, the session holds what the
+        # user currently wants to look at — the same line sort draws.
+        self._crosshair_fields: tuple[str, ...] = ()
         self._active_index: int = 0
         self._reference_index: int = 0
         self._edit_target_index: int = 0
@@ -413,6 +421,19 @@ class ToggleGroup(QObject):
             self.shared_state_changed.emit()
         if zoom_reset:
             self.zoom_changed.emit()
+
+    @property
+    def crosshair_fields(self) -> tuple[str, ...]:
+        """Header fields the crosshair adds on hover, in display order."""
+        return self._crosshair_fields
+
+    def set_crosshair_fields(self, fields: Iterable[str]) -> None:
+        """Replace the list; duplicates collapse, order is kept."""
+        new = tuple(dict.fromkeys(str(f) for f in fields))
+        if new == self._crosshair_fields:
+            return
+        self._crosshair_fields = new
+        self.crosshair_fields_changed.emit()
 
     def update_sort_config(self, config: SortConfig) -> None:
         """Replace the group's sort configuration.

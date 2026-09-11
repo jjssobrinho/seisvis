@@ -32,6 +32,7 @@ class DisplayPanel(QTabWidget):
     """QTabWidget with one ``SeismicView`` per toggle group."""
 
     status_message = Signal(str)
+    crosshair_readout = Signal(str)
     cursor_readout = Signal(object, object, object)  # trace, t_ms, amp
     close_group_requested = Signal(str)  # group id
     datasets_dropped = Signal(str, object)  # group id, list[str] of dataset ids
@@ -81,6 +82,7 @@ class DisplayPanel(QTabWidget):
     def _on_group_added(self, group: ToggleGroup) -> None:
         view = SeismicView(group, self._pool, self._cache, parent=self)
         view.status_message.connect(self.status_message)
+        view.crosshair_readout.connect(self.crosshair_readout)
         view.cursor_readout.connect(self.cursor_readout)
         view.datasets_dropped.connect(lambda ids, g=group: self.datasets_dropped.emit(g.id, ids))
         view.set_selection_mode_active(self._selection_mode_active)
