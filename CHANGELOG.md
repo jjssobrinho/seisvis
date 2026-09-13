@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### f-k display: rainbow, f ≥ 0 up, wavenumber across
+
+- **The image fills the plot.** `ImageView` locks the aspect ratio of
+  the view it is given and inverts its Y axis, overriding the settings
+  made before construction. With ±0.5 cycles/trace against hundreds of
+  Hz, the locked aspect squeezed the spectrum into a line at k = 0.
+  Both are now undone after construction.
+- **Axes swapped**: wavenumber along X, frequency up the Y axis.
+- **Positive frequencies only.** Real input gives a point-symmetric
+  spectrum, `|F(f, k)| == |F(−f, −k)|`, so the lower half repeated the
+  upper one. `fk_positive_frequencies` crops it in the worker, which
+  also halves the image sent to the UI.
+- **Rainbow colormap**, from the same LUT as the Model Window.
+- **`F` fits the plot** to the image, as on the canvas.
+- Pixels are centred on their bins, so f = 0 and k = 0 sit on pixel
+  centres rather than edges.
+
 ### Choose which headers the crosshair shows (v6.1)
 
 Double-click the crosshair readout to pick any populated header field to

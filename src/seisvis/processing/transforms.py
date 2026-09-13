@@ -80,3 +80,19 @@ def fk_transform(
     freq_hz = np.fft.fftshift(np.fft.fftfreq(n_samples, d=dt_s)).astype(np.float32, copy=False)
     wavenumber = np.fft.fftshift(np.fft.fftfreq(n_traces, d=1.0)).astype(np.float32, copy=False)
     return freq_hz, wavenumber, magnitude
+
+
+def fk_positive_frequencies(
+    freq_hz: np.ndarray,
+    magnitude: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Keep the ``f >= 0`` half of an :func:`fk_transform` result.
+
+    For real input the 2D spectrum is point-symmetric, ``|F(f, k)| ==
+    |F(-f, -k)|``, so the negative-frequency half carries no information
+    the positive half lacks. ``magnitude`` is ``(n_traces, n_samples)``;
+    the returned magnitude keeps every wavenumber and only the columns
+    whose frequency is non-negative, still in ascending order.
+    """
+    keep = freq_hz >= 0
+    return freq_hz[keep], magnitude[:, keep]

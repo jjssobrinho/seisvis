@@ -20,7 +20,11 @@ from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
 from seisvis.models.dataset import Dataset
 from seisvis.models.selection import Selection
-from seisvis.processing.transforms import fft_per_trace_averaged, fk_transform
+from seisvis.processing.transforms import (
+    fft_per_trace_averaged,
+    fk_positive_frequencies,
+    fk_transform,
+)
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +89,8 @@ class TransformWorker(QRunnable):
                 axes, magnitude = fft_per_trace_averaged(data, sample_interval_ms)
             elif self.transform_type == "fk":
                 freq, wavenumber, magnitude = fk_transform(data, sample_interval_ms)
+                # The f-k tab shows f >= 0 only; the other half mirrors it.
+                freq, magnitude = fk_positive_frequencies(freq, magnitude)
                 axes = (freq, wavenumber)
             else:
                 self.signals.failed.emit(

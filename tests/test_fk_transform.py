@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from seisvis.processing.transforms import fk_transform
+from seisvis.processing.transforms import fk_positive_frequencies, fk_transform
 
 
 def test_dipping_plane_wave_peaks_at_predicted_fk() -> None:
@@ -80,3 +80,34 @@ def test_non_positive_sample_interval_rejected() -> None:
         fk_transform(data, 0.0)
     with pytest.raises(ValueError):
         fk_transform(data, -1.0)
+
+
+@pytest.mark.parametrize("n_samples", [16, 17])
+def test_positive_frequencies_keeps_non_negative_half(n_samples: int) -> None:
+    rng = np.random.default_rng(0)
+    data = rng.standard_normal((8, n_samples)).astype(np.float32)
+    freq, _, magnitude = fk_transform(data, 4.0)
+
+    pos_freq, pos_mag = fk_positive_frequencies(freq, magnitude)
+
+    assert pos_freq[0] == pytest.approx(0.0)
+    assert np.all(pos_freq >= 0)
+    assert np.all(np.diff(pos_freq) > 0)
+    assert pos_mag.shape == (8, pos_freq.size)
+    # Every non-negative bin survives, with its column intact.
+    start = int(np.searchsorted(freq, 0.0))
+    np.testing.assert_array_equal(pos_mag, magnitude[:, start:])
+
+
+def test_positive_frequencies_peak_of_dipping_wave() -> None:
+    n_traces, n_samples, dt_ms = 32, 100, 10.0
+    t = np.arange(n_samples) * (dt_ms / 1000.0)
+    x = np.arange(n_traces)
+    data = np.sin(2 * np.pi * (10.0 * t[None, :] - (4 / n_traces) * x[:, None])).astype(np.float32)
+    freq, wavenumber, magnitude = fk_transform(data, dt_ms)
+
+    pos_freq, pos_mag = fk_positive_frequencies(freq, magnitude)
+
+    k_idx, f_idx = np.unravel_index(int(np.argmax(pos_mag)), pos_mag.shape)
+    assert float(pos_freq[f_idx]) == pytest.approx(10.0)
+    assert float(wavenumber[k_idx]) == pytest.approx(-4 / n_traces)

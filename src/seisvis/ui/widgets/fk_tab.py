@@ -13,6 +13,7 @@ import logging
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -22,9 +23,17 @@ from PySide6.QtWidgets import (
 )
 
 from seisvis.models.toggle_group import ToggleGroup
+from seisvis.utils.colormaps import get_colormap
 from seisvis.utils.member_colors import member_color
 
 log = logging.getLogger(__name__)
+
+FK_COLORMAP = "rainbow"
+
+
+def _rainbow_colormap() -> pg.ColorMap:
+    lut = get_colormap(FK_COLORMAP)
+    return pg.ColorMap(np.linspace(0.0, 1.0, len(lut)), lut)
 
 
 class FKTab(QWidget):
@@ -56,13 +65,25 @@ class FKTab(QWidget):
         # ImageView uses a plain ViewBox by default, which can't render axis
         # labels — pass a PlotItem in so we get labeled axes for free.
         plot_item = pg.PlotItem()
-        plot_item.setLabel("bottom", "Frequency (Hz)")
-        plot_item.setLabel("left", "Wavenumber (cycles/trace)")
-        plot_item.invertY(False)
+        plot_item.setLabel("bottom", "Wavenumber (cycles/trace)")
+        plot_item.setLabel("left", "Frequency (Hz)")
+        # Keep ±0.5 cycles/trace as written, not rescaled to "×0.001".
+        plot_item.getAxis("bottom").enableAutoSIPrefix(False)
         self._image_view = pg.ImageView(parent=self, view=plot_item)
+        # ImageView locks the aspect ratio and inverts Y on the view it is
+        # handed, so both have to be undone after construction. Locked
+        # aspect squeezes the image to a line: the axes differ in scale by
+        # hundreds (±0.5 cycles/trace against up to Nyquist Hz).
+        plot_item.setAspectLocked(False)
+        plot_item.invertY(False)
+        self._image_view.setColorMap(_rainbow_colormap())
         self._image_view.ui.roiBtn.hide()
         self._image_view.ui.menuBtn.hide()
         root.addWidget(self._image_view, stretch=1)
+
+        fit = QShortcut(QKeySequence(Qt.Key.Key_F), self)
+        fit.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        fit.activated.connect(self.fit_to_data)
 
         self._status = QLabel("", self)
         self._status.setStyleSheet("color: #666; font-style: italic;")
@@ -120,26 +141,28 @@ class FKTab(QWidget):
         if magnitude.size == 0 or freq_hz.size == 0 or wavenumber.size == 0:
             self._image_view.clear()
             return
-        # ImageView with axisOrder default ("col-major") maps cols→y, rows→x.
-        # Our magnitude has shape (n_traces, n_samples) = (n_wavenumber,
-        # n_freq). We want X=frequency, Y=wavenumber, so pass the transpose
-        # to keep the natural row-major mental model with default axisOrder.
+        # ImageView's default axisOrder ("col-major") reads the array as
+        # (x, y). magnitude is (n_traces, n_samples) = (n_wavenumber,
+        # n_freq), which is already X=wavenumber, Y=frequency — no transpose.
         n_wavenumber, n_freq = magnitude.shape
-        pos_x = float(freq_hz[0])
-        pos_y = float(wavenumber[0])
-        scale_x = float(freq_hz[1] - freq_hz[0]) if n_freq > 1 else 1.0
-        scale_y = float(wavenumber[1] - wavenumber[0]) if n_wavenumber > 1 else 1.0
-        # Display as (x=freq, y=wavenumber). With default axisOrder the
-        # array is interpreted as (x, y), so pass magnitude.T which has
-        # shape (n_freq, n_wavenumber).
+        scale_x = float(wavenumber[1] - wavenumber[0]) if n_wavenumber > 1 else 1.0
+        scale_y = float(freq_hz[1] - freq_hz[0]) if n_freq > 1 else 1.0
+        # Centre each pixel on its bin, so f = 0 sits on the bottom row's
+        # centre rather than its lower edge.
+        pos_x = float(wavenumber[0]) - scale_x / 2
+        pos_y = float(freq_hz[0]) - scale_y / 2
         self._image_view.setImage(
-            magnitude.T,
+            magnitude,
             autoRange=True,
             autoLevels=True,
             pos=(pos_x, pos_y),
             scale=(scale_x, scale_y),
         )
         self._image_view.getImageItem().setOpacity(1.0)
+
+    def fit_to_data(self) -> None:
+        """Reset the view to the full extent of the image (the ``F`` key)."""
+        self._image_view.autoRange()
 
     def show_error(self, member_index: int, error_msg: str) -> None:
         if member_index != self._current_member:
