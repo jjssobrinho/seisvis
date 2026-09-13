@@ -16,6 +16,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
+    QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
     QVBoxLayout,
@@ -29,6 +30,17 @@ from seisvis.utils.member_colors import member_color
 log = logging.getLogger(__name__)
 
 FK_COLORMAP = "rainbow"
+FK_PERC_DEFAULT = 99.0
+
+
+def perc_levels(magnitude: np.ndarray, perc: float) -> tuple[float, float]:
+    """``(0, percentile)`` colour levels for a non-negative magnitude image.
+
+    Widened to ``(0, 1)`` when the percentile is zero (an all-zero
+    selection), which would otherwise be a zero-width range.
+    """
+    hi = float(np.percentile(magnitude, perc))
+    return 0.0, hi if hi > 0.0 else 1.0
 
 
 def _rainbow_colormap() -> pg.ColorMap:
@@ -60,6 +72,19 @@ class FKTab(QWidget):
         self._combo.currentIndexChanged.connect(self._on_combo_changed)
         selector_layout.addWidget(self._combo)
         selector_layout.addStretch(1)
+        selector_layout.addWidget(QLabel("Perc:", selector_row))
+        # |f-k| is dominated by a few bins near k = 0; scaling to the max
+        # leaves the rest of the spectrum at the bottom of the colormap.
+        self._perc_spin = QDoubleSpinBox(selector_row)
+        self._perc_spin.setRange(50.0, 100.0)
+        self._perc_spin.setDecimals(1)
+        self._perc_spin.setSingleStep(0.5)
+        self._perc_spin.setSuffix(" %")
+        self._perc_spin.setValue(FK_PERC_DEFAULT)
+        self._perc_spin.setKeyboardTracking(False)
+        self._perc_spin.setToolTip("Colour scale tops out at this percentile of |f-k|")
+        self._perc_spin.valueChanged.connect(self._apply_perc)
+        selector_layout.addWidget(self._perc_spin)
         root.addWidget(selector_row)
 
         # ImageView uses a plain ViewBox by default, which can't render axis
@@ -154,11 +179,18 @@ class FKTab(QWidget):
         self._image_view.setImage(
             magnitude,
             autoRange=True,
-            autoLevels=True,
+            autoLevels=False,
+            levels=perc_levels(magnitude, self._perc_spin.value()),
             pos=(pos_x, pos_y),
             scale=(scale_x, scale_y),
         )
         self._image_view.getImageItem().setOpacity(1.0)
+
+    def _apply_perc(self, perc: float) -> None:
+        image = self._image_view.getImageItem().image
+        if image is None or image.size == 0:
+            return
+        self._image_view.setLevels(*perc_levels(image, perc))
 
     def fit_to_data(self) -> None:
         """Reset the view to the full extent of the image (the ``F`` key)."""

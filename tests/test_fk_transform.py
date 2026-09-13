@@ -29,24 +29,46 @@ def test_dipping_plane_wave_peaks_at_predicted_fk() -> None:
     assert magnitude.dtype == np.float32
 
     # sin(α) = (e^{iα} − e^{−iα}) / 2i, so the |FFT2| has two symmetric
-    # peaks. With np.fft conventions the peaks land at (f=+f0, k=−k0)
-    # and (f=−f0, k=+k0).
+    # peaks. The event dips positively (t = k0/f0 · x), and in the
+    # plane-wave convention exp(i2π(f·t − k·x)) the peaks land at
+    # (f=+f0, k=+k0) and (f=−f0, k=−k0).
     flat_idx = int(np.argmax(magnitude))
     k_idx, f_idx = np.unravel_index(flat_idx, magnitude.shape)
 
     peak_f = float(freq[f_idx])
     peak_k = float(wavenumber[k_idx])
 
-    assert (peak_f == pytest.approx(f0) and peak_k == pytest.approx(-k0)) or (
-        peak_f == pytest.approx(-f0) and peak_k == pytest.approx(k0)
+    assert (peak_f == pytest.approx(f0) and peak_k == pytest.approx(k0)) or (
+        peak_f == pytest.approx(-f0) and peak_k == pytest.approx(-k0)
     ), f"argmax landed at (f={peak_f}, k={peak_k})"
 
 
+@pytest.mark.parametrize("n_traces", [32, 33])
+def test_positive_dip_maps_to_positive_wavenumber(n_traces: int) -> None:
+    # A spike event stepping down one sample every two traces: dip
+    # p = 0.5 ms/trace at 1 ms sampling. Its ridge runs along k = f·p
+    # (f in kHz), so every strong bin at f > 0 has k > 0.
+    n_samples = 128
+    data = np.zeros((n_traces, n_samples), dtype=np.float32)
+    for x in range(n_traces):
+        data[x, 10 + x // 2] = 1.0
+    freq, wavenumber, magnitude = fk_transform(data, 1.0)
+
+    # Clear of k = 0 at the bottom, and of the top where the ridge reaches
+    # k = 0.25 at Nyquist and the staircase aliases it round to −0.25.
+    band = (freq > 50.0) & (freq < 400.0)
+    upper = magnitude[:, band]
+    k_idx = np.argmax(upper, axis=0)
+    assert np.all(wavenumber[k_idx] > 0)
+
+
 def test_axes_are_fftshifted_around_zero() -> None:
-    # Even-length axes have zero at index N/2.
+    # Even-length axes: frequency zero at N/2; wavenumber, mirrored into
+    # the plane-wave convention, at N/2 − 1.
     freq, wavenumber, _ = fk_transform(np.zeros((8, 16), dtype=np.float32), 4.0)
     assert freq[len(freq) // 2] == pytest.approx(0.0)
-    assert wavenumber[len(wavenumber) // 2] == pytest.approx(0.0)
+    assert wavenumber[len(wavenumber) // 2 - 1] == pytest.approx(0.0)
+    assert wavenumber[-1] == pytest.approx(0.5)
     # Monotonically increasing after fftshift.
     assert np.all(np.diff(freq) > 0)
     assert np.all(np.diff(wavenumber) > 0)
@@ -110,4 +132,4 @@ def test_positive_frequencies_peak_of_dipping_wave() -> None:
 
     k_idx, f_idx = np.unravel_index(int(np.argmax(pos_mag)), pos_mag.shape)
     assert float(pos_freq[f_idx]) == pytest.approx(10.0)
-    assert float(wavenumber[k_idx]) == pytest.approx(-4 / n_traces)
+    assert float(wavenumber[k_idx]) == pytest.approx(4 / n_traces)

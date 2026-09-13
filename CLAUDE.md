@@ -616,9 +616,13 @@ Layout, top to bottom:
    single-select (radio buttons or dropdown). Default: the
    currently-active member on the canvas.
 2. **Plot area**: a pyqtgraph image showing the magnitude of the
-   2D FFT (frequency × wavenumber). Frequency axis in Hz; wavenumber
-   axis in cycles-per-trace (no physical-distance conversion in v0.4).
-3. Standard image controls (colormap, clip percentile).
+   2D FFT, wavenumber along X and frequency up the Y axis, `f ≥ 0`
+   only (the other half mirrors it). Frequency in Hz; wavenumber in
+   cycles-per-trace (no physical-distance conversion). Sign follows
+   the plane-wave convention `exp(i2π(f·t − k·x))`: positive dip
+   (time increasing with trace) is positive k. Rainbow colormap;
+   `F` fits the plot.
+3. Standard image controls: histogram levels, Perc (default 99 %).
 
 ### Live coupling
 

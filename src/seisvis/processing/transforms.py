@@ -61,6 +61,12 @@ def fk_transform(
 
     Wavenumber is reported in cycles-per-trace, not cycles-per-meter — the
     function makes no assumption about physical trace spacing.
+
+    Sign convention is the seismic plane-wave one, ``exp(i2π(f·t − k·x))``:
+    an event whose time increases with trace index (positive dip,
+    ``t = t0 + p·x``) lands at ``k = +f·p``. ``np.fft.fft2`` alone uses the
+    same sign on both axes and would put that event at ``k = −f·p``, so
+    the wavenumber axis is mirrored.
     """
     if data.ndim != 2:
         raise ValueError(f"data must be 2-D, got {data.ndim}-D")
@@ -78,7 +84,12 @@ def fk_transform(
     magnitude = np.abs(shifted).astype(np.float32, copy=False)
 
     freq_hz = np.fft.fftshift(np.fft.fftfreq(n_samples, d=dt_s)).astype(np.float32, copy=False)
-    wavenumber = np.fft.fftshift(np.fft.fftfreq(n_traces, d=1.0)).astype(np.float32, copy=False)
+    wavenumber = np.fft.fftshift(np.fft.fftfreq(n_traces, d=1.0))
+    # Mirror k into the plane-wave convention. Negating the axis and
+    # reversing both it and the rows keeps wavenumber ascending; for even
+    # n_traces the unpaired Nyquist bin moves from −0.5 to +0.5.
+    wavenumber = (-wavenumber[::-1]).astype(np.float32)
+    magnitude = np.ascontiguousarray(magnitude[::-1])
     return freq_hz, wavenumber, magnitude
 
 

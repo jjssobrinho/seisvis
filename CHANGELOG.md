@@ -16,6 +16,15 @@
   also halves the image sent to the UI.
 - **Rainbow colormap**, from the same LUT as the Model Window.
 - **`F` fits the plot** to the image, as on the canvas.
+- **Plane-wave sign convention on k.** `np.fft.fft2` uses the same
+  exponent sign on both axes, `exp(i2π(f·t + k·x))`, which put a
+  positively dipping event (time increasing with trace) at negative
+  wavenumber — the opposite of the section beside it. The wavenumber
+  axis is mirrored into the seismic convention `exp(i2π(f·t − k·x))`,
+  so positive dip reads as positive k.
+- **Perc control** (default 99 %): the colour scale tops out at that
+  percentile of |f-k| instead of the maximum, which a few bins near
+  k = 0 dominate.
 - Pixels are centred on their bins, so f = 0 and k = 0 sit on pixel
   centres rather than edges.
 
