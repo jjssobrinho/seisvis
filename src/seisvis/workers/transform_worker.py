@@ -24,6 +24,7 @@ from seisvis.processing.transforms import (
     fft_per_trace_averaged,
     fk_positive_frequencies,
     fk_transform,
+    normalize_by_peak,
 )
 
 log = logging.getLogger(__name__)
@@ -50,6 +51,7 @@ class TransformWorker(QRunnable):
         transform_type: TransformType,
         member_index: int,
         slice_data: np.ndarray | None = None,
+        normalize: bool = False,
     ) -> None:
         super().__init__()
         self.dataset = dataset
@@ -60,6 +62,8 @@ class TransformWorker(QRunnable):
         # in to avoid duplicate I/O when both FFT and f-k tabs target the
         # same selection. ``None`` means the worker reads its own slice.
         self._slice_data = slice_data
+        # FFT only: scale the averaged spectrum so its own peak is 1.
+        self.normalize = normalize
         self.is_cancelled: bool = False
         self.signals = TransformWorkerSignals()
 
@@ -87,6 +91,8 @@ class TransformWorker(QRunnable):
             sample_interval_ms = float(self.dataset.sample_interval_ms or 1.0)
             if self.transform_type == "fft":
                 axes, magnitude = fft_per_trace_averaged(data, sample_interval_ms)
+                if self.normalize:
+                    magnitude = normalize_by_peak(magnitude)
             elif self.transform_type == "fk":
                 freq, wavenumber, magnitude = fk_transform(data, sample_interval_ms)
                 # The f-k tab shows f >= 0 only; the other half mirrors it.

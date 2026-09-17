@@ -107,3 +107,21 @@ def fk_positive_frequencies(
     """
     keep = freq_hz >= 0
     return freq_hz[keep], magnitude[:, keep]
+
+
+def normalize_by_peak(magnitude: np.ndarray) -> np.ndarray:
+    """Scale a spectrum so its own peak is 1.
+
+    Used to compare spectral *shape* between inputs whose absolute
+    amplitudes differ by orders of magnitude. An all-zero (or empty)
+    spectrum has no peak to divide by and is returned as zeros.
+    Returns a new ``float32`` array; the input is not modified.
+    """
+    out = np.asarray(magnitude, dtype=np.float32).copy()
+    if out.size == 0:
+        return out
+    peak = float(np.max(np.abs(out)))
+    if not np.isfinite(peak) or peak <= 0.0:
+        return np.zeros_like(out)
+    out /= peak
+    return out

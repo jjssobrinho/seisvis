@@ -66,6 +66,8 @@ class TransformWindow(QMainWindow):
             tab.members_requested.connect(
                 lambda members: self._controller.request_recompute("fft", members)
             )
+            tab.normalize_changed.connect(self._controller.set_fft_normalize)
+            tab.set_normalize(self._controller.fft_normalize)
             self._tabs.addTab(tab, "FFT")
             self._fft_tab = tab
             # Initial dispatch is immediate — there's nothing to coalesce

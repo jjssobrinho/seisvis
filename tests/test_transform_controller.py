@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 from PySide6.QtCore import QThreadPool
 from PySide6.QtTest import QTest
@@ -110,3 +111,26 @@ def test_deactivate_cancels_and_silences_type(group_with_selection: ToggleGroup)
     group_with_selection.set_selection(Selection(0, 1, 0, 2))
     QTest.qWait(250)
     assert ctrl._in_flight["fft"] == []
+
+
+def test_fft_normalize_scales_peak_to_one(group_with_selection: ToggleGroup) -> None:
+    pool = QThreadPool()
+    ctrl = TransformController(group_with_selection, thread_pool=pool)
+    results: list[tuple] = []
+    ctrl.result_ready.connect(lambda *args: results.append(args))
+
+    ctrl.request_recompute("fft", [0], immediate=True)
+    pool.waitForDone(2000)
+    _wait_for(lambda: len(results) >= 1)
+    raw = results[0][3]
+
+    ctrl.set_fft_normalize(True)
+    assert ctrl.fft_normalize
+    ctrl.request_recompute("fft", [0], immediate=True)
+    pool.waitForDone(2000)
+    _wait_for(lambda: len(results) >= 2)
+    normalized = results[1][3]
+
+    assert raw.max() > 0
+    assert normalized.max() == pytest.approx(1.0)
+    np.testing.assert_allclose(normalized, raw / raw.max(), rtol=1e-5)

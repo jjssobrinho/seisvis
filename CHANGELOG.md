@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### FFT: normalize by own peak
+
+- **"Normalize by own peak" checkbox** in the FFT tab. Each member's
+  averaged spectrum is divided by its own maximum, so members whose
+  amplitudes differ by orders of magnitude can be compared by spectral
+  shape. The Y label reads "Normalized magnitude"; an all-zero
+  spectrum stays zero. Normalization runs in the transform worker
+  (`normalize_by_peak`); toggling re-dispatches from the slice cache.
+
 ### f-k display: rainbow, f ≥ 0 up, wavenumber across
 
 - **The image fills the plot.** `ImageView` locks the aspect ratio of

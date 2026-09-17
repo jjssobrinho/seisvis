@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from seisvis.processing.transforms import fft_per_trace_averaged
+from seisvis.processing.transforms import fft_per_trace_averaged, normalize_by_peak
 
 
 def test_sine_peak_at_expected_bin() -> None:
@@ -66,3 +66,21 @@ def test_non_positive_sample_interval_rejected() -> None:
         fft_per_trace_averaged(data, 0.0)
     with pytest.raises(ValueError):
         fft_per_trace_averaged(data, -1.0)
+
+
+def test_normalize_by_peak_scales_max_to_one() -> None:
+    mag = np.array([0.5, 4.0, 2.0], dtype=np.float32)
+    out = normalize_by_peak(mag)
+    assert out.dtype == np.float32
+    np.testing.assert_allclose(out, [0.125, 1.0, 0.5])
+    np.testing.assert_allclose(mag, [0.5, 4.0, 2.0])  # input untouched
+
+
+def test_normalize_by_peak_equalizes_scaled_spectra() -> None:
+    mag = np.array([1.0, 3.0, 2.0], dtype=np.float32)
+    np.testing.assert_allclose(normalize_by_peak(mag), normalize_by_peak(1000.0 * mag))
+
+
+def test_normalize_by_peak_zero_and_empty() -> None:
+    np.testing.assert_array_equal(normalize_by_peak(np.zeros(4, dtype=np.float32)), np.zeros(4))
+    assert normalize_by_peak(np.empty(0, dtype=np.float32)).size == 0

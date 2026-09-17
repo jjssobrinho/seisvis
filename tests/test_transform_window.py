@@ -132,3 +132,19 @@ def test_active_index_change_syncs_fk_combo(group: ToggleGroup, segy_3d: Path) -
         assert requests == [new_active]
     finally:
         ds2.close()
+
+
+def test_fft_normalize_checkbox_updates_controller(group: ToggleGroup) -> None:
+    win, ctrl = _make(group)
+    win.open_fft_tab()
+    fft_tab = win._fft_tab
+    assert fft_tab is not None
+    assert not fft_tab.is_normalized()
+
+    fft_tab._normalize_cb.setChecked(True)
+    assert ctrl.fft_normalize
+    assert "Normalized" in fft_tab._plot.getPlotItem().getAxis("left").labelText
+
+    fft_tab._normalize_cb.setChecked(False)
+    assert not ctrl.fft_normalize
+    win.close()

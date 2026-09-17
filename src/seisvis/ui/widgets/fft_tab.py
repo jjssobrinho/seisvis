@@ -34,6 +34,8 @@ class FFTTab(QWidget):
 
     # Emitted whenever the set of checked members changes (or on rebuild).
     members_requested = Signal(list)
+    # Emitted when "Normalize by own peak" is toggled (before members_requested).
+    normalize_changed = Signal(bool)
 
     def __init__(self, toggle_group: ToggleGroup, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -45,11 +47,21 @@ class FFTTab(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
 
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
         self._selector_row = QWidget(self)
         self._selector_layout = QHBoxLayout(self._selector_row)
         self._selector_layout.setContentsMargins(0, 0, 0, 0)
         self._selector_layout.setSpacing(8)
-        root.addWidget(self._selector_row)
+        top_row.addWidget(self._selector_row, stretch=1)
+        self._normalize_cb = QCheckBox("Normalize by own peak", self)
+        self._normalize_cb.setToolTip(
+            "Scale each member's spectrum so its own peak is 1 — compares "
+            "spectral shape across members with very different amplitudes."
+        )
+        self._normalize_cb.toggled.connect(self._on_normalize_toggled)
+        top_row.addWidget(self._normalize_cb)
+        root.addLayout(top_row)
 
         self._plot = pg.PlotWidget(self)
         self._plot.setBackground("w")
@@ -107,6 +119,16 @@ class FFTTab(QWidget):
         # Drop curves whose member no longer exists.
         for stale_idx in [i for i in self._curves if i >= len(self._checkboxes)]:
             self._plot.removeItem(self._curves.pop(stale_idx))
+
+    def is_normalized(self) -> bool:
+        return self._normalize_cb.isChecked()
+
+    def set_normalize(self, on: bool) -> None:
+        """Set the checkbox without emitting (used to restore controller state)."""
+        self._normalize_cb.blockSignals(True)
+        self._normalize_cb.setChecked(on)
+        self._normalize_cb.blockSignals(False)
+        self._update_y_label()
 
     def update_curve(self, member_index: int, freq_hz: np.ndarray, magnitude: np.ndarray) -> None:
         """Replace (or create) the curve for ``member_index``."""
@@ -168,7 +190,19 @@ class FFTTab(QWidget):
         if on == self._log_y:
             return
         self._log_y = on
-        self._plot.setLabel("left", "Magnitude (log10)" if on else "Magnitude")
+        self._update_y_label()
         # Re-request a recompute so curves redraw with the new transform.
         self.show_computing()
         self.members_requested.emit(self.checked_members())
+
+    def _on_normalize_toggled(self, on: bool) -> None:
+        self._update_y_label()
+        self.normalize_changed.emit(on)
+        self.show_computing()
+        self.members_requested.emit(self.checked_members())
+
+    def _update_y_label(self) -> None:
+        label = "Normalized magnitude" if self.is_normalized() else "Magnitude"
+        if self._log_y:
+            label += " (log10)"
+        self._plot.setLabel("left", label)
