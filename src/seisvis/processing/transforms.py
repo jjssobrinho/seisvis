@@ -112,6 +112,40 @@ def fk_positive_frequencies(
 FFT_NORMALIZE_MIN_HZ = 2.5
 
 
+def smooth_spectrum(
+    magnitude: np.ndarray,
+    freq_hz: np.ndarray,
+    width_hz: float,
+) -> np.ndarray:
+    """Centred moving average of a spectrum over ``width_hz``.
+
+    The window is given in Hz so a setting means the same thing whatever
+    the selection length (and hence bin spacing). It spans the odd number
+    of bins closest to ``width_hz``; near the ends the average is taken
+    over the bins that exist, so edges are not pulled toward zero. A width
+    under one bin, or fewer than two bins, returns an unchanged copy.
+    Returns a new ``float32`` array; the input is not modified.
+    """
+    out = np.asarray(magnitude, dtype=np.float32).copy()
+    if out.size < 2 or width_hz <= 0.0:
+        return out
+    if np.shape(freq_hz) != out.shape:
+        raise ValueError("freq_hz and magnitude must have the same shape")
+    df = float(freq_hz[1] - freq_hz[0])
+    if df <= 0.0:
+        return out
+    half = int(round(width_hz / df / 2.0))
+    if half < 1:
+        return out
+    kernel = np.ones(2 * half + 1, dtype=np.float64)
+    # "full" then crop: "same" returns the kernel's length when the window
+    # is wider than the spectrum.
+    keep = slice(half, half + out.size)
+    total = np.convolve(out.astype(np.float64), kernel, mode="full")[keep]
+    count = np.convolve(np.ones(out.size), kernel, mode="full")[keep]
+    return (total / count).astype(np.float32)
+
+
 def normalize_by_peak(
     magnitude: np.ndarray,
     freq_hz: np.ndarray | None = None,

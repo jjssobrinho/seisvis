@@ -62,6 +62,7 @@ class TransformController(QObject):
         self._pending_members: dict[TransformType, list[int]] = {"fft": [], "fk": []}
         self._active_types: set[TransformType] = set()
         self._fft_normalize: bool = False
+        self._fft_smooth_hz: float = 0.0
 
         self._timers: dict[TransformType, QTimer] = {}
         for ttype, ms in _THROTTLE_MS.items():
@@ -103,6 +104,14 @@ class TransformController(QObject):
     def set_fft_normalize(self, on: bool) -> None:
         """Scale each FFT curve by its own peak; takes effect on next dispatch."""
         self._fft_normalize = on
+
+    @property
+    def fft_smooth_hz(self) -> float:
+        return self._fft_smooth_hz
+
+    def set_fft_smooth_hz(self, width_hz: float) -> None:
+        """Moving-average width for FFT curves in Hz (0 = off); next dispatch."""
+        self._fft_smooth_hz = max(0.0, float(width_hz))
 
     def cancel_all(self) -> None:
         """Cancel every in-flight worker and stop pending timers."""
@@ -167,6 +176,7 @@ class TransformController(QObject):
                 member_index=m_index,
                 slice_data=slice_data,
                 normalize=transform_type == "fft" and self._fft_normalize,
+                smooth_hz=self._fft_smooth_hz if transform_type == "fft" else 0.0,
             )
             worker.signals.finished.connect(self._on_worker_finished)
             worker.signals.failed.connect(self._on_worker_failed)

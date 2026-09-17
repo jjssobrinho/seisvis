@@ -148,3 +148,20 @@ def test_fft_normalize_checkbox_updates_controller(group: ToggleGroup) -> None:
     fft_tab._normalize_cb.setChecked(False)
     assert not ctrl.fft_normalize
     win.close()
+
+
+def test_fft_smooth_slider_updates_controller(group: ToggleGroup) -> None:
+    win, ctrl = _make(group)
+    win.open_fft_tab()
+    fft_tab = win._fft_tab
+    assert fft_tab is not None
+    assert fft_tab.smooth_hz() == 0.0
+
+    fft_tab._smooth.setValue(15)
+    assert ctrl.fft_smooth_hz == pytest.approx(1.5)
+    assert fft_tab._smooth_label.text() == "1.5 Hz"
+
+    fft_tab._smooth.setValue(0)
+    assert ctrl.fft_smooth_hz == 0.0
+    assert fft_tab._smooth_label.text() == "Off"
+    win.close()

@@ -3,7 +3,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from seisvis.processing.transforms import fft_per_trace_averaged, normalize_by_peak
+from seisvis.processing.transforms import (
+    fft_per_trace_averaged,
+    normalize_by_peak,
+    smooth_spectrum,
+)
 
 
 def test_sine_peak_at_expected_bin() -> None:
@@ -97,3 +101,25 @@ def test_normalize_by_peak_cutoff_above_all_bins_uses_whole_spectrum() -> None:
     freq = np.array([0.0, 1.0], dtype=np.float32)
     mag = np.array([2.0, 1.0], dtype=np.float32)
     np.testing.assert_allclose(normalize_by_peak(mag, freq, 2.5), [1.0, 0.5])
+
+
+def test_smooth_spectrum_moving_average_in_hz() -> None:
+    freq = np.arange(5, dtype=np.float32)  # 1 Hz bins
+    mag = np.array([0.0, 0.0, 3.0, 0.0, 0.0], dtype=np.float32)
+    out = smooth_spectrum(mag, freq, 2.0)  # 3-bin window
+    assert out.dtype == np.float32
+    np.testing.assert_allclose(out, [0.0, 1.0, 1.0, 1.0, 0.0])
+    np.testing.assert_allclose(mag, [0.0, 0.0, 3.0, 0.0, 0.0])  # input untouched
+
+
+def test_smooth_spectrum_edges_average_existing_bins() -> None:
+    freq = np.arange(4, dtype=np.float32)
+    mag = np.full(4, 2.0, dtype=np.float32)
+    np.testing.assert_allclose(smooth_spectrum(mag, freq, 4.0), mag)
+
+
+def test_smooth_spectrum_off_or_sub_bin_is_identity() -> None:
+    freq = np.arange(4, dtype=np.float32) * 2.0  # 2 Hz bins
+    mag = np.array([1.0, 5.0, 2.0, 7.0], dtype=np.float32)
+    np.testing.assert_array_equal(smooth_spectrum(mag, freq, 0.0), mag)
+    np.testing.assert_array_equal(smooth_spectrum(mag, freq, 1.0), mag)

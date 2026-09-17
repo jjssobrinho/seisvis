@@ -26,6 +26,7 @@ from seisvis.processing.transforms import (
     fk_positive_frequencies,
     fk_transform,
     normalize_by_peak,
+    smooth_spectrum,
 )
 
 log = logging.getLogger(__name__)
@@ -53,6 +54,7 @@ class TransformWorker(QRunnable):
         member_index: int,
         slice_data: np.ndarray | None = None,
         normalize: bool = False,
+        smooth_hz: float = 0.0,
     ) -> None:
         super().__init__()
         self.dataset = dataset
@@ -66,6 +68,8 @@ class TransformWorker(QRunnable):
         # FFT only: scale the averaged spectrum so its own peak above
         # FFT_NORMALIZE_MIN_HZ is 1.
         self.normalize = normalize
+        # FFT only: moving-average width in Hz (0 = off), applied first.
+        self.smooth_hz = smooth_hz
         self.is_cancelled: bool = False
         self.signals = TransformWorkerSignals()
 
@@ -93,6 +97,8 @@ class TransformWorker(QRunnable):
             sample_interval_ms = float(self.dataset.sample_interval_ms or 1.0)
             if self.transform_type == "fft":
                 axes, magnitude = fft_per_trace_averaged(data, sample_interval_ms)
+                if self.smooth_hz > 0.0:
+                    magnitude = smooth_spectrum(magnitude, axes, self.smooth_hz)
                 if self.normalize:
                     magnitude = normalize_by_peak(magnitude, axes, FFT_NORMALIZE_MIN_HZ)
             elif self.transform_type == "fk":

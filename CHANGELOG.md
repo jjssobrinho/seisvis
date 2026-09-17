@@ -2,8 +2,15 @@
 
 ## [Unreleased]
 
-### FFT: normalize by own peak
+### FFT: normalize by own peak, smoothing
 
+- **Smooth slider** in the FFT tab, styled like the toolbar's Gain
+  control: a centred moving average over frequency, 0–5 Hz wide in
+  0.1 Hz steps ("Off" at 0). The width is in Hz rather than bins, so a
+  setting means the same thing for any selection length. Edges average
+  only the bins that exist. Smoothing runs in the worker before
+  normalization, so a smoothed curve still peaks at 1; slider drags are
+  coalesced by the FFT throttle (`smooth_spectrum`).
 - **"Normalize by own peak" checkbox** in the FFT tab. Each member's
   averaged spectrum is divided by its own maximum, so members whose
   amplitudes differ by orders of magnitude can be compared by spectral

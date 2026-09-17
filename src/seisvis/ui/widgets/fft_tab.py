@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMenu,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -29,6 +30,11 @@ from seisvis.utils.member_colors import member_color
 log = logging.getLogger(__name__)
 
 
+# Smooth slider: integer steps of _SMOOTH_STEP_HZ, so 0.0–5.0 Hz in 0.1 Hz.
+_SMOOTH_STEP_HZ = 0.1
+_SMOOTH_STEPS = 50
+
+
 class FFTTab(QWidget):
     """A row of member checkboxes plus a magnitude-vs-frequency plot."""
 
@@ -36,6 +42,8 @@ class FFTTab(QWidget):
     members_requested = Signal(list)
     # Emitted when "Normalize by own peak" is toggled (before members_requested).
     normalize_changed = Signal(bool)
+    # Emitted when the Smooth slider moves: moving-average width in Hz (0 = off).
+    smooth_changed = Signal(float)
 
     def __init__(self, toggle_group: ToggleGroup, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -61,6 +69,22 @@ class FFTTab(QWidget):
             "amplitudes. Near-DC bins are ignored when finding the peak."
         )
         self._normalize_cb.toggled.connect(self._on_normalize_toggled)
+        top_row.addSpacing(12)
+        top_row.addWidget(QLabel("Smooth", self))
+        # Same look as the toolbar's Gain control: slider plus value label.
+        self._smooth = QSlider(Qt.Orientation.Horizontal, self)
+        self._smooth.setRange(0, _SMOOTH_STEPS)
+        self._smooth.setValue(0)
+        self._smooth.setFixedWidth(140)
+        self._smooth.setToolTip(
+            "Moving average over frequency. Width in Hz; applied before normalization."
+        )
+        self._smooth_label = QLabel(self._smooth_text(0.0), self)
+        self._smooth_label.setMinimumWidth(50)
+        self._smooth.valueChanged.connect(self._on_smooth_changed)
+        top_row.addWidget(self._smooth)
+        top_row.addWidget(self._smooth_label)
+        top_row.addSpacing(12)
         top_row.addWidget(self._normalize_cb)
         root.addLayout(top_row)
 
@@ -130,6 +154,16 @@ class FFTTab(QWidget):
         self._normalize_cb.setChecked(on)
         self._normalize_cb.blockSignals(False)
         self._update_y_label()
+
+    def smooth_hz(self) -> float:
+        return self._smooth.value() * _SMOOTH_STEP_HZ
+
+    def set_smooth_hz(self, width_hz: float) -> None:
+        """Set the slider without emitting (used to restore controller state)."""
+        self._smooth.blockSignals(True)
+        self._smooth.setValue(round(width_hz / _SMOOTH_STEP_HZ))
+        self._smooth.blockSignals(False)
+        self._smooth_label.setText(self._smooth_text(self.smooth_hz()))
 
     def update_curve(self, member_index: int, freq_hz: np.ndarray, magnitude: np.ndarray) -> None:
         """Replace (or create) the curve for ``member_index``."""
@@ -219,3 +253,15 @@ class FFTTab(QWidget):
             vb.setYRange(0.0, 1.05, padding=0)
         else:
             vb.enableAutoRange(y=True)
+
+    @staticmethod
+    def _smooth_text(width_hz: float) -> str:
+        return "Off" if width_hz <= 0.0 else f"{width_hz:.1f} Hz"
+
+    def _on_smooth_changed(self, _value: int) -> None:
+        width = self.smooth_hz()
+        self._smooth_label.setText(self._smooth_text(width))
+        self.smooth_changed.emit(width)
+        # The controller's throttle timer coalesces a drag into one dispatch.
+        self.show_computing()
+        self.members_requested.emit(self.checked_members())

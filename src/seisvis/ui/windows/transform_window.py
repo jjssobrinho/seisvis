@@ -68,6 +68,8 @@ class TransformWindow(QMainWindow):
             )
             tab.normalize_changed.connect(self._controller.set_fft_normalize)
             tab.set_normalize(self._controller.fft_normalize)
+            tab.smooth_changed.connect(self._controller.set_fft_smooth_hz)
+            tab.set_smooth_hz(self._controller.fft_smooth_hz)
             self._tabs.addTab(tab, "FFT")
             self._fft_tab = tab
             # Initial dispatch is immediate — there's nothing to coalesce
