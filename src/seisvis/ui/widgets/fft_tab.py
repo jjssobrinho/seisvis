@@ -105,6 +105,16 @@ class FFTTab(QWidget):
         self._plot.setLabel("bottom", "Frequency (Hz)")
         self._plot.setLabel("left", "Magnitude")
         self._plot.showGrid(x=True, y=True, alpha=0.3)
+        # Curves are only told apart by colour, and with several members
+        # overlapping that is not enough — name them inside the plot, where
+        # the label travels with the exported image too. Top-right: the
+        # spectra decay to the right, so that corner is usually free.
+        self._legend = self._plot.getPlotItem().addLegend(
+            offset=(-10, 10),
+            brush=pg.mkBrush(0, 0, 0, 170),
+            pen=pg.mkPen(110, 110, 110),
+            labelTextColor=(225, 225, 225),
+        )
         self._plot.scene().contextMenu = []  # let our menu fully replace
         self._plot.getPlotItem().vb.setMenuEnabled(False)
         self._plot.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -153,9 +163,16 @@ class FFTTab(QWidget):
             self._selector_layout.addWidget(cb)
         self._selector_layout.addStretch(1)
 
-        # Drop curves whose member no longer exists.
-        for stale_idx in [i for i in self._curves if i >= len(self._checkboxes)]:
-            self._plot.removeItem(self._curves.pop(stale_idx))
+        # Removing a member shifts every later index down, so a curve kept
+        # across the rebuild would be drawn under the *next* member's name
+        # and colour. Drop them all (PlotItem.removeItem takes their legend
+        # entries with it) and ask for a recomputation instead: a blank
+        # plot for one dispatch beats a mislabelled one.
+        for index in list(self._curves):
+            self._plot.removeItem(self._curves.pop(index))
+        if self._checkboxes:
+            self.show_computing()
+            self.members_requested.emit(self.checked_members())
 
     def is_normalized(self) -> bool:
         return self._normalize_cb.isChecked()

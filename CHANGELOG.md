@@ -25,6 +25,13 @@
   the histogram strip belongs to the ImageView, not the plot, so it
   stays out either way. Button, icon and exporter plumbing are shared
   (`ui/widgets/plot_export.py`), so the three sites cannot drift.
+- **Legend inside the FFT plot** (top-right, where the spectra have
+  decayed), one entry per plotted member with its colour sample and
+  name — colour alone did not say which curve was which. It sits in
+  the plot, so it travels into the exported image. Entries follow the
+  member set; when a member is removed the tab drops its curves and
+  asks for a recomputation rather than redraw them one index off,
+  under the next member's name.
 - **The FFT plot is black**, like the canvas and the f-k image: the
   tab10 member colours were picked to read on a dark ground, and a
   white plot beside a black canvas is a jarring pair to compare across.
