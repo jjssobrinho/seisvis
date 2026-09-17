@@ -109,18 +109,36 @@ def fk_positive_frequencies(
     return freq_hz[keep], magnitude[:, keep]
 
 
-def normalize_by_peak(magnitude: np.ndarray) -> np.ndarray:
-    """Scale a spectrum so its own peak is 1.
+FFT_NORMALIZE_MIN_HZ = 2.5
+
+
+def normalize_by_peak(
+    magnitude: np.ndarray,
+    freq_hz: np.ndarray | None = None,
+    min_freq_hz: float = 0.0,
+) -> np.ndarray:
+    """Scale a spectrum so its peak above ``min_freq_hz`` is 1.
 
     Used to compare spectral *shape* between inputs whose absolute
-    amplitudes differ by orders of magnitude. An all-zero (or empty)
-    spectrum has no peak to divide by and is returned as zeros.
+    amplitudes differ by orders of magnitude. With ``freq_hz`` given, the
+    peak is taken only over bins with ``freq_hz > min_freq_hz`` — the
+    near-DC bins of seismic data are numerical garbage that would
+    otherwise set the scale. Bins below the cutoff are still scaled and
+    may exceed 1. If no bin lies above the cutoff, the whole spectrum is
+    used. An all-zero (or empty) peak region yields zeros.
     Returns a new ``float32`` array; the input is not modified.
     """
     out = np.asarray(magnitude, dtype=np.float32).copy()
     if out.size == 0:
         return out
-    peak = float(np.max(np.abs(out)))
+    region = out
+    if freq_hz is not None:
+        above = np.asarray(freq_hz) > min_freq_hz
+        if above.shape != out.shape:
+            raise ValueError("freq_hz and magnitude must have the same shape")
+        if above.any():
+            region = out[above]
+    peak = float(np.max(np.abs(region)))
     if not np.isfinite(peak) or peak <= 0.0:
         return np.zeros_like(out)
     out /= peak

@@ -84,3 +84,16 @@ def test_normalize_by_peak_equalizes_scaled_spectra() -> None:
 def test_normalize_by_peak_zero_and_empty() -> None:
     np.testing.assert_array_equal(normalize_by_peak(np.zeros(4, dtype=np.float32)), np.zeros(4))
     assert normalize_by_peak(np.empty(0, dtype=np.float32)).size == 0
+
+
+def test_normalize_by_peak_ignores_bins_below_cutoff() -> None:
+    freq = np.array([0.0, 1.0, 2.5, 5.0, 10.0], dtype=np.float32)
+    mag = np.array([100.0, 50.0, 80.0, 4.0, 2.0], dtype=np.float32)
+    out = normalize_by_peak(mag, freq, 2.5)
+    np.testing.assert_allclose(out, [25.0, 12.5, 20.0, 1.0, 0.5])
+
+
+def test_normalize_by_peak_cutoff_above_all_bins_uses_whole_spectrum() -> None:
+    freq = np.array([0.0, 1.0], dtype=np.float32)
+    mag = np.array([2.0, 1.0], dtype=np.float32)
+    np.testing.assert_allclose(normalize_by_peak(mag, freq, 2.5), [1.0, 0.5])

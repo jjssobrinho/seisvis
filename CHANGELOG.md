@@ -7,8 +7,11 @@
 - **"Normalize by own peak" checkbox** in the FFT tab. Each member's
   averaged spectrum is divided by its own maximum, so members whose
   amplitudes differ by orders of magnitude can be compared by spectral
-  shape. The Y label reads "Normalized magnitude"; an all-zero
-  spectrum stays zero. Normalization runs in the transform worker
+  shape. The peak is searched only above 2.5 Hz
+  (`FFT_NORMALIZE_MIN_HZ`): the near-DC bins are numerical garbage and
+  would otherwise set the scale. The Y axis is pinned to 0–1.05 while
+  normalized (linear scale). The Y label reads "Normalized magnitude";
+  an all-zero spectrum stays zero. Normalization runs in the transform worker
   (`normalize_by_peak`); toggling re-dispatches from the slice cache.
 
 ### f-k display: rainbow, f ≥ 0 up, wavenumber across

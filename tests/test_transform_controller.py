@@ -11,6 +11,7 @@ from seisvis.controllers.transform_controller import TransformController
 from seisvis.io.segy_loader import load_segy
 from seisvis.models.selection import Selection
 from seisvis.models.toggle_group import ToggleGroup
+from seisvis.processing.transforms import FFT_NORMALIZE_MIN_HZ
 
 
 @pytest.fixture
@@ -113,7 +114,7 @@ def test_deactivate_cancels_and_silences_type(group_with_selection: ToggleGroup)
     assert ctrl._in_flight["fft"] == []
 
 
-def test_fft_normalize_scales_peak_to_one(group_with_selection: ToggleGroup) -> None:
+def test_fft_normalize_scales_peak_above_cutoff_to_one(group_with_selection: ToggleGroup) -> None:
     pool = QThreadPool()
     ctrl = TransformController(group_with_selection, thread_pool=pool)
     results: list[tuple] = []
@@ -131,6 +132,8 @@ def test_fft_normalize_scales_peak_to_one(group_with_selection: ToggleGroup) -> 
     _wait_for(lambda: len(results) >= 2)
     normalized = results[1][3]
 
-    assert raw.max() > 0
-    assert normalized.max() == pytest.approx(1.0)
-    np.testing.assert_allclose(normalized, raw / raw.max(), rtol=1e-5)
+    freq = results[1][2]
+    above = freq > FFT_NORMALIZE_MIN_HZ
+    peak = raw[above].max() if above.any() else raw.max()
+    assert peak > 0
+    np.testing.assert_allclose(normalized, raw / peak, rtol=1e-5)

@@ -21,6 +21,7 @@ from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 from seisvis.models.dataset import Dataset
 from seisvis.models.selection import Selection
 from seisvis.processing.transforms import (
+    FFT_NORMALIZE_MIN_HZ,
     fft_per_trace_averaged,
     fk_positive_frequencies,
     fk_transform,
@@ -62,7 +63,8 @@ class TransformWorker(QRunnable):
         # in to avoid duplicate I/O when both FFT and f-k tabs target the
         # same selection. ``None`` means the worker reads its own slice.
         self._slice_data = slice_data
-        # FFT only: scale the averaged spectrum so its own peak is 1.
+        # FFT only: scale the averaged spectrum so its own peak above
+        # FFT_NORMALIZE_MIN_HZ is 1.
         self.normalize = normalize
         self.is_cancelled: bool = False
         self.signals = TransformWorkerSignals()
@@ -92,7 +94,7 @@ class TransformWorker(QRunnable):
             if self.transform_type == "fft":
                 axes, magnitude = fft_per_trace_averaged(data, sample_interval_ms)
                 if self.normalize:
-                    magnitude = normalize_by_peak(magnitude)
+                    magnitude = normalize_by_peak(magnitude, axes, FFT_NORMALIZE_MIN_HZ)
             elif self.transform_type == "fk":
                 freq, wavenumber, magnitude = fk_transform(data, sample_interval_ms)
                 # The f-k tab shows f >= 0 only; the other half mirrors it.

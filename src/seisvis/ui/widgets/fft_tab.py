@@ -56,8 +56,9 @@ class FFTTab(QWidget):
         top_row.addWidget(self._selector_row, stretch=1)
         self._normalize_cb = QCheckBox("Normalize by own peak", self)
         self._normalize_cb.setToolTip(
-            "Scale each member's spectrum so its own peak is 1 — compares "
-            "spectral shape across members with very different amplitudes."
+            "Scale each member's spectrum so its own peak above 2.5 Hz is 1 — "
+            "compares spectral shape across members with very different "
+            "amplitudes. Near-DC bins are ignored when finding the peak."
         )
         self._normalize_cb.toggled.connect(self._on_normalize_toggled)
         top_row.addWidget(self._normalize_cb)
@@ -151,6 +152,7 @@ class FFTTab(QWidget):
             curve.setData(freq_hz, y)
             curve.setPen(pg.mkPen(color, width=2))
             curve.setOpacity(1.0)
+        self._apply_y_range()
 
     def show_error(self, member_index: int, error_msg: str) -> None:
         self._status.setText(f"Member {member_index + 1}: {error_msg}")
@@ -206,3 +208,14 @@ class FFTTab(QWidget):
         if self._log_y:
             label += " (log10)"
         self._plot.setLabel("left", label)
+        self._apply_y_range()
+
+    def _apply_y_range(self) -> None:
+        # Normalized curves share a 0–1 scale; pin Y there so the near-DC
+        # bins (which may exceed 1) don't squash the band of interest.
+        vb = self._plot.getPlotItem().vb
+        if self.is_normalized() and not self._log_y:
+            vb.enableAutoRange(y=False)
+            vb.setYRange(0.0, 1.05, padding=0)
+        else:
+            vb.enableAutoRange(y=True)
