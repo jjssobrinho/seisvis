@@ -16,15 +16,20 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QCheckBox,
+    QDialog,
     QHBoxLayout,
     QLabel,
     QMenu,
+    QMessageBox,
     QSlider,
     QVBoxLayout,
     QWidget,
 )
 
 from seisvis.models.toggle_group import ToggleGroup
+from seisvis.ui.dialogs.export_plot_dialog import ExportPlotDialog
+from seisvis.ui.widgets.plot_export import camera_button, export_plot
+from seisvis.utils import qsettings
 from seisvis.utils.member_colors import member_color
 
 log = logging.getLogger(__name__)
@@ -86,10 +91,17 @@ class FFTTab(QWidget):
         top_row.addWidget(self._smooth_label)
         top_row.addSpacing(12)
         top_row.addWidget(self._normalize_cb)
+        self._export_button = camera_button(self, "Export this spectrum plot as an image")
+        self._export_button.clicked.connect(self._on_export)
+        top_row.addSpacing(8)
+        top_row.addWidget(self._export_button)
         root.addLayout(top_row)
 
         self._plot = pg.PlotWidget(self)
-        self._plot.setBackground("w")
+        # Black, like the canvas and the f-k image: the tab10 member colours
+        # were picked to read on a dark ground, and a white plot beside a
+        # black canvas is a jarring pair to compare across.
+        self._plot.setBackground("k")
         self._plot.setLabel("bottom", "Frequency (Hz)")
         self._plot.setLabel("left", "Magnitude")
         self._plot.showGrid(x=True, y=True, alpha=0.3)
@@ -212,6 +224,32 @@ class FFTTab(QWidget):
                 self._plot.removeItem(self._curves.pop(idx))
         self.show_computing()
         self.members_requested.emit(self.checked_members())
+
+    def _on_export(self) -> None:
+        """Save the spectrum plot as an image (same options as the canvas)."""
+        dialog = ExportPlotDialog(
+            "FFT",
+            f"{self._group.name}_fft",
+            default_directory=qsettings.last_export_folder(),
+            default_width_px=max(200, int(self._plot.width())),
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        path = dialog.path()
+        try:
+            export_plot(
+                self._plot.getPlotItem(),
+                path,
+                dialog.width_px(),
+                with_axes=dialog.with_axes(),
+            )
+        except Exception as exc:  # noqa: BLE001 - surfaced to the user verbatim
+            log.exception("FFT image export failed")
+            QMessageBox.critical(self, "Export Image", f"Export failed: {exc}")
+            return
+        qsettings.set_last_export_folder(path.parent)
+        self._status.setText(f"Exported {path.name}")
 
     def _show_context_menu(self, pos: object) -> None:
         menu = QMenu(self)

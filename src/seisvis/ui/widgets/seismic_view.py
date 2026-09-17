@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import logging
+from contextlib import ExitStack
+from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QThreadPool, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QVBoxLayout,
+    QWidget,
+)
 
 from seisvis.io.slice_cache import SliceCache, SliceKey
 from seisvis.models.crosshair_format import format_crosshair
@@ -14,11 +24,15 @@ from seisvis.models.group_index import GroupIndex, GroupingMode
 from seisvis.models.selection import Selection
 from seisvis.models.sort_config import TRACE_RANGE_FIELD, RowSelection, SortConfig
 from seisvis.models.toggle_group import Member, ToggleGroup
+from seisvis.services.image_export import ExportOptions, output_path
+from seisvis.ui.dialogs.export_images_dialog import ExportImagesDialog
 from seisvis.ui.widgets.group_command_bar import GroupCommandBar
 from seisvis.ui.widgets.info_track import GroupXPositions, InfoTrack, default_display_names
+from seisvis.ui.widgets.plot_export import axes_hidden, camera_button, make_exporter
 from seisvis.ui.widgets.scale_bar import ScaleBar
 from seisvis.ui.widgets.selection_overlay import SelectionOverlay, selection_from_points
 from seisvis.ui.widgets.toggle_bar import ToggleBar
+from seisvis.utils import qsettings
 from seisvis.utils.colormaps import get_colormap
 from seisvis.utils.member_colors import member_color
 from seisvis.utils.mime import DATASET_MIME_TYPE, decode_dataset_ids
@@ -261,8 +275,23 @@ class SeismicView(QWidget):
         info_row_layout.setContentsMargins(0, 0, 0, 0)
         info_row_layout.setSpacing(0)
         info_row_layout.addWidget(self.info_track, stretch=1)
+        # The strip above the scale bar is otherwise dead space, and it sits
+        # directly under the toggle bar's Auto controls — a natural home for
+        # the export button without covering any plotted data.
         info_row_spacer = QWidget(info_row)
         info_row_spacer.setFixedWidth(scale_bar_width)
+        spacer_layout = QVBoxLayout(info_row_spacer)
+        spacer_layout.setContentsMargins(0, 2, 0, 2)
+        spacer_layout.setSpacing(0)
+        self.export_button = camera_button(
+            info_row_spacer,
+            "Export images of every member of this toggle group, all rendered "
+            "through the current view so they stay aligned.",
+        )
+        self.export_button.clicked.connect(self._on_export_images)
+        spacer_layout.addWidget(
+            self.export_button, alignment=Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+        )
         info_row_layout.addWidget(info_row_spacer)
         root.addWidget(info_row)
 
@@ -650,6 +679,90 @@ class SeismicView(QWidget):
         active = self.group.active_index
         for i, item in enumerate(self._image_items):
             item.setVisible(i == active)
+
+    # --- image export -------------------------------------------------
+
+    def _on_export_images(self) -> None:
+        """Ask where to write the group's member images, then write them."""
+        if self.group.n_members == 0:
+            self.status_message.emit("Nothing to export: this toggle group has no members.")
+            return
+        names = [m.dataset.name for m in self.group.members]
+        dialog = ExportImagesDialog(
+            self.group.name,
+            names,
+            default_directory=qsettings.last_export_folder() or Path.home(),
+            default_width_px=max(200, int(self.plot_widget.width())),
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        options = dialog.options()
+        try:
+            written = self.export_member_images(options)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the user verbatim
+            log.exception("Image export failed")
+            QMessageBox.critical(self, "Export Images", f"Export failed: {exc}")
+            return
+        qsettings.set_last_export_folder(options.directory)
+        if not written:
+            self.status_message.emit("Export wrote no files — no members were selected.")
+            return
+        self.status_message.emit(f"Exported {len(written)} image(s) to {options.directory}")
+
+    def export_member_images(self, options: ExportOptions) -> list[Path]:
+        """Write one image file per selected member and return the paths.
+
+        Every member is rendered through the *current* view: only the
+        ImageItem visibility is swapped between shots, never the group's
+        active index or the axes ranges. That is what keeps the files
+        pixel-aligned with each other — activating members instead would
+        let an incompatible member pull the viewbox to its own extent.
+        """
+        if not self._image_items:
+            return []
+
+        flicker_was_on = self.toggle_bar.is_flickering()
+        self.toggle_bar.set_flicker(False)
+        prev_visible = [item.isVisible() for item in self._image_items]
+        crosshair_was_visible = self._v_line.isVisible()
+        self._v_line.setVisible(False)
+        self._h_line.setVisible(False)
+
+        written: list[Path] = []
+        try:
+            # ``axes_hidden`` re-flows the layout, so the exporter is built
+            # inside it — and once, for the whole run: its width/height are
+            # fixed at construction, so every file comes out the same size,
+            # framed by the same source rect.
+            with ExitStack() as stack:
+                if not options.with_axes:
+                    stack.enter_context(axes_hidden(self.plot_item))
+                else:
+                    QApplication.processEvents()
+                exporter = make_exporter(self.plot_item, options.width_px)
+                for index in options.member_indices:
+                    if not 0 <= index < len(self._image_items):
+                        continue
+                    for i, item in enumerate(self._image_items):
+                        item.setVisible(i == index)
+                    path = output_path(
+                        options.directory,
+                        options.prefix,
+                        index + 1,
+                        self.group.members[index].dataset.name,
+                        options.extension,
+                    )
+                    exporter.export(str(path))
+                    written.append(path)
+        finally:
+            for item, visible in zip(self._image_items, prev_visible, strict=False):
+                item.setVisible(visible)
+            self._v_line.setVisible(crosshair_was_visible)
+            self._h_line.setVisible(crosshair_was_visible)
+            if flicker_was_on:
+                self.toggle_bar.set_flicker(True)
+        return written
 
     # --- Fit-to-window on first member (reference) ---
 

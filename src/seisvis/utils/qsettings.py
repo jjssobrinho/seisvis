@@ -22,6 +22,22 @@ def _bool(val: object, default: bool) -> bool:
     return default
 
 
+def last_export_folder() -> Path | None:
+    """Folder the last image export wrote to, if any is remembered."""
+    value = _s().value("io/last_export_folder")
+    if not value:
+        return None
+    folder = Path(str(value))
+    return folder if folder.is_dir() else None
+
+
+def set_last_export_folder(folder: Path) -> None:
+    """Remember *folder* as the default for the next image export."""
+    s = _s()
+    s.setValue("io/last_export_folder", str(folder))
+    s.sync()
+
+
 def save(window: object) -> None:
     """Persist window layout and toolbar state to QSettings."""
     s = _s()

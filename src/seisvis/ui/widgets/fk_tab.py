@@ -16,14 +16,19 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QVBoxLayout,
     QWidget,
 )
 
 from seisvis.models.toggle_group import ToggleGroup
+from seisvis.ui.dialogs.export_plot_dialog import ExportPlotDialog
+from seisvis.ui.widgets.plot_export import camera_button, export_plot
+from seisvis.utils import qsettings
 from seisvis.utils.colormaps import get_colormap
 from seisvis.utils.member_colors import member_color
 
@@ -85,6 +90,10 @@ class FKTab(QWidget):
         self._perc_spin.setToolTip("Colour scale tops out at this percentile of |f-k|")
         self._perc_spin.valueChanged.connect(self._apply_perc)
         selector_layout.addWidget(self._perc_spin)
+        self._export_button = camera_button(selector_row, "Export this f-k image as a picture")
+        self._export_button.clicked.connect(self._on_export)
+        selector_layout.addSpacing(8)
+        selector_layout.addWidget(self._export_button)
         root.addWidget(selector_row)
 
         # ImageView uses a plain ViewBox by default, which can't render axis
@@ -94,6 +103,7 @@ class FKTab(QWidget):
         plot_item.setLabel("left", "Frequency (Hz)")
         # Keep ±0.5 cycles/trace as written, not rescaled to "×0.001".
         plot_item.getAxis("bottom").enableAutoSIPrefix(False)
+        self._plot_item = plot_item
         self._image_view = pg.ImageView(parent=self, view=plot_item)
         # ImageView locks the aspect ratio and inverts Y on the view it is
         # handed, so both have to be undone after construction. Locked
@@ -191,6 +201,37 @@ class FKTab(QWidget):
         if image is None or image.size == 0:
             return
         self._image_view.setLevels(*perc_levels(image, perc))
+
+    def _on_export(self) -> None:
+        """Save the f-k image as a picture (same options as the canvas).
+
+        The histogram strip is part of the ImageView, not of the PlotItem,
+        so it stays out of the exported file either way.
+        """
+        member = self._member_label(self._current_member, None)
+        dialog = ExportPlotDialog(
+            "f-k",
+            f"{self._group.name}_fk_{member.replace(': ', '_')}",
+            default_directory=qsettings.last_export_folder(),
+            default_width_px=max(200, int(self._image_view.width())),
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        path = dialog.path()
+        try:
+            export_plot(
+                self._plot_item,
+                path,
+                dialog.width_px(),
+                with_axes=dialog.with_axes(),
+            )
+        except Exception as exc:  # noqa: BLE001 - surfaced to the user verbatim
+            log.exception("f-k image export failed")
+            QMessageBox.critical(self, "Export Image", f"Export failed: {exc}")
+            return
+        qsettings.set_last_export_folder(path.parent)
+        self._status.setText(f"Exported {path.name}")
 
     def fit_to_data(self) -> None:
         """Reset the view to the full extent of the image (the ``F`` key)."""

@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### Image export: canvas members, FFT and f-k
+
+- **Camera button** in the strip above the scale bar, directly under
+  the toggle bar's Auto controls. It opens an export dialog per toggle
+  group: output folder, filename prefix, format (PNG / JPEG / TIFF),
+  output width in pixels, and a member picker (all checked by default).
+- **Axes are an option.** "Plot with axes, labels and ticks" exports
+  the framed plot; "Image only (no axes, no labels)" hides the axes,
+  re-flows the layout and shoots the plot area alone — the one to pick
+  for overlaying the results elsewhere. (Rendering the ViewBox directly
+  would have been the obvious route, but the axis items overlap its
+  rect and their ticks bleed into the exported edges.)
+- **Files are aligned by construction.** Only ImageItem visibility is
+  swapped between shots — never the active index or the axis ranges —
+  and a single exporter with a fixed width/height is reused for the
+  whole run, so every file comes out the same size with the same
+  framing and can be flipped through or stacked externally.
+- **The same camera button in the FFT and f-k tabs**, with the same
+  axes/no-axes choice, saving that tab's plot to a single file (path,
+  width, format). The f-k export covers the image and its axes only —
+  the histogram strip belongs to the ImageView, not the plot, so it
+  stays out either way. Button, icon and exporter plumbing are shared
+  (`ui/widgets/plot_export.py`), so the three sites cannot drift.
+- **The FFT plot is black**, like the canvas and the f-k image: the
+  tab10 member colours were picked to read on a dark ground, and a
+  white plot beside a black canvas is a jarring pair to compare across.
+- Files land at `<prefix>_<NN>_<member>.<ext>`, zero-padded so a
+  directory listing sorts in display order. Existing files are named
+  in an overwrite prompt before anything is written; the folder is
+  remembered for the next export. Auto-flicker is held still and the
+  crosshair hidden for the duration, then both are restored.
+
 ### FFT: normalize by own peak, smoothing
 
 - **Smooth slider** in the FFT tab, styled like the toolbar's Gain

@@ -75,6 +75,22 @@ class ToggleBar(QWidget):
 
         self._on_members_changed()
 
+    # --- public flicker API ---
+
+    def is_flickering(self) -> bool:
+        """Whether auto-flicker is currently cycling members."""
+        return self._flicker_check.isChecked()
+
+    def set_flicker(self, on: bool) -> None:
+        """Start/stop auto-flicker, as if the checkbox had been clicked.
+
+        Used to hold the display still while another part of the canvas
+        needs a stable frame (image export), then hand it back.
+        """
+        if self._flicker_check.isChecked() == bool(on):
+            return
+        self._flicker_check.setChecked(bool(on))
+
     # --- signal handlers ---
 
     def _on_members_changed(self, *_args) -> None:
