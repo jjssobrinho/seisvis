@@ -361,6 +361,7 @@ class CatalogPanel(QWidget):
     add_to_active_group_requested = Signal(object)  # Dataset
     reload_requested = Signal(object)  # Dataset whose file changed on disk
     add_to_active_model_requested = Signal(object)  # depth Dataset
+    quick_load_requested = Signal(object)  # list[Path] typed into the quick-load dialog
     domain_changed = Signal(object)  # Dataset whose vertical domain flipped
     sv_write_failed = Signal(str)  # .sv filename that could not be written
 
@@ -413,10 +414,51 @@ class CatalogPanel(QWidget):
         return [ds for _, _, ds in rows]
 
     def _show_context_menu(self, pos) -> None:  # noqa: ANN001
-        menu = self.build_context_menu(self.selected_datasets())
+        menu = self.build_context_menu_at(self._view.indexAt(pos))
         if menu is None:
             return
         menu.exec(cast(QTreeView, self._view).viewport().mapToGlobal(pos))
+
+    def build_context_menu_at(self, index: QModelIndex) -> QMenu | None:
+        """Pick the menu for a right-click landing on *index*.
+
+        The "Loaded" container row is not selectable, so a right-click on it
+        would otherwise produce nothing; it gets the load-a-file menu, which
+        is the one thing the row itself is about.
+        """
+        if self._is_loaded_container(index):
+            return self.build_loaded_context_menu()
+        return self.build_context_menu(self.selected_datasets())
+
+    def _is_loaded_container(self, index: QModelIndex) -> bool:
+        """True for the "Loaded" group row, or empty space with no selection.
+
+        Empty space counts only when nothing is selected: right-clicking
+        below the rows with a selection still means "act on the selection".
+        """
+        if not index.isValid():
+            return not self.selected_datasets()
+        return index.internalId() == 0 and index.row() == GROUP_LOADED
+
+    def build_loaded_context_menu(self) -> QMenu:
+        """The menu for the "Loaded" container: load a file by full path."""
+        menu = QMenu(self._view)
+        quick = menu.addAction("Load datasets by path\u2026")
+        quick.setToolTip(
+            "Type or paste full paths, one per line; a check light reports"
+            " whether each file is there."
+        )
+        quick.triggered.connect(lambda checked=False: self._open_quick_load())
+        return menu
+
+    def _open_quick_load(self) -> None:
+        from seisvis.ui.dialogs.quick_load_dialog import QuickLoadDialog
+
+        dlg = QuickLoadDialog(parent=self)
+        if dlg.exec():
+            paths = dlg.paths()
+            if paths:
+                self.quick_load_requested.emit(paths)
 
     def build_context_menu(self, datasets: list[Dataset]) -> QMenu | None:
         """Assemble the context menu for *datasets*, or None when there is none.

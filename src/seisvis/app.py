@@ -235,6 +235,7 @@ class MainWindow(QMainWindow):
         )
         self.catalog_panel.add_to_active_group_requested.connect(self._on_add_to_active_group)
         self.catalog_panel.reload_requested.connect(self._on_reload_dataset)
+        self.catalog_panel.quick_load_requested.connect(self._on_quick_load)
         self.catalog_panel.domain_changed.connect(self._on_domain_changed)
         self.catalog_panel.add_to_active_model_requested.connect(self._on_add_to_active_model)
         self.catalog_panel.set_model_tab_probe(
@@ -523,6 +524,18 @@ class MainWindow(QMainWindow):
         )
         for p in paths:
             path = Path(p)
+            self._last_opened_folder = path.parent
+            self._submit_load(path)
+
+    def _on_quick_load(self, paths: list[Path]) -> None:
+        """Load the paths typed into the catalog's quick-load dialog.
+
+        The dialog has already checked that each file is there and loadable,
+        so this is the same submission the file chooser makes — including
+        remembering the folder, so the next chooser opens beside them.
+        """
+        for raw in paths:
+            path = Path(raw)
             self._last_opened_folder = path.parent
             self._submit_load(path)
 

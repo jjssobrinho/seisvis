@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+### Quick load by full path
+
+- **Right-click "Loaded" in the catalog** (or empty space below the rows
+  with nothing selected) for "Load datasets by path…" — a dialog for
+  typing or pasting full paths, for the case where the files' locations
+  are already known and walking a file chooser to them is the slow way
+  round.
+- **One path per line, Enter opens the next.** Enter on the last filled
+  line adds a fresh line and puts the cursor in it; Enter on a trailing
+  blank line loads instead, so a run of paste-enter-paste ends where it
+  started. Each line has a `×` to drop it, and blank lines are skipped.
+- **A check light on every line** re-reads that path on every keystroke:
+  a green "ok" when the file is there and a loader handles its suffix, a
+  red "not found" when it is not. A path that exists but cannot be opened
+  says so instead of passing as ok — amber "not a file" for a directory,
+  "unsupported type" for a suffix no loader claims.
+- **One bad line blocks the load and is named** ("Fix or clear line 3
+  before loading"), the same rule the command bar's commit follows —
+  rather than loading the rest and letting the mistyped path vanish
+  unremarked. Duplicate paths load once.
+- **Pasting a block of paths opens a line for each.** A list copied out
+  of a terminal, a script or a file manager splits on its newlines: the
+  first path lands where the cursor is, the rest become lines directly
+  below it, and the cursor ends on the last one. Files copied as
+  `file://` URIs are decoded to paths, so a paste out of a file manager
+  works as well as one out of an editor. (The split runs on the text the
+  field receives rather than on the paste itself — `insertFromMimeData`
+  is protected and unexposed by PySide, so an override of it is never
+  called, while this catches Ctrl+V, the context menu, middle-click and
+  a drop alike.)
+- **The dialog opens wide and widens with its contents**, because an
+  absolute path you cannot read whole is a path you cannot check. It
+  grows to fit the longest line, up to 90 % of the screen, and never
+  shrinks mid-edit; it also grows taller as lines are added, until the
+  lines start scrolling instead. Pasted paths keep working when they
+  arrive wrapped in quotes or with `~`.
+- Paths go through the same `LoadWorker` submission as the file chooser,
+  and update the remembered folder, so the next chooser opens beside
+  them.
+
 ### Image export: canvas members, FFT and f-k
 
 - **Camera button** in the strip above the scale bar, directly under
