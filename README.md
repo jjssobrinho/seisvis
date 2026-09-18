@@ -7,13 +7,15 @@ Desktop viewer for 2D/3D SEG-Y reflection seismic data.
 ## Features
 
 - Lazy SEG-Y loading — O(1) open regardless of file size
+- File chooser, drag-and-drop, or a full-path dialog with a live check light per line
 - Multi-member toggle groups in tabbed viewports
 - Lazy A−B difference datasets
 - Two-row sort with three selection types per row — Value (regular sweep), Range (contiguous), List (explicit picks)
-- Mode-aware crosshair and info-track labels, per-file display-name renames
+- Info-track labels and a crosshair readout you choose the header fields for, with per-file display-name renames
 - Zoom restricted to the currently loaded traces (no re-fetch on pan/zoom)
-- Per-member processing: colormap, clip, gain, bandpass, AGC
+- Per-member processing: eight colormaps, clip, gain, bandpass, AGC — plus a fixed colour scale when members have to be compared on one
 - Rectangle selection feeding live FFT and f-k transforms in a separate window per group
+- Image export of canvas members, FFT and f-k plots, with or without axes
 - Depth-domain data in a Model Window of its own — metres on both axes
 - Velocity models over migrated sections, composed by luminance or alpha
 - Detection of source files that change on disk, with in-place reload
@@ -35,9 +37,11 @@ uv run python -m seisvis
 
 ## First steps
 
-1. **Open a SEG-Y file** — `Ctrl+O` or drag-and-drop onto the window.
-   The file appears in the catalog immediately; the background header
-   scan unlocks shot / inline / crossline grouping when it finishes.
+1. **Open a SEG-Y file** — `Ctrl+O`, drag-and-drop onto the window, or
+   right-click *Loaded* in the catalog and paste the paths (see
+   [Loading files](#loading-files)). The file appears in the catalog
+   immediately; the background header scan unlocks shot / inline /
+   crossline grouping when it finishes.
 
 2. **Inspect headers** — Right-click the dataset in the catalog and
    choose *Configure Headers…*. The dialog shows which trace-header
@@ -72,6 +76,34 @@ uv run python -m seisvis
    and role mappings are restored. Sort itself starts fresh each
    session — commit again to apply.
 
+## Loading files
+
+Three routes, all landing in the catalog's **Loaded** group:
+
+- `Ctrl+O` (File → *Load data…*) for the file chooser.
+- Drag files from a file manager onto the window.
+- Right-click **Loaded** in the catalog and choose *Load datasets by
+  path…* — for when the files' locations are already known and walking
+  a chooser to them is the slow way round.
+
+The path dialog takes **one path per line**, each with a check light
+that re-reads it on every keystroke: green **ok** when the file is
+there and a loader handles its suffix, red **not found** when it is
+not, amber when the path exists but is not something that can be
+opened — a directory, or a suffix no loader claims.
+
+`Enter` on the last filled line opens the next one; `Enter` on a
+trailing blank line loads. **Pasting a block of paths** — copied out of
+a terminal, a script or a file manager — opens a line for each, so a
+list assembled elsewhere arrives in one gesture. Quotes, `~` and
+`file://` URIs are unwrapped on the way in.
+
+One bad line blocks the load and is named ("Fix or clear line 3 before
+loading") rather than being loaded around: a mistyped path should not
+disappear quietly while the others succeed. The dialog widens with the
+longest path it holds, because a path you cannot read whole is a path
+you cannot check.
+
 ## Row types
 
 Each command-bar row (primary and secondary) carries a **type**
@@ -91,6 +123,29 @@ Out-of-domain entries in a List render as blank columns rather
 than failing — convenient for comparing members that don't all
 contain the same ids.
 
+## Comparing members
+
+A toggle group holds any number of members on shared axes, one visible
+at a time. Build one by selecting several datasets in the catalog and
+choosing *Open in new toggle group*, by dragging a dataset onto a group
+card in the Viewport Manager, or by *Add to active toggle group*.
+Switch members with `1`…`9`, or let `Space` flicker between them; the
+Viewport Manager reorders them, marks the reference member and closes
+what you no longer need.
+
+Flickering is only an honest comparison when the members are drawn on
+one scale. By default each scales to its own clip percentiles — right
+for looking at a single dataset, wrong for judging whether an amplitude
+really changed between two. Tick **Fixed** in the toolbar's Appearance
+section and give a min and max, and every member of the group renders
+with those levels; **Auto** fills them from the active member's current
+data as a starting point. The scale bar beside the plot always shows
+the levels in force.
+
+Members whose shapes do not match are kept but badged *Independent
+axes*, and the toolbar's edit-target selector (`[1] [2] … [All]`)
+decides which members a processing change applies to.
+
 ## Transforms
 
 A toggle group can spawn a side window of frequency-domain
@@ -105,7 +160,7 @@ different processing chains affect the same patch of data.
 2. Click `FFT` (or press `Shift+F`) to open the transform window
    with an FFT tab. Each checked member draws one curve in its
    `tab10` color — magnitude of the per-trace FFT, averaged across
-   the selected traces.
+   the selected traces — named in a legend inside the plot.
 3. Click `f-k` (or press `Shift+K`) to add an f-k tab. Pick which
    member to view from the dropdown; by default it follows the
    canvas' active member, so toggling members on the canvas
@@ -119,6 +174,82 @@ different processing chains affect the same patch of data.
 The transform window has its own title that follows the group's
 name; closing the last tab closes the window, and closing the
 toggle group closes the transform window with it.
+
+### FFT tab
+
+Two controls sit above the plot:
+
+- **Smooth** — a centred moving average over frequency, 0–5 Hz wide
+  ("Off" at 0). The width is in Hz rather than bins, so one setting
+  means the same thing however long the selection is.
+- **Normalize by own peak** — divides each member's spectrum by its own
+  maximum, for comparing spectral *shape* between members whose
+  amplitudes differ by orders of magnitude. The peak is taken above
+  2.5 Hz: the near-DC bins are numerical garbage and would otherwise
+  set the scale. The Y axis pins to 0–1.05 while normalized.
+
+Right-click the plot for a log Y axis. The plot is black, like the
+canvas and the f-k image — the member colours were picked to read on a
+dark ground.
+
+### f-k tab
+
+Wavenumber runs across, frequency up, and only `f ≥ 0` is drawn: real
+input makes the lower half a mirror of the upper one. Wavenumber is in
+**cycles per trace** — no trace spacing is assumed, so the numbers stay
+honest on irregular geometry, and anyone with regular spacing can
+convert. Positive dip (time increasing with trace) reads as positive
+`k`, the same convention as the section beside it.
+
+The colormap is the rainbow used in the Model Window, and **Perc**
+(99 % by default) sets where the colour scale tops out — the few bins
+near `k = 0` otherwise own the maximum and flatten everything else.
+`F` fits the image, as on the canvas.
+
+## Exporting images
+
+The camera button above the scale bar exports the canvas; the FFT and
+f-k tabs carry the same button for their own plots.
+
+From the canvas it writes **one file per member** — folder, filename
+prefix, format (PNG / JPEG / TIFF), output width and a member picker.
+Files land at `<prefix>_<NN>_<member>.<ext>`, zero-padded so a
+directory listing sorts in display order, and every file comes out the
+same size with the same framing: only member visibility changes between
+shots, never the axis ranges, so the results can be flipped through or
+stacked externally. Auto-flicker is held still and the crosshair hidden
+while they are written, and existing files are named in an overwrite
+prompt before anything is touched.
+
+Either choice of framing is available in all three places:
+
+- **Plot with axes, labels and ticks** — the framed plot as displayed.
+- **Image only (no axes, no labels)** — the data alone, for overlaying
+  or composing the result elsewhere.
+
+## Crosshair readout
+
+The status bar reports the trace under the cursor — the group and key
+values for the current sort, time and amplitude — using `.sv` display
+names. Press `C` to toggle the crosshair lines themselves; the readout
+follows the pointer either way.
+
+**Double-click the readout** to choose extra header fields to show
+alongside it. The picker lists the populated fields of the group's
+active member, with its display name, and table order is readout order:
+
+```
+CDP 712 | offset 1250 | SP 340 | t = 4751.84 ms | amp = 0.0524
+```
+
+Values are read for the traces on screen only, in a single pass over
+their headers — a question about the few thousand visible traces should
+not read a multi-GB line end to end. They are re-read whenever the view
+moves, so a stale value cannot outlive the frame it described, and a
+field still being read shows an ellipsis rather than vanishing. Fields
+that grouping already materialised come from those arrays. The choice
+belongs to the toggle group and lasts the session, the same line sort
+draws.
 
 ## Depth-domain data and the Model Window
 
