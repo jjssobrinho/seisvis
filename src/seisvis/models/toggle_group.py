@@ -76,6 +76,7 @@ class ToggleGroup(QObject):
     member_added = Signal(int)  # index
     member_removed = Signal(int)  # index
     members_reordered = Signal()
+    member_moved = Signal(int, int)  # from index, to index
     active_index_changed = Signal(int)
     reference_index_changed = Signal(int)
     edit_target_changed = Signal(int, bool)  # index, link_all
@@ -263,15 +264,50 @@ class ToggleGroup(QObject):
         return cursor
 
     def move_member(self, from_index: int, to_index: int) -> None:
+        """Move a member to another position in the list.
+
+        The active, reference and edit-target cursors follow the members
+        they point at: reordering changes where a dataset sits, never which
+        dataset is shown, measured against or edited. ``member_moved``
+        carries the move for views that keep per-index state; then
+        ``members_reordered``; then the cursor signals whose index changed.
+        The reference's index may change too, but its dataset does not, so
+        ``reference_index_changed`` (which re-seeds the sort) is not emitted.
+        """
         if not 0 <= from_index < len(self._members):
             raise IndexError(f"from_index {from_index} out of range")
         if not 0 <= to_index < len(self._members):
             raise IndexError(f"to_index {to_index} out of range")
         if from_index == to_index:
             return
+        active = self._members[self._active_index] if self._members else None
+        reference = self._members[self._reference_index] if self._members else None
+        edit_target = (
+            self._members[self._edit_target_index]
+            if 0 <= self._edit_target_index < len(self._members)
+            else None
+        )
         member = self._members.pop(from_index)
         self._members.insert(to_index, member)
+
+        old_active, old_edit = self._active_index, self._edit_target_index
+        if active is not None:
+            self._active_index = self._index_of(active)
+        if reference is not None:
+            self._reference_index = self._index_of(reference)
+        if edit_target is not None:
+            self._edit_target_index = self._index_of(edit_target)
+
+        self.member_moved.emit(from_index, to_index)
         self.members_reordered.emit()
+        if self._active_index != old_active:
+            self.active_index_changed.emit(self._active_index)
+        if self._edit_target_index != old_edit:
+            self.edit_target_changed.emit(self._edit_target_index, self._link_all)
+
+    def _index_of(self, member: Member) -> int:
+        """Position of *member* by identity (Member compares by value)."""
+        return next(i for i, m in enumerate(self._members) if m is member)
 
     def set_active(self, index: int) -> None:
         if not 0 <= index < len(self._members):

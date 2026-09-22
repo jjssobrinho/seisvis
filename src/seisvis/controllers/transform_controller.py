@@ -76,6 +76,8 @@ class TransformController(QObject):
         # A member re-paired with the reference reads different traces for
         # the same selection; drop its cached slice and recompute.
         toggle_group.member_alignment_changed.connect(self._on_selection_changed)
+        # Cached slices are keyed by member index, which a reorder reshuffles.
+        toggle_group.members_reordered.connect(lambda: self._on_selection_changed(None))
 
     # --- public API --------------------------------------------------
 

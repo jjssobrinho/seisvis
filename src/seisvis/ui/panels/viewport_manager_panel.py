@@ -308,6 +308,11 @@ class _GroupCard(QFrame):
 
         group.member_added.connect(self._rebuild_members)
         group.member_removed.connect(self._rebuild_members)
+        # Remap the panel's (group, index) row selection before the rows are
+        # rebuilt, so a selected member stays selected at its new index.
+        group.member_moved.connect(
+            lambda f, t, gid=group.id: self._panel.remap_selection_after_move(gid, f, t)
+        )
         group.members_reordered.connect(self._rebuild_members)
         group.active_index_changed.connect(self._on_active_changed)
         group.reference_index_changed.connect(self._rebuild_members)
@@ -480,6 +485,18 @@ class ViewportManagerPanel(QWidget):
         self._apply_selection_highlights()
         # Also select the group in the active-tab sense.
         self.group_selected.emit(row.group.id)
+
+    def remap_selection_after_move(self, group_id: str, from_index: int, to_index: int) -> None:
+        """Keep selected member rows on the same members after a reorder,
+        preserving click order (the first clicked is still diff A).
+        """
+        order = list(range(max(from_index, to_index) + 1))
+        order.insert(to_index, order.pop(from_index))
+        new_index = {old: new for new, old in enumerate(order)}
+        self._selected_members = {
+            ((gid, new_index.get(idx, idx)) if gid == group_id else (gid, idx)): None
+            for gid, idx in self._selected_members
+        }
 
     def _apply_selection_highlights(self) -> None:
         for gid, card in self._cards.items():

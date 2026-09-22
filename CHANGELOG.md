@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Reordering members no longer swaps the reference or the images
+
+- **Moving a member (Viewport Manager arrows or drag) moves only that
+  member.** The active, reference and edit-target cursors used to stay
+  at their old positions, so whichever dataset landed in the reference
+  slot silently became the reference; they now follow their datasets.
+- **The canvas reorders its images with the members.** It kept each
+  image in its old slot, so after a move a member's number showed
+  another member's traces. Reads still in flight are redone under the
+  member's new position, and FFT / f-k results are recomputed.
+- **Selected member rows stay on their members** (and in click order,
+  so diff A is unchanged).
+
 ### Members in another trace order are shown in the reference's order
 
 - **A file stored in a different trace order is re-sorted to match the

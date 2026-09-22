@@ -594,6 +594,7 @@ class SeismicView(QWidget):
         self.group.crosshair_fields_changed.connect(self._refresh_header_values)
         self.group.member_added.connect(self._on_member_added)
         self.group.member_removed.connect(self._on_member_removed)
+        self.group.member_moved.connect(self._on_member_moved)
         self.group.active_index_changed.connect(self._on_active_index_changed)
         self.group.reference_index_changed.connect(self._on_reference_index_changed)
         self.group.shared_state_changed.connect(self._on_shared_state_changed)
@@ -667,6 +668,47 @@ class SeismicView(QWidget):
         self._refresh_info_track()
         self._refresh_overlays()
         self._last_active_index = self.group.active_index
+
+    def _on_member_moved(self, from_index: int, to_index: int) -> None:
+        """Carry every per-member slot along with the member that moved.
+
+        Images, last arrays and read modes are positional; without this the
+        canvas would keep drawing each slot's old dataset under its new
+        index. Cached slices and in-flight reads are keyed by index too, so
+        the group's cache is dropped and any read still running is redone
+        under the member's new index.
+        """
+        n = len(self._image_items)
+        if not (0 <= from_index < n and 0 <= to_index < n):
+            return
+        for per_member in (
+            self._image_items,
+            self._last_arrays,
+            self._last_rects,
+            self._read_modes,
+        ):
+            per_member.insert(to_index, per_member.pop(from_index))
+
+        order = list(range(n))
+        order.insert(to_index, order.pop(from_index))
+        new_index = {old: new for new, old in enumerate(order)}
+        if 0 <= self._last_active_index < n:
+            self._last_active_index = new_index[self._last_active_index]
+
+        in_flight = {w.member_index for w in self._active_workers if not w.is_cancelled}
+        for w in self._active_workers:
+            w.is_cancelled = True
+        self._active_workers = []
+        self.loading_label.setVisible(False)
+        self._cache.invalidate_group(self.group.id)
+        for old in sorted(in_flight):
+            if old in new_index:
+                self._request_slice(new_index[old])
+
+        self._apply_active_visibility()
+        self._apply_plot_ranges()
+        self._refresh_info_track()
+        self._refresh_overlays()
 
     def _on_active_index_changed(self, _index: int) -> None:
         # Save the previously active member's view if it was incompatible,

@@ -56,6 +56,7 @@ class TransformWindow(QMainWindow):
         toggle_group.name_changed.connect(self._on_group_name_changed)
         toggle_group.member_added.connect(lambda _i: self._refresh_member_lists())
         toggle_group.member_removed.connect(lambda _i: self._refresh_member_lists())
+        toggle_group.member_moved.connect(self._on_member_moved)
 
     # --- public API --------------------------------------------------
 
@@ -133,6 +134,15 @@ class TransformWindow(QMainWindow):
 
     def _on_group_name_changed(self, name: str) -> None:
         self.setWindowTitle(f"Transforms — {name}")
+
+    def _on_member_moved(self, _from: int, _to: int) -> None:
+        """Relabel the selectors and recompute: every index-keyed result
+        may now belong to a different member. The FFT tab re-requests on
+        rebuild; the f-k tab has to be asked.
+        """
+        self._refresh_member_lists()
+        if self._fk_tab is not None:
+            self._controller.request_recompute("fk", [self._fk_tab.selected_member()])
 
     def _refresh_member_lists(self) -> None:
         if self._fft_tab is not None:
