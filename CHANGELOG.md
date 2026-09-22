@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+### Members in another trace order are shown in the reference's order
+
+- **A file stored in a different trace order is re-sorted to match the
+  reference.** A shot-sorted line and the same line re-sorted to channel
+  order (e.g. after `sftahsort`) have the same trace count, key ranges
+  and group ids, so they were accepted as toggle-compatible, yet trace
+  *i* of one was not trace *i* of the other and toggling compared
+  unrelated traces. Each non-reference member is now paired with the
+  reference trace by trace — by FieldRecord + TraceNumber, falling back
+  to source/receiver positions, shot + offset, CDP + offset, inline +
+  crossline — and read through that pairing, so every member shows the
+  same traces in the same columns, in natural order and under any
+  committed sort alike. The crosshair, the header readout and the FFT /
+  f-k selection read the member's own paired traces.
+- **Pairing runs in the background** once both files' header scans are
+  in, and re-runs when the reference changes or a file is reloaded.
+  Files already in the reference's order cost one array comparison. A
+  member still being paired shows "Aligning traces to the reference…"
+  rather than the wrong traces.
+- **Badges say how the active member is read**: "Re-sorted to reference"
+  (with the pairing keys in the tooltip) or, when no header identifies
+  the traces in both files, "Trace order unverified" — the member is
+  then shown in its own file order, as before, and the status bar says
+  why.
+- **The first dataset clicked is the reference.** A catalog selection
+  now reports datasets in the order they were selected, so "Open in new
+  toggle group" makes the first one clicked the reference and the first
+  one clicked is A in "Compute Difference…". Member-row selections in
+  the Viewport Manager keep click order too.
+- **A − B diffs read B in A's order.** Every diff entry point (catalog,
+  Viewport Manager member rows, Ctrl+D group selection) pairs B's traces
+  with A's before creating the derived dataset, so the difference is
+  taken trace for trace rather than between unrelated traces.
+
 ### Quick load by full path
 
 - **Right-click "Loaded" in the catalog** (or empty space below the rows

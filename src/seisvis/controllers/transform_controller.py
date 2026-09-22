@@ -73,6 +73,9 @@ class TransformController(QObject):
             self._timers[ttype] = t
 
         toggle_group.selection_changed.connect(self._on_selection_changed)
+        # A member re-paired with the reference reads different traces for
+        # the same selection; drop its cached slice and recompute.
+        toggle_group.member_alignment_changed.connect(self._on_selection_changed)
 
     # --- public API --------------------------------------------------
 
@@ -163,7 +166,12 @@ class TransformController(QObject):
                 continue
             dataset = self._group.members[m_index].dataset
             try:
-                slice_data = self._cache.get_or_load(dataset, m_index, selection)
+                slice_data = self._cache.get_or_load(
+                    dataset,
+                    m_index,
+                    selection,
+                    trace_indices=self._group.member_selection_indices(m_index, selection),
+                )
             except Exception as exc:  # pragma: no cover - defensive
                 log.exception("Slice read failed for member %s: %s", m_index, exc)
                 self.result_failed.emit(m_index, transform_type, str(exc))

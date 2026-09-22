@@ -364,6 +364,8 @@ class CatalogPanel(QWidget):
     quick_load_requested = Signal(object)  # list[Path] typed into the quick-load dialog
     domain_changed = Signal(object)  # Dataset whose vertical domain flipped
     sv_write_failed = Signal(str)  # .sv filename that could not be written
+    # (a, b) datasets for an A − B diff; a is the dataset clicked first.
+    diff_requested = Signal(object, object)
 
     def __init__(self, project: Project, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -385,6 +387,12 @@ class CatalogPanel(QWidget):
         self._view.customContextMenuRequested.connect(self._show_context_menu)
         self._view.doubleClicked.connect(self._on_double_clicked)
         self._view.viewport().installEventFilter(self)
+        # Dataset ids in the order the user selected them. The first one
+        # picked is the reference of a group opened from the selection and
+        # the A side of a diff, so position means "clicked first", not
+        # "listed first".
+        self._click_order: list[str] = []
+        self._view.selectionModel().selectionChanged.connect(self._on_selection_changed)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -395,13 +403,23 @@ class CatalogPanel(QWidget):
         return self._model
 
     def selected_datasets(self) -> list[Dataset]:
-        """Selected datasets in catalog order (Loaded before Derived, top-down).
+        """Selected datasets in the order they were selected.
 
-        ``selectedIndexes`` reports ranges in the order they were built, so
-        ctrl-clicking bottom-up would otherwise hand back a reversed list —
-        fine for a set, wrong for anything that assigns meaning to position
-        (member order in a new toggle group, A vs. B in a diff).
+        Position carries meaning — the first dataset is the reference of a
+        toggle group opened from the selection and the A side of a diff —
+        and the user expects that to be the one they clicked first, not the
+        one listed highest. ``selectedIndexes`` reports neither reliably, so
+        the order is tracked from ``selectionChanged``. Anything selected
+        without passing through that (none in practice) trails in catalog
+        order.
         """
+        datasets = self._selected_in_catalog_order()
+        rank = {ds_id: i for i, ds_id in enumerate(self._click_order)}
+        tail = len(rank)
+        return sorted(datasets, key=lambda ds: rank.get(ds.id, tail))
+
+    def _selected_in_catalog_order(self) -> list[Dataset]:
+        """Selected datasets in catalog order (Loaded before Derived, top-down)."""
         seen: set[str] = set()
         rows: list[tuple[int, int, Dataset]] = []
         for idx in self._view.selectionModel().selectedIndexes():
@@ -412,6 +430,31 @@ class CatalogPanel(QWidget):
             rows.append((int(idx.internalId()), idx.row(), ds))
         rows.sort(key=lambda r: (r[0], r[1]))
         return [ds for _, _, ds in rows]
+
+    def _on_selection_changed(self, selected, deselected) -> None:  # noqa: ANN001
+        """Keep ``_click_order`` in step with the view's selection.
+
+        One change can add several rows (shift-click range); those join in
+        catalog order after everything already selected.
+        """
+        for idx in deselected.indexes():
+            ds = self._model.dataset_for_index(idx)
+            if ds is not None and ds.id in self._click_order:
+                self._click_order.remove(ds.id)
+        added: list[tuple[int, int, str]] = []
+        for idx in selected.indexes():
+            ds = self._model.dataset_for_index(idx)
+            if ds is None or ds.id in self._click_order:
+                continue
+            if any(a[2] == ds.id for a in added):
+                continue
+            added.append((int(idx.internalId()), idx.row(), ds.id))
+        added.sort(key=lambda r: (r[0], r[1]))
+        self._click_order.extend(ds_id for _, _, ds_id in added)
+        # Rows that left the selection some other way (model reset) must not
+        # linger and outrank a later pick.
+        live = {ds.id for ds in self._selected_in_catalog_order()}
+        self._click_order = [i for i in self._click_order if i in live]
 
     def _show_context_menu(self, pos) -> None:  # noqa: ANN001
         menu = self.build_context_menu_at(self._view.indexAt(pos))
@@ -530,23 +573,10 @@ class CatalogPanel(QWidget):
                 if not compat.ok:
                     diff.setToolTip(f"Incompatible: {compat.reason}")
                 if compat.ok:
-                    diff.triggered.connect(lambda: self._open_diff_dialog(a, b))
+                    diff.triggered.connect(lambda: self.diff_requested.emit(a, b))
         else:
             return None
         return menu
-
-    def _open_diff_dialog(self, a: Dataset, b: Dataset) -> None:
-        from seisvis.services.derivation import IncompatibleDatasetsError, compute_difference
-        from seisvis.ui.dialogs.diff_dialog import DiffDialog
-
-        dlg = DiffDialog(a, b, parent=self)
-        if dlg.exec():
-            try:
-                compute_difference(self._project, a, b, dlg.direction(), dlg.result_name())
-            except IncompatibleDatasetsError as exc:
-                from PySide6.QtWidgets import QMessageBox
-
-                QMessageBox.warning(self, "Incompatible datasets", str(exc))
 
     def _inspector_tooltip(self) -> str:
         from PySide6.QtCore import QSettings

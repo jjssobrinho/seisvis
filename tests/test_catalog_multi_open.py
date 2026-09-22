@@ -72,11 +72,40 @@ def _labels(menu) -> list[str]:  # noqa: ANN001
 # --- selection order ---
 
 
-def test_selection_is_reported_in_catalog_order(
+def test_selection_is_reported_in_click_order(
     window: MainWindow, three_datasets: list[Dataset]
 ) -> None:
+    # The first dataset picked is the reference of a group opened from the
+    # selection (and A of a diff), so order follows the clicks.
     _select_rows(window, [2, 0, 1])
-    assert [ds.name for ds in window.catalog_panel.selected_datasets()] == ["a", "b", "c"]
+    assert [ds.name for ds in window.catalog_panel.selected_datasets()] == ["c", "a", "b"]
+
+
+def test_deselecting_drops_a_dataset_from_the_click_order(
+    window: MainWindow, three_datasets: list[Dataset]
+) -> None:
+    _select_rows(window, [1, 2])
+    panel = window.catalog_panel
+    parent = panel.model.index(GROUP_LOADED, 0)
+    selection = panel._view.selectionModel()
+    selection.select(panel.model.index(1, 0, parent), QItemSelectionModel.SelectionFlag.Deselect)
+    selection.select(panel.model.index(1, 0, parent), QItemSelectionModel.SelectionFlag.Select)
+    assert [ds.name for ds in panel.selected_datasets()] == ["c", "b"]
+
+
+def test_a_range_selected_at_once_joins_in_catalog_order(
+    window: MainWindow, three_datasets: list[Dataset]
+) -> None:
+    from PySide6.QtCore import QItemSelection
+
+    panel = window.catalog_panel
+    parent = panel.model.index(GROUP_LOADED, 0)
+    selection = panel._view.selectionModel()
+    selection.clearSelection()
+    selection.select(panel.model.index(2, 0, parent), QItemSelectionModel.SelectionFlag.Select)
+    rng = QItemSelection(panel.model.index(0, 0, parent), panel.model.index(1, 0, parent))
+    selection.select(rng, QItemSelectionModel.SelectionFlag.Select)
+    assert [ds.name for ds in panel.selected_datasets()] == ["c", "a", "b"]
 
 
 # --- menu contents ---
@@ -179,7 +208,9 @@ def test_end_to_end_from_the_catalog_selection(
 
     assert len(window.project.toggle_groups) == 1
     group = window.project.toggle_groups[0]
-    assert [m.dataset.name for m in group.members] == ["a", "b", "c"]
+    # Click order: "c" was picked first, so it is the reference.
+    assert [m.dataset.name for m in group.members] == ["c", "a", "b"]
+    assert group.members[group.reference_index].dataset.name == "c"
 
 
 def test_empty_list_creates_nothing(window: MainWindow) -> None:

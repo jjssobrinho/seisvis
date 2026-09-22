@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
 from PySide6.QtCore import QObject, Signal
 
 from seisvis.models.compatibility import CompatResult, are_toggle_compatible
@@ -15,6 +16,7 @@ from seisvis.models.display_state import DisplayState
 from seisvis.models.processing_chain import ProcessingChain
 from seisvis.models.selection import Selection
 from seisvis.models.sort_config import SortConfig, default_sort_config
+from seisvis.models.trace_alignment import AlignmentStatus, TraceAlignment
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +57,10 @@ class Member:
     dataset: Dataset
     display_state: DisplayState = field(default_factory=DisplayState)
     processing_chain: ProcessingChain = field(default_factory=ProcessingChain)
+    # How this member's traces pair with the reference's. ``None`` means not
+    # assessed (nothing is aligning this group) and the member is read in
+    # its own file order, as before alignment existed.
+    alignment: TraceAlignment | None = None
 
 
 class ToggleGroup(QObject):
@@ -84,6 +90,7 @@ class ToggleGroup(QObject):
     # Extra header fields the crosshair readout shows on hover.
     crosshair_fields_changed = Signal()
     selection_changed = Signal(object)  # Selection | None
+    member_alignment_changed = Signal(int)  # member index
 
     def __init__(self, name: str, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -234,6 +241,7 @@ class ToggleGroup(QObject):
         # index 0") and notify subscribers.
         if self._members and new_reference != old_reference:
             self._initialize_grouping_from_reference(reset_group=True)
+            self._invalidate_alignments()
             self.reference_index_changed.emit(new_reference)
         if self._members and new_active != old_active:
             self.active_index_changed.emit(new_active)
@@ -280,6 +288,7 @@ class ToggleGroup(QObject):
             return
         self._reference_index = index
         self._initialize_grouping_from_reference(reset_group=True)
+        self._invalidate_alignments()
         self.reference_index_changed.emit(index)
 
     def set_edit_target(self, index: int, link_all: bool) -> None:
@@ -290,6 +299,113 @@ class ToggleGroup(QObject):
         self._edit_target_index = index
         self._link_all = link_all
         self.edit_target_changed.emit(index, link_all)
+
+    # --- trace alignment ---
+
+    def member_alignment(self, index: int) -> TraceAlignment | None:
+        if not 0 <= index < len(self._members):
+            return None
+        return self._members[index].alignment
+
+    def set_member_alignment(self, index: int, alignment: TraceAlignment | None) -> None:
+        """Record how member *index* pairs with the reference. Always emits:
+        a recomputed alignment may equal the old one in status but not in map.
+        """
+        if not 0 <= index < len(self._members):
+            raise IndexError(f"member index {index} out of range")
+        self._members[index].alignment = alignment
+        self.member_alignment_changed.emit(index)
+
+    def _invalidate_alignments(self) -> None:
+        """The reference moved: every assessed alignment is now against the
+        wrong dataset. Assessed members go back to pending (the reference
+        itself to identity); unassessed ones are left alone. Emission is left
+        to the caller's ``reference_index_changed``, which the aligner uses
+        to recompute.
+        """
+        for i, m in enumerate(self._members):
+            if m.alignment is None:
+                continue
+            if i == self._reference_index:
+                m.alignment = TraceAlignment.identity()
+            else:
+                m.alignment = TraceAlignment.pending()
+
+    def resolve_member_trace_indices(
+        self, index: int
+    ) -> tuple[slice | np.ndarray | None, tuple[int, int]]:
+        """Trace indices member *index* reads, and where they are drawn.
+
+        Returns ``(indices, (x0, x1))``: ``indices`` addresses the member's
+        own file and goes straight to ``read_slice``; ``(x0, x1)`` is the
+        canvas x-range the result occupies. ``None`` means draw nothing.
+
+        A member aligned to the reference by a remapping takes its layout
+        from the *reference* — the reference's committed sort or natural
+        order — and reads the paired traces of its own, so both show the
+        same traces in the same columns. Every other member resolves as it
+        always has: through its own group index when a sort is committed,
+        through the shared commanded range otherwise.
+        """
+        try:
+            member = self._members[index]
+        except IndexError:
+            return None, (0, 0)
+        alignment = member.alignment
+        if alignment is not None and alignment.is_pending:
+            return None, (0, 0)
+        mapped = alignment is not None and alignment.is_mapped
+        if mapped:
+            layout_ds = self._members[self._reference_index].dataset
+        else:
+            layout_ds = member.dataset
+        state = self.shared_state
+        gi = getattr(layout_ds, "group_index", None)
+        if gi is not None and state.sort_config.committed:
+            indices = gi.get_trace_indices(state.sort_config)
+            if indices.size == 0:
+                return None, (0, 0)
+            x_range = (int(indices.min()), int(indices.max()) + 1)
+            if mapped:
+                assert alignment is not None
+                return alignment.map_indices(indices), x_range
+            return indices, x_range
+
+        if state.commanded_trace_range is None:
+            return None, (0, 0)
+        n = int(layout_ds.n_traces)
+        t0, t1 = state.commanded_trace_range
+        t0 = max(0, min(n, t0))
+        t1 = max(t0, min(n, t1))
+        if mapped:
+            assert alignment is not None
+            return alignment.map_indices(slice(t0, t1)), (t0, t1)
+        return slice(t0, t1), (t0, t1)
+
+    def member_trace_index(self, index: int, ref_trace: int) -> int:
+        """The member's own trace index for reference trace *ref_trace*."""
+        alignment = self.member_alignment(index)
+        if alignment is None:
+            return int(ref_trace)
+        return alignment.map_index(int(ref_trace))
+
+    def member_selection_indices(self, index: int, selection: Selection) -> np.ndarray | None:
+        """The member's own traces under *selection*, or ``None`` when the
+        selection's trace span already addresses them (no remapping).
+        """
+        alignment = self.member_alignment(index)
+        if alignment is None or not alignment.is_mapped:
+            return None
+        assert alignment.member_for_ref is not None
+        n = alignment.member_for_ref.size
+        span = np.arange(max(0, selection.trace_start), min(n, selection.trace_end + 1))
+        mapped = alignment.map_indices(span)
+        assert isinstance(mapped, np.ndarray)
+        return mapped
+
+    def member_is_remapped(self, index: int) -> bool:
+        alignment = self.member_alignment(index)
+        return alignment is not None and alignment.status is AlignmentStatus.MAPPED
 
     def update_member_display_state(self, index: int, **kwargs: object) -> bool:
         """Apply keyword updates to a member's DisplayState.

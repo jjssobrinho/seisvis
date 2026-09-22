@@ -388,13 +388,17 @@ class ViewportManagerPanel(QWidget):
 
     close_group_requested = Signal(str)  # group id
     group_selected = Signal(str)
+    # (a, b) datasets for an A − B diff; a is the member clicked first.
+    diff_requested = Signal(object, object)
 
     def __init__(self, project: Project, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._project = project
         self._cards: dict[str, _GroupCard] = {}
         # Set of (group_id, member_index) tuples selected for diff.
-        self._selected_members: set[tuple[str, int]] = set()
+        # Insertion-ordered so the first member clicked stays first: it is
+        # the A (reference) side of a diff.
+        self._selected_members: dict[tuple[str, int], None] = {}
 
         # Scrollable area for group cards.
         self._scroll = QScrollArea(self)
@@ -433,7 +437,7 @@ class ViewportManagerPanel(QWidget):
     def _on_group_removed(self, group_id: str) -> None:
         # Clear selection entries for the removed group.
         self._selected_members = {
-            (gid, idx) for gid, idx in self._selected_members if gid != group_id
+            (gid, idx): None for gid, idx in self._selected_members if gid != group_id
         }
         card = self._cards.pop(group_id, None)
         if card is None:
@@ -468,11 +472,11 @@ class ViewportManagerPanel(QWidget):
         key = (row.group.id, row.member_index)
         if add_to_selection:
             if key in self._selected_members:
-                self._selected_members.discard(key)
+                self._selected_members.pop(key)
             else:
-                self._selected_members.add(key)
+                self._selected_members[key] = None
         else:
-            self._selected_members = {key}
+            self._selected_members = {key: None}
         self._apply_selection_highlights()
         # Also select the group in the active-tab sense.
         self.group_selected.emit(row.group.id)
@@ -483,7 +487,7 @@ class ViewportManagerPanel(QWidget):
                 row.set_selected((gid, row.member_index) in self._selected_members)
 
     def _selected_datasets(self) -> list:
-        """Return Dataset objects for all selected member rows, in selection order."""
+        """Return Dataset objects for all selected member rows, in click order."""
         result = []
         for gid, idx in self._selected_members:
             card = self._cards.get(gid)
@@ -496,7 +500,6 @@ class ViewportManagerPanel(QWidget):
 
     def _show_member_context_menu(self, row: _MemberRow, global_pos) -> None:  # noqa: ANN001
         from seisvis.models.compatibility import are_toggle_compatible
-        from seisvis.ui.dialogs.diff_dialog import DiffDialog
 
         datasets = self._selected_datasets()
         if len(datasets) != 2:
@@ -512,25 +515,9 @@ class ViewportManagerPanel(QWidget):
 
         action = menu.exec(global_pos)
         if action is diff_action and compat.ok:
-            from seisvis.services.derivation import (
-                IncompatibleDatasetsError,
-                compute_difference,
-            )
-
-            dlg = DiffDialog(a, b, parent=self)
-            if dlg.exec():
-                try:
-                    derived = compute_difference(
-                        self._project, a, b, dlg.direction(), dlg.result_name()
-                    )
-                    # Add the new derived dataset to the currently active toggle group.
-                    active_group = self._project.active_toggle_group()
-                    if active_group is not None:
-                        active_group.add_member(derived)
-                    self._selected_members.clear()
-                    self._apply_selection_highlights()
-                except IncompatibleDatasetsError as exc:
-                    log.warning("diff compute failed: %s", exc)
+            self._selected_members.clear()
+            self._apply_selection_highlights()
+            self.diff_requested.emit(a, b)
 
     def _show_context_menu(self, pos: QPoint) -> None:
         menu = QMenu(self)

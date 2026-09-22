@@ -39,11 +39,23 @@ class DerivedDataset(QObject):
         direction: Literal["a_minus_b", "b_minus_a"] = "a_minus_b",
         name: str = "",
         id: str | None = None,
+        b_for_a: np.ndarray | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self.parent_a = parent_a
         self.parent_b = parent_b
+        # B's trace holding the same data as A's trace i, when B is stored
+        # in a different trace order (see models.trace_alignment). None means
+        # the two files share an order and trace i pairs with trace i.
+        if b_for_a is not None:
+            b_for_a = np.asarray(b_for_a, dtype=np.int64)
+            if b_for_a.shape != (parent_a.n_traces,):
+                raise ValueError(
+                    f"b_for_a must have one entry per trace of A ({parent_a.n_traces}), "
+                    f"got shape {b_for_a.shape}"
+                )
+        self.b_for_a: np.ndarray | None = b_for_a
         self.direction: Literal["a_minus_b", "b_minus_a"] = direction
         self.id: str = id if id is not None else str(uuid.uuid4())
         self.name: str = name if name else f"{parent_a.name} \u2212 {parent_b.name}"
@@ -123,10 +135,18 @@ class DerivedDataset(QObject):
         if self._parents_missing:
             raise ParentMissingError(f"Parent dataset missing for '{self.name}'")
         a = self.parent_a.read_slice(trace_indices, time_slice, pad_samples)
-        b = self.parent_b.read_slice(trace_indices, time_slice, pad_samples)
+        b = self.parent_b.read_slice(self._b_indices(trace_indices), time_slice, pad_samples)
         if self.direction == "a_minus_b":
             return (a - b).astype(np.float32)
         return (b - a).astype(np.float32)
+
+    def _b_indices(self, trace_indices: slice | np.ndarray) -> slice | np.ndarray:
+        """B's traces pairing with A's *trace_indices*."""
+        if self.b_for_a is None:
+            return trace_indices
+        if isinstance(trace_indices, slice):
+            return self.b_for_a[trace_indices].copy()
+        return self.b_for_a[np.asarray(trace_indices, dtype=np.int64)]
 
     def inline_at(self, trace_index: int) -> int | None:
         return self.parent_a.inline_at(trace_index)

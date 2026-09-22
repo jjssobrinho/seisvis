@@ -29,17 +29,24 @@ class SelectionSliceCache:
         dataset: Dataset,
         member_index: int,
         selection: Selection,
+        trace_indices: np.ndarray | None = None,
     ) -> np.ndarray:
         """Return the slice for (member_index, selection), reading on miss.
 
         A new ``selection`` invalidates the entire cache before the read.
+        ``trace_indices`` overrides the selection's trace span for a member
+        read through a trace alignment (its own traces, in reference order).
         """
         if self._selection != selection:
             self.invalidate(selection)
         cached = self._cache.get(member_index)
         if cached is not None:
             return cached
-        data = self._reader(dataset, selection)
+        if trace_indices is not None:
+            time_slice = slice(selection.sample_start, selection.sample_end + 1)
+            data = dataset.read_slice(trace_indices, time_slice)
+        else:
+            data = self._reader(dataset, selection)
         self._cache[member_index] = data
         return data
 

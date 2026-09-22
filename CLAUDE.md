@@ -170,7 +170,10 @@ ui/  →  controllers/  →  services/  →  models/ ← processing/, io/
   or app shutdown.
 - Does **not** run automatically after load. The user has to ask
   (by committing a sort, or via the header-mapping dialog's "Scan
-  fully" action where applicable).
+  fully" action where applicable). Exception: trace alignment may read
+  extra match fields (source/receiver, offset, CDP) for a group member
+  when the default scan's FieldRecord + TraceNumber cannot pair its
+  traces with the reference's — adding the member is the request.
 
 ---
 
@@ -447,6 +450,25 @@ Member
 - Keyboard: `1`..`9` (canvas focus; `Qt.WidgetWithChildrenShortcut`).
 - Auto-flicker: `QTimer` cycles `active_index` (0.5–10 Hz).
 - **Switching never changes the active `QTabWidget` tab.**
+
+### Trace alignment
+
+- Every non-reference member carries a `TraceAlignment`
+  (`models/trace_alignment.py`): `PENDING`, `IDENTITY`, `MAPPED`
+  (`member_for_ref[i]` = member trace holding reference trace *i*) or
+  `FAILED`. `None` = not assessed (read in file order).
+- Traces are paired by header tuples tried in order — FieldRecord +
+  TraceNumber first. `AlignmentController` computes them off-thread once
+  both header scans are done; re-runs on reference change / reload.
+- All member trace reads go through
+  `ToggleGroup.resolve_member_trace_indices`: a `MAPPED` member takes
+  its layout (natural order or committed sort) from the **reference**
+  and reads its own paired traces. `PENDING` draws nothing.
+  `FAILED` falls back to file order with a badge.
+- Diffs: `DerivedDataset.b_for_a` reads B in A's order.
+- "First" in a multi-selection means **first clicked**: the catalog
+  tracks selection order; it decides the new group's reference and A
+  in a diff.
 
 ### Compatibility
 
@@ -790,6 +812,8 @@ contiguous range. Used by Range-type rows in either position.
 - A depth-domain dataset never enters a toggle group.
 - `read_slice` is the only trace-data access path.
 - Switching compatible members = `setVisible()` only.
+- A member never shows traces unpaired with the reference's when a
+  pairing exists; while pending it shows nothing.
 - Member switching never changes the tab.
 - Padding for filter edge effects is never removed.
 - Toolbar rebinds are silent (`blockSignals(True)`).

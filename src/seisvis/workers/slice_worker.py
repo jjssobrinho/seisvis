@@ -39,6 +39,7 @@ class SliceWorker(QRunnable):
         trace_indices: slice | np.ndarray,
         time_slice: slice,
         processing_chain: ProcessingChain,
+        display_trace_range: tuple[int, int] | None = None,
     ) -> None:
         super().__init__()
         self.group_id = group_id
@@ -47,6 +48,10 @@ class SliceWorker(QRunnable):
         self.trace_indices = trace_indices
         self.time_slice = time_slice
         self.processing_chain = processing_chain
+        # Where the result sits on the canvas x-axis. Normally implied by the
+        # indices read; a member read through a trace alignment reads its own
+        # indices but is drawn where the reference's traces are.
+        self.display_trace_range = display_trace_range
         self.is_cancelled: bool = False
         self.signals = SliceWorkerSignals()
 
@@ -102,6 +107,8 @@ class SliceWorker(QRunnable):
         )
 
     def _materialize_trace_range(self) -> tuple[int, int]:
+        if self.display_trace_range is not None:
+            return (int(self.display_trace_range[0]), int(self.display_trace_range[1]))
         if isinstance(self.trace_indices, slice):
             start, stop, _ = self.trace_indices.indices(self.dataset.n_traces)
             return (int(start), int(stop))

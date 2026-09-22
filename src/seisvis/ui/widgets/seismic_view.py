@@ -24,6 +24,7 @@ from seisvis.models.group_index import GroupIndex, GroupingMode
 from seisvis.models.selection import Selection
 from seisvis.models.sort_config import TRACE_RANGE_FIELD, RowSelection, SortConfig
 from seisvis.models.toggle_group import Member, ToggleGroup
+from seisvis.models.trace_alignment import AlignmentStatus
 from seisvis.services.image_export import ExportOptions, output_path
 from seisvis.ui.dialogs.export_images_dialog import ExportImagesDialog
 from seisvis.ui.widgets.group_command_bar import GroupCommandBar
@@ -226,6 +227,9 @@ class SeismicView(QWidget):
         self._active_workers: list[SliceWorker] = []
         self._last_arrays: list[np.ndarray | None] = []
         self._last_rects: list[QRectF | None] = []
+        # Per member, what its current frame was read as (see _read_mode),
+        # so an alignment update that changes nothing skips the re-read.
+        self._read_modes: list[object] = []
         self._updating_range = False
         self._last_active_index: int = -1
         # Physical trace indices in display order for the current render.
@@ -363,6 +367,20 @@ class SeismicView(QWidget):
         )
         self.group_missing_label.setVisible(False)
         self.group_missing_label.adjustSize()
+
+        # Alignment overlays. "Aligning…" covers a member whose traces are
+        # still being paired with the reference — drawing it in file order
+        # meanwhile would show the wrong traces side by side. The badge
+        # under the axes badge says how the active member is being read.
+        self.aligning_label = QLabel("Aligning traces to the reference…", self.plot_widget)
+        self.aligning_label.setStyleSheet(
+            "background-color: rgba(40, 40, 40, 200); color: white; padding: 6px 12px;"
+            "border-radius: 4px; font-weight: bold;"
+        )
+        self.aligning_label.setVisible(False)
+        self.aligning_label.adjustSize()
+        self.alignment_badge = QLabel("", self.plot_widget)
+        self.alignment_badge.setVisible(False)
 
         # Drop hint: shown only while a catalog drag hovers this canvas, so
         # the user can see which tab will receive the dataset.
@@ -585,6 +603,7 @@ class SeismicView(QWidget):
         self.group.color_scale_changed.connect(self._on_color_scale_changed)
         self.group.auto_color_scale_requested.connect(self._on_auto_color_scale_requested)
         self.group.selection_changed.connect(self._on_selection_changed)
+        self.group.member_alignment_changed.connect(self._on_member_alignment_changed)
 
     # --- Member management ---
 
@@ -595,6 +614,7 @@ class SeismicView(QWidget):
         self._image_items.insert(index, item)
         self._last_arrays.insert(index, None)
         self._last_rects.insert(index, None)
+        self._read_modes.insert(index, self._read_mode(index))
         self._apply_active_visibility()
         self._fit_to_member(index)
         self._request_slice(index)
@@ -637,6 +657,7 @@ class SeismicView(QWidget):
             self.plot_item.removeItem(item)
             self._last_arrays.pop(index)
             self._last_rects.pop(index)
+            self._read_modes.pop(index)
         # Subsequent workers' member_index values shift down by one, but
         # since the slice cache is keyed by (group_id, member_index), we
         # invalidate the removed slot so a later refill can't collide.
@@ -674,6 +695,63 @@ class SeismicView(QWidget):
         self._apply_plot_ranges()
         self._refresh_info_track()
         self._refresh_overlays()
+
+    def _on_member_alignment_changed(self, index: int) -> None:
+        """Re-read a member whose pairing with the reference changed.
+
+        Its cached slices were read in the old order, so they go first; a
+        member still pending is cleared rather than drawn in file order.
+        """
+        if not 0 <= index < len(self._image_items):
+            return
+        mode = self._read_mode(index)
+        if mode == self._read_modes[index]:
+            # Same traces either way (e.g. unassessed → identity): the
+            # current frame is already right.
+            self._refresh_overlays()
+            return
+        self._read_modes[index] = mode
+        self._cache.invalidate_member(self.group.id, index)
+        alignment = self.group.member_alignment(index)
+        if alignment is not None and alignment.is_pending:
+            for w in self._active_workers:
+                if w.member_index == index:
+                    w.is_cancelled = True
+            self._image_items[index].clear()
+            self._last_arrays[index] = None
+            self._last_rects[index] = None
+        else:
+            self._request_slice(index)
+        if index == self.group.active_index:
+            self._refresh_info_track()
+            self._refresh_header_values()
+        self._refresh_overlays()
+
+    def _read_mode(self, index: int) -> object:
+        """What member *index* reads: its file order, nothing yet, or a map."""
+        alignment = self.group.member_alignment(index)
+        if alignment is None:
+            return "plain"
+        if alignment.is_pending:
+            return "pending"
+        if alignment.is_mapped:
+            return ("mapped", id(alignment.member_for_ref))
+        return "plain"
+
+    def _layout_dataset(self):  # noqa: ANN202
+        """Dataset whose header layout the active member is drawn in.
+
+        A member remapped onto the reference is drawn in the reference's
+        trace order, so group boundaries and packed positions come from the
+        reference's index, not its own.
+        """
+        active = self.group.active_index
+        if self.group.member_is_remapped(active):
+            try:
+                return self.group.members[self.group.reference_index].dataset
+            except IndexError:
+                return None
+        return self._active_dataset()
 
     def _apply_active_visibility(self) -> None:
         active = self.group.active_index
@@ -1008,7 +1086,7 @@ class SeismicView(QWidget):
 
     def _refresh_info_track_with_x_range(self, x_range: tuple[float, float]) -> None:
         state = self.group.shared_state
-        ds = self._active_dataset()
+        ds = self._layout_dataset()
         gi = getattr(ds, "group_index", None) if ds is not None else None
         primary_field = _primary_field(state.sort_config) if state.sort_config.committed else None
         if primary_field is None or gi is None:
@@ -1150,6 +1228,7 @@ class SeismicView(QWidget):
             trace_indices=trace_indices,
             time_slice=slice(s0, s1),
             processing_chain=member.processing_chain,
+            display_trace_range=(t0, t1),
         )
         worker.signals.finished.connect(self._on_slice_finished)
         worker.signals.failed.connect(self._on_slice_failed)
@@ -1163,30 +1242,11 @@ class SeismicView(QWidget):
     ) -> tuple[slice | np.ndarray | None, tuple[int, int]]:
         """Pick trace indices for the member's next slice.
 
-        When the group's sort is committed, resolve the member's trace list
-        through ``GroupIndex.get_trace_indices(sort_config)``. Otherwise
-        fall back to the shared ``commanded_trace_range`` (initial fit /
-        natural file order).
+        Delegates to :meth:`ToggleGroup.resolve_member_trace_indices`, which
+        handles the committed sort, natural order and — for a member whose
+        traces are paired with the reference's — the remapping.
         """
-        member = self.group.members[member_index]
-        ds = member.dataset
-        state = self.group.shared_state
-        gi = getattr(ds, "group_index", None)
-        if gi is not None and state.sort_config.committed:
-            indices = gi.get_trace_indices(state.sort_config)
-            if indices.size == 0:
-                return None, (0, 0)
-            t0 = int(indices.min())
-            t1 = int(indices.max()) + 1
-            return indices, (t0, t1)
-
-        # Fallback: use the shared commanded trace range.
-        if state.commanded_trace_range is None:
-            return None, (0, 0)
-        t0, t1 = state.commanded_trace_range
-        t0 = max(0, min(ds.n_traces, t0))
-        t1 = max(t0, min(ds.n_traces, t1))
-        return slice(t0, t1), (t0, t1)
+        return self.group.resolve_member_trace_indices(member_index)
 
     def _on_slice_finished(
         self,
@@ -1392,6 +1452,9 @@ class SeismicView(QWidget):
         # physical trace but display columns map to non-contiguous physical
         # traces. Translate before resolving anything header-shaped.
         physical = self._display_x_to_physical_trace(trace)
+        # ``physical`` addresses the reference's traces; a member read
+        # through an alignment keeps the same data under another index.
+        physical = self.group.member_trace_index(self.group.active_index, physical)
 
         primary: tuple[str, int] | None = None
         secondary: tuple[str, int] | None = None
@@ -1499,6 +1562,9 @@ class SeismicView(QWidget):
         indices = self._current_trace_indices
         if not fields or ds is None or indices is None or len(indices) == 0:
             return
+        alignment = self.group.member_alignment(self.group.active_index)
+        if alignment is not None and alignment.is_mapped:
+            indices = np.asarray(alignment.map_indices(indices))
         if getattr(ds, "handle", None) is None or ds.is_closed:
             return
 
@@ -1655,6 +1721,53 @@ class SeismicView(QWidget):
         if empty:
             self._reposition_group_missing()
 
+        self._refresh_alignment_overlays(active, parents_missing)
+
+    def _refresh_alignment_overlays(self, active: int, parents_missing: bool) -> None:
+        alignment = self.group.member_alignment(active)
+        pending = not parents_missing and alignment is not None and alignment.is_pending
+        self.aligning_label.setVisible(pending)
+        if pending:
+            self.aligning_label.adjustSize()
+            w = self.plot_widget.width()
+            h = self.plot_widget.height()
+            self.aligning_label.move(
+                max(0, (w - self.aligning_label.width()) // 2),
+                max(0, (h - self.aligning_label.height()) // 2),
+            )
+
+        text = tooltip = style = ""
+        if alignment is not None and not parents_missing and self.group.n_members >= 2:
+            ref_name = self.group.members[self.group.reference_index].dataset.name
+            if alignment.status is AlignmentStatus.MAPPED:
+                text = "Re-sorted to reference"
+                tooltip = (
+                    f"Stored in a different trace order from {ref_name}; shown in "
+                    f"{ref_name}'s order, traces paired by {' + '.join(alignment.keys)}."
+                )
+                style = "rgba(30, 90, 160, 210)"
+            elif alignment.status is AlignmentStatus.FAILED:
+                text = "Trace order unverified"
+                tooltip = (
+                    f"Could not pair these traces with {ref_name}'s: {alignment.reason}. "
+                    "Shown in its own file order."
+                )
+                style = "rgba(192, 120, 0, 200)"
+        self.alignment_badge.setVisible(bool(text))
+        if text:
+            self.alignment_badge.setText(text)
+            self.alignment_badge.setToolTip(tooltip)
+            self.alignment_badge.setStyleSheet(
+                f"background-color: {style}; color: white; padding: 2px 6px;"
+                "border-radius: 3px; font-weight: bold;"
+            )
+            self.alignment_badge.adjustSize()
+            w = self.plot_widget.width()
+            y = 8
+            if self.independent_axes_badge.isVisible():
+                y += self.independent_axes_badge.height() + 4
+            self.alignment_badge.move(max(0, w - self.alignment_badge.width() - 10), y)
+
     def _reposition_badge(self) -> None:
         self.independent_axes_badge.adjustSize()
         w = self.plot_widget.width()
@@ -1683,7 +1796,10 @@ class SeismicView(QWidget):
         state = self.group.shared_state
         if not state.sort_config.committed:
             return False
-        ds = self.group.members[active].dataset
+        alignment = self.group.member_alignment(active)
+        if alignment is not None and alignment.is_pending:
+            return False
+        ds = self._layout_dataset()
         gi = getattr(ds, "group_index", None)
         if gi is None:
             return False
@@ -1755,4 +1871,7 @@ class SeismicView(QWidget):
                 self._reposition_parent_missing()
             if self.drop_hint_label.isVisible():
                 self._reposition_drop_hint()
+            if self.aligning_label.isVisible() or self.alignment_badge.isVisible():
+                active = self.group.active_index
+                self._refresh_alignment_overlays(active, self.parent_missing_label.isVisible())
         return super().eventFilter(watched, event)

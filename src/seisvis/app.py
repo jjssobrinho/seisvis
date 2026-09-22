@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from seisvis.controllers.active_group_controller import ActiveGroupController
+from seisvis.controllers.alignment_controller import AlignmentController
 from seisvis.controllers.transforms_coordinator import TransformsCoordinator
 from seisvis.io.loader import SUPPORTED_SUFFIXES
 from seisvis.io.slice_cache import SliceCache
@@ -30,6 +31,7 @@ from seisvis.models.dataset import Dataset
 from seisvis.models.project import Project
 from seisvis.models.sort_config import TRACE_RANGE_FIELD, RowSelection, SortConfig
 from seisvis.models.toggle_group import ToggleGroup
+from seisvis.models.trace_alignment import AlignmentStatus, TraceAlignment
 from seisvis.services.dataset_reload import ReloadError, reload_dataset
 from seisvis.services.file_watch_service import FileWatchService
 from seisvis.ui.dialogs.crosshair_fields_dialog import CrosshairFieldsDialog
@@ -145,6 +147,11 @@ class MainWindow(QMainWindow):
         # rewrite is reported instead of silently mixing old and new bytes.
         self._file_watch = FileWatchService(self)
 
+        # Pairs every toggle-group member's traces with the reference's, so
+        # a file stored in another trace order is shown in the reference's.
+        self._alignment = AlignmentController(project, self._pool, self)
+        self._alignment.status_message.connect(lambda msg: self.statusBar().showMessage(msg, 6000))
+
         # Full display mode: canvas takes the whole screen, chrome hidden.
         self._full_display: bool = False
         self._pre_full_display_sizes: list[int] = []
@@ -238,6 +245,9 @@ class MainWindow(QMainWindow):
         self.catalog_panel.quick_load_requested.connect(self._on_quick_load)
         self.catalog_panel.domain_changed.connect(self._on_domain_changed)
         self.catalog_panel.add_to_active_model_requested.connect(self._on_add_to_active_model)
+        self.catalog_panel.diff_requested.connect(
+            lambda a, b: self._run_diff(a, b, add_to_active_group=False)
+        )
         self.catalog_panel.set_model_tab_probe(
             lambda: self._model_window is not None and self._model_window.has_open_tab
         )
@@ -251,6 +261,9 @@ class MainWindow(QMainWindow):
         self.viewport_manager = ViewportManagerPanel(self.project)
         self.viewport_manager.close_group_requested.connect(self._on_close_group_requested)
         self.viewport_manager.group_selected.connect(self.project.set_active_toggle_group)
+        self.viewport_manager.diff_requested.connect(
+            lambda a, b: self._run_diff(a, b, add_to_active_group=True)
+        )
         self.project.diff_selection.diff_selection_invalidated.connect(
             lambda: self.statusBar().showMessage(
                 "Diff selection cleared — selected group was removed", 4000
@@ -343,6 +356,7 @@ class MainWindow(QMainWindow):
         self._slice_cache.clear()
         self._file_watch.refresh(dataset)
         self._start_header_scan(dataset)
+        self._alignment.dataset_reloaded(dataset.id)
         self.display_panel.reload_views_for(dataset.id)
         self.statusBar().showMessage(f"Reloaded {dataset.name} from disk", 4000)
 
@@ -409,10 +423,6 @@ class MainWindow(QMainWindow):
         self._create_group_for(datasets[0])
 
     def _on_compute_diff(self) -> None:
-        from seisvis.models.compatibility import are_toggle_compatible
-        from seisvis.services.derivation import IncompatibleDatasetsError, compute_difference
-        from seisvis.ui.dialogs.diff_dialog import DiffDialog
-
         pair = self.project.diff_selection.resolve_datasets(self.project)
         if pair is None:
             self.statusBar().showMessage(
@@ -420,6 +430,25 @@ class MainWindow(QMainWindow):
             )
             return
         a, b = pair
+        self._run_diff(a, b, add_to_active_group=True, clear_group_selection=True)
+
+    def _run_diff(
+        self,
+        a: Dataset,
+        b: Dataset,
+        *,
+        add_to_active_group: bool,
+        clear_group_selection: bool = False,
+    ) -> None:
+        """Ask for a name and direction, then build A − B with B in A's order.
+
+        Every diff entry point lands here with *a* being what the user picked
+        first — the reference. B may be stored in another trace order, so it
+        is paired with A off-thread before the derived dataset is created.
+        """
+        from seisvis.models.compatibility import are_toggle_compatible
+        from seisvis.ui.dialogs.diff_dialog import DiffDialog
+
         compat = are_toggle_compatible(a, b)
         if not compat.ok:
             QMessageBox.warning(
@@ -429,15 +458,72 @@ class MainWindow(QMainWindow):
             )
             return
         dlg = DiffDialog(a, b, parent=self)
-        if dlg.exec():
-            try:
-                derived = compute_difference(self.project, a, b, dlg.direction(), dlg.result_name())
-                active_group = self.project.active_toggle_group()
-                if active_group is not None:
-                    active_group.add_member(derived)
-                self.project.diff_selection.clear()
-            except IncompatibleDatasetsError as exc:
-                QMessageBox.warning(self, "Diff failed", str(exc))
+        if not dlg.exec():
+            return
+        direction, name = dlg.direction(), dlg.result_name()
+        self.statusBar().showMessage(f"Pairing {b.name}'s traces with {a.name}…")
+        self._alignment.align_pair(
+            a,
+            b,
+            lambda alignment: self._finish_diff(
+                a,
+                b,
+                direction,
+                name,
+                alignment,
+                add_to_active_group=add_to_active_group,
+                clear_group_selection=clear_group_selection,
+            ),
+        )
+
+    def _finish_diff(
+        self,
+        a: Dataset,
+        b: Dataset,
+        direction: str,
+        name: str,
+        alignment: TraceAlignment,
+        *,
+        add_to_active_group: bool,
+        clear_group_selection: bool,
+    ) -> None:
+        from seisvis.services.derivation import IncompatibleDatasetsError, compute_difference
+
+        if a.is_closed or b.is_closed:
+            self.statusBar().showMessage("Diff cancelled — a dataset was removed", 4000)
+            return
+        try:
+            derived = compute_difference(
+                self.project,
+                a,
+                b,
+                direction,  # type: ignore[arg-type]
+                name,
+                b_alignment=alignment,
+            )
+        except IncompatibleDatasetsError as exc:
+            QMessageBox.warning(self, "Diff failed", str(exc))
+            return
+        if alignment.status is AlignmentStatus.MAPPED:
+            self.statusBar().showMessage(
+                f"Created {derived.name}: {b.name} re-sorted to {a.name}'s trace order "
+                f"(paired by {' + '.join(alignment.keys)})",
+                6000,
+            )
+        elif alignment.status is AlignmentStatus.FAILED:
+            self.statusBar().showMessage(
+                f"Created {derived.name} in file order — could not pair {b.name}'s traces "
+                f"with {a.name}'s: {alignment.reason}",
+                8000,
+            )
+        else:
+            self.statusBar().showMessage(f"Created {derived.name}", 4000)
+        if add_to_active_group:
+            active_group = self.project.active_toggle_group()
+            if active_group is not None:
+                active_group.add_member(derived)
+        if clear_group_selection:
+            self.project.diff_selection.clear()
 
     # --- Help menu handlers ---
 
@@ -1072,6 +1158,7 @@ def main() -> int:
 
     app.aboutToQuit.connect(lambda: qsettings.save(window))
     app.aboutToQuit.connect(window._cancel_all_scans)
+    app.aboutToQuit.connect(window._alignment.shutdown)
     app.aboutToQuit.connect(window.transforms_coordinator.shutdown)
     app.aboutToQuit.connect(window._close_model_window)
     app.aboutToQuit.connect(project.close_all)
