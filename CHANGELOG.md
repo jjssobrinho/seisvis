@@ -34,11 +34,11 @@
   Files already in the reference's order cost one array comparison. A
   member still being paired shows "Aligning traces to the reference…"
   rather than the wrong traces.
-- **Badges say how the active member is read**: "Re-sorted to reference"
-  (with the pairing keys in the tooltip) or, when no header identifies
-  the traces in both files, "Trace order unverified" — the member is
-  then shown in its own file order, as before, and the status bar says
-  why.
+- **A successful re-sort is reported once in the status bar** and leaves
+  the canvas clean. Only when no header identifies the traces in both
+  files does the canvas carry a badge, "Trace order unverified" — the
+  member is then shown in its own file order, as before, and the status
+  bar says why.
 - **The first dataset clicked is the reference.** A catalog selection
   now reports datasets in the order they were selected, so "Open in new
   toggle group" makes the first one clicked the reference and the first

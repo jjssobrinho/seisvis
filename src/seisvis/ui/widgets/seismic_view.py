@@ -1781,14 +1781,10 @@ class SeismicView(QWidget):
         text = tooltip = style = ""
         if alignment is not None and not parents_missing and self.group.n_members >= 2:
             ref_name = self.group.members[self.group.reference_index].dataset.name
-            if alignment.status is AlignmentStatus.MAPPED:
-                text = "Re-sorted to reference"
-                tooltip = (
-                    f"Stored in a different trace order from {ref_name}; shown in "
-                    f"{ref_name}'s order, traces paired by {' + '.join(alignment.keys)}."
-                )
-                style = "rgba(30, 90, 160, 210)"
-            elif alignment.status is AlignmentStatus.FAILED:
+            # A successful re-sort is not flagged on the canvas — it is the
+            # expected outcome and the status bar already reported it. Only
+            # a failed pairing earns a badge, since the view may be wrong.
+            if alignment.status is AlignmentStatus.FAILED:
                 text = "Trace order unverified"
                 tooltip = (
                     f"Could not pair these traces with {ref_name}'s: {alignment.reason}. "
