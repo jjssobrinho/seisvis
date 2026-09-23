@@ -57,13 +57,14 @@ class ToggleBar(QWidget):
         self._compat_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setContentsMargins(4, 0, 4, 0)
         layout.setSpacing(6)
         layout.addStretch(1)
         layout.addWidget(self._compat_label)
         layout.addSpacing(8)
         layout.addWidget(self._flicker_check)
         layout.addWidget(self._flicker_rate)
+        self._layout = layout
 
         self._flicker_check.toggled.connect(self._on_flicker_toggled)
         self._flicker_rate.valueChanged.connect(self._on_flicker_rate_changed)
@@ -90,6 +91,11 @@ class ToggleBar(QWidget):
         if self._flicker_check.isChecked() == bool(on):
             return
         self._flicker_check.setChecked(bool(on))
+
+    def add_trailing_widget(self, widget: QWidget) -> None:
+        """Append a widget after the flicker controls (e.g. the export button)."""
+        widget.setParent(self)
+        self._layout.addWidget(widget)
 
     # --- signal handlers ---
 

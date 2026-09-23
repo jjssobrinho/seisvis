@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
-from PySide6.QtCore import QRect
+from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPaintEvent
 from PySide6.QtWidgets import QWidget
 
@@ -24,11 +24,11 @@ log = logging.getLogger(__name__)
 
 
 MIN_LABEL_GAP_PX = 80
-# Heights now allow for a prefix row above the numeric labels, so the
-# field name (e.g. "Shot") sits on its own line and the number row aligns
-# cleanly to the ticks regardless of the prefix's width.
-HEIGHT_SINGLE = 32
-HEIGHT_WITH_SECONDARY = 48
+# One text line (plus a second for the secondary annotation). The field
+# name (e.g. "Shot") sits in the y-axis gutter left of the numbers, so it
+# costs no extra height.
+HEIGHT_SINGLE = 20
+HEIGHT_WITH_SECONDARY = 36
 # Backwards-compatible name still exported.
 FIXED_HEIGHT = HEIGHT_SINGLE
 
@@ -175,7 +175,6 @@ class InfoTrack(QWidget):
         prefix_text = self._label_prefix or ""
         sec_text = self._secondary_text
         sub_w = fm.horizontalAdvance(sec_text) if sec_text else 0
-        prefix_w = fm.horizontalAdvance(prefix_text) if prefix_text else 0
         max_label_width = max(
             (fm.horizontalAdvance(label_texts[gid]) for gid, _ in entries),
             default=0,
@@ -194,20 +193,20 @@ class InfoTrack(QWidget):
 
         tick_y0 = height - self.TICK_HEIGHT
         tick_y1 = height
-        # Y baselines: prefix row on top, numbers below it, secondary
-        # annotation under the numbers when present.
-        prefix_y = fm.ascent()
-        number_y = fm.ascent() + line_h
+        # Y baselines: numbers on the first line, secondary annotation under
+        # them when present.
+        number_y = fm.ascent()
         sec_y = number_y + line_h if sec_text else None
 
-        # Draw the prefix once, above the first visible numeric label,
-        # centered over that label's tick so it visually anchors the number
-        # underneath.
-        if prefix_text and pixel_positions:
-            first_px = pixel_positions[0][1]
-            prefix_x = max(0, min(width - prefix_w, first_px - prefix_w // 2))
+        # Draw the prefix once, right-aligned in the gutter above the y-axis
+        # (left of the data area), on the number line. Elide if the gutter
+        # is too narrow for the full name.
+        gutter_w = left_px - 6
+        if prefix_text and pixel_positions and gutter_w > 0:
+            shown = fm.elidedText(prefix_text, Qt.TextElideMode.ElideRight, gutter_w)
+            shown_w = fm.horizontalAdvance(shown)
             painter.setPen(self.SUBLABEL_COLOR)
-            painter.drawText(prefix_x, prefix_y, prefix_text)
+            painter.drawText(max(0, gutter_w - shown_w), number_y, shown)
 
         painter.setPen(self.TICK_COLOR)
         for i, (gid, px) in enumerate(pixel_positions):

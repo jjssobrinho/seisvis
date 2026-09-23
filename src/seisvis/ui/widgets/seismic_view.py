@@ -279,23 +279,18 @@ class SeismicView(QWidget):
         info_row_layout.setContentsMargins(0, 0, 0, 0)
         info_row_layout.setSpacing(0)
         info_row_layout.addWidget(self.info_track, stretch=1)
-        # The strip above the scale bar is otherwise dead space, and it sits
-        # directly under the toggle bar's Auto controls — a natural home for
-        # the export button without covering any plotted data.
+        # Reserve the scale bar's width so labels stay aligned with the plot.
         info_row_spacer = QWidget(info_row)
         info_row_spacer.setFixedWidth(scale_bar_width)
-        spacer_layout = QVBoxLayout(info_row_spacer)
-        spacer_layout.setContentsMargins(0, 2, 0, 2)
-        spacer_layout.setSpacing(0)
+        # The export button sits beside the flicker rate in the toggle bar,
+        # so the info row stays as short as the info track itself.
         self.export_button = camera_button(
-            info_row_spacer,
+            self.toggle_bar,
             "Export images of every member of this toggle group, all rendered "
             "through the current view so they stay aligned.",
         )
         self.export_button.clicked.connect(self._on_export_images)
-        spacer_layout.addWidget(
-            self.export_button, alignment=Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
-        )
+        self.toggle_bar.add_trailing_widget(self.export_button)
         info_row_layout.addWidget(info_row_spacer)
         root.addWidget(info_row)
 
