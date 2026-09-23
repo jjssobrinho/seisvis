@@ -19,7 +19,7 @@ Desktop viewer for 2D/3D SEG-Y reflection seismic data.
 - Depth-domain data in a Model Window of its own — metres on both axes
 - Velocity models over migrated sections, composed by luminance or alpha
 - Detection of source files that change on disk, with in-place reload
-- Always-visible Appearance / Analysis / Processing toolbar
+- Sessions — save the whole workspace to a `.svsession` file and pick it up later, with moved or deleted files located or skipped
 - Full display mode (`F11`) — canvas takes the whole screen, navigation controls stay
 - QSettings persistence of window layout and toolbar defaults
 
@@ -71,10 +71,13 @@ uv run python -m seisvis
    containing the three selected shots. The info track sub-label
    reflects the new structure.
 
-7. **Close and reopen** — Quit (`Alt+F4` / File → Exit) and relaunch.
-   Window geometry, toolbar defaults, and the `.sv` sidecar's renames
-   and role mappings are restored. Sort itself starts fresh each
-   session — commit again to apply.
+7. **Save a session, close and reopen** — `Ctrl+S` saves the workspace
+   to a `.svsession` file. Quit (`Alt+F4` / File → Exit), relaunch and
+   use File → *Open Recent Session*: the files, groups, sorts,
+   processing and zoom come back as you left them. Without a session,
+   only window geometry, toolbar defaults and each file's `.sv` renames
+   and role mappings are restored, and each group starts in natural
+   file order. See [Sessions](#sessions).
 
 ## Loading files
 
@@ -352,6 +355,69 @@ so it catches in-place edits, atomic replacements and deletions alike.
 Nothing is reloaded automatically — when the reload happens is your
 call, since it resets the view and clears the canvas selection.
 
+## Sessions
+
+A session file (`.svsession`) records the workspace so you can pick it
+up where you left off. It is saved wherever you choose. It is separate
+from the `.sv` sidecars, which describe one file each.
+
+| File menu                  | Shortcut       |                                          |
+|----------------------------|----------------|------------------------------------------|
+| *New Session*              | `Ctrl+N`       | Close everything and start empty         |
+| *Open Session…*            | `Ctrl+Shift+O` | Replace the workspace with a saved one   |
+| *Open Recent Session*      |                | The last 8 sessions opened or saved      |
+| *Save Session*             | `Ctrl+S`       | Save to the open session file            |
+| *Save Session As…*         | `Ctrl+Shift+S` | Save to a new file                       |
+
+Dropping a `.svsession` file on the window also opens it. The last
+session is **not** reopened on startup — use *Open Recent Session*.
+
+**What is saved:**
+
+- every loaded file, and the A − B differences computed between them;
+- each toggle group: name, members, which member is active, the
+  reference and the edit target, each member's colormap, clip, gain,
+  bandpass and AGC, the sort (committed or not), the command-bar window
+  and zoom, the fixed colour scale, crosshair fields, and the
+  auto-flicker rate and which members it cycles through;
+- each Model Window tab: members, colormap and levels per layer kind,
+  and overlay settings;
+- which tab was active.
+
+Header remaps, renames and depth declarations stay in each file's `.sv`
+and come back when the file loads. Header scans and trace pairing are
+redone on opening. The canvas selection, transform windows and
+crosshair position are not saved.
+
+**Opening** loads the files, indexes their headers, rebuilds the
+differences, then puts the groups and tabs back. Progress is shown in
+the status bar.
+
+**Files that moved or were deleted.** Each file is looked for at its
+saved path, then relative to the session file, so a data folder moved
+together with its session is still found. Anything still missing is
+listed in a dialog:
+
+- **Locate…** — point at the file. The other missing files are then
+  looked for under their own names in that same folder, which covers a
+  renamed or moved data directory in one step.
+- **Skip** — leave the file out.
+- **Continue** skips whatever is still missing. The dialog shows what
+  will be dropped as a result before you commit to it.
+
+Whatever depends on a file that is skipped or fails to load is dropped:
+a difference needs both parents, a group left with no members is
+closed, a group that loses its reference falls back to natural order,
+and a sort on a header field that is no longer available is reset. When
+the session has opened, a summary lists everything that could not be
+restored. A file whose contents changed since the session was saved is
+still loaded, with a note.
+
+**Unsaved changes.** While a session file is open, the title bar shows
+its name, followed by `•` when the workspace no longer matches it. New,
+Open and Exit then offer to save. A workspace that was never saved as a
+session never prompts.
+
 ## Full display mode
 
 Click the `⛶` button at the right end of the canvas' tab bar — its
@@ -376,6 +442,10 @@ were. `Esc` is only bound while the mode is active.
 | Shortcut          | Action                                           |
 |-------------------|--------------------------------------------------|
 | `Ctrl+O`          | Open SEG-Y file(s)                               |
+| `Ctrl+N`          | New session                                      |
+| `Ctrl+Shift+O`    | Open session                                     |
+| `Ctrl+S`          | Save session                                     |
+| `Ctrl+Shift+S`    | Save session as                                  |
 | `Ctrl+W`          | Close active toggle group                        |
 | `Ctrl+T`          | New toggle group from selected catalog item      |
 | `Ctrl+D`          | Compute A − B from current diff selection        |

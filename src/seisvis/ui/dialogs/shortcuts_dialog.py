@@ -14,6 +14,10 @@ from PySide6.QtWidgets import (
 
 _SHORTCUTS: list[tuple[str, str]] = [
     ("Ctrl+O", "Open SEG-Y file(s)"),
+    ("Ctrl+N", "New session"),
+    ("Ctrl+Shift+O", "Open session"),
+    ("Ctrl+S", "Save session"),
+    ("Ctrl+Shift+S", "Save session as"),
     ("Ctrl+W", "Close active toggle group"),
     ("Ctrl+T", "New toggle group from selected catalog item"),
     ("Ctrl+D", "Compute A − B from current diff selection"),
