@@ -31,7 +31,6 @@ from PySide6.QtWidgets import (
 from seisvis.models.model_group import ModelGroup
 from seisvis.ui.widgets.member_strip import MemberStrip
 from seisvis.ui.widgets.toggle_bar import (
-    FLICKER_DEFAULT_HZ,
     FLICKER_MAX_HZ,
     FLICKER_MIN_HZ,
 )
@@ -69,7 +68,7 @@ class ModelToggleBar(QWidget):
 
         self._flicker_rate = QDoubleSpinBox(self)
         self._flicker_rate.setRange(FLICKER_MIN_HZ, FLICKER_MAX_HZ)
-        self._flicker_rate.setValue(FLICKER_DEFAULT_HZ)
+        self._flicker_rate.setValue(group.flicker_hz)
         self._flicker_rate.setSuffix(" Hz")
         self._flicker_rate.setSingleStep(0.5)
         self._flicker_rate.valueChanged.connect(self._on_rate_changed)

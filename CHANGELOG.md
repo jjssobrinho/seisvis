@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### Sessions: save the workspace and pick it up later
+
+- **File → Save Session (Ctrl+S) / Save Session As… (Ctrl+Shift+S)**
+  writes a `.svsession` file recording every loaded file, the A − B
+  differences between them, each toggle group (name, members, active /
+  reference / edit target, per-member colormap, clip, gain and
+  processing, sort, commanded and zoomed ranges, fixed colour scale,
+  crosshair fields, flicker rate and which members it cycles), the
+  Model Window tabs (members, per-kind colormap and levels, overlay),
+  and which tab was active.
+- **File → Open Session… (Ctrl+Shift+O), Open Recent Session, or
+  dropping a `.svsession` on the window** replaces the workspace with
+  the saved one. Files are loaded and indexed as usual, differences are
+  rebuilt (re-pairing traces), then the groups and tabs are put back.
+- **Files that moved or disappeared are handled.** A file is looked for
+  at its saved path, then relative to the session file, so a data folder
+  moved together with its session is still found. Anything still missing
+  is listed in a dialog: locate it (the other missing files are then
+  looked for in the same folder) or skip it. Whatever depends on a
+  skipped or unloadable file — a difference, a group member, a group
+  left empty, a sort on a field that is no longer there — is dropped,
+  and a summary says what. A file changed since the session was saved
+  is loaded with a note.
+- **File → New Session (Ctrl+N)** empties the workspace. With a session
+  open, the title shows `•` when there are unsaved changes, and New,
+  Open or Exit offer to save them. An untitled workspace never prompts.
+- The last session is **not** reopened on startup; use Open Recent.
+- Header remaps, renames and domain stay in each file's `.sv`, which
+  loads with the file; the session never copies them. Header scans,
+  trace alignments, the canvas selection and transform windows are not
+  saved.
+
 ### Reordering members no longer swaps the reference or the images
 
 - **Moving a member (Viewport Manager arrows or drag) moves only that

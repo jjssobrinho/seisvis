@@ -38,6 +38,38 @@ def set_last_export_folder(folder: Path) -> None:
     s.sync()
 
 
+MAX_RECENT_SESSIONS = 8
+
+
+def recent_sessions() -> list[Path]:
+    """Session files opened or saved lately, newest first; gone ones pruned."""
+    value = _s().value("sessions/recent", [])
+    if isinstance(value, str):  # QSettings collapses a one-item list
+        value = [value]
+    paths = [Path(str(v)) for v in (value or [])]
+    return [p for p in paths if p.is_file()][:MAX_RECENT_SESSIONS]
+
+
+def _set_recent_sessions(paths: list[Path]) -> None:
+    s = _s()
+    s.setValue("sessions/recent", [str(p) for p in paths[:MAX_RECENT_SESSIONS]])
+    s.sync()
+
+
+def add_recent_session(path: Path) -> None:
+    path = Path(path).resolve()
+    _set_recent_sessions([path] + [p for p in recent_sessions() if p != path])
+
+
+def remove_recent_session(path: Path) -> None:
+    path = Path(path).resolve()
+    _set_recent_sessions([p for p in recent_sessions() if p != path])
+
+
+def clear_recent_sessions() -> None:
+    _set_recent_sessions([])
+
+
 def save(window: object) -> None:
     """Persist window layout and toolbar state to QSettings."""
     s = _s()

@@ -47,6 +47,43 @@ class ProcessingChain:
         )
         return "chain:" + repr(parts)
 
+    def to_dict(self) -> dict[str, dict[str, object]]:
+        """Plain-JSON form of each op's parameters (session files)."""
+        return {
+            "gain": {"enabled": self.gain.enabled, "db": self.gain.db},
+            "agc": {"enabled": self.agc.enabled, "window_ms": self.agc.window_ms},
+            "bandpass": {
+                "enabled": self.bandpass.enabled,
+                "low_hz": self.bandpass.low_hz,
+                "high_hz": self.bandpass.high_hz,
+                "order": self.bandpass.order,
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, raw: object) -> ProcessingChain:
+        """Inverse of :meth:`to_dict`; a missing op or field keeps its default."""
+        chain = cls()
+        if not isinstance(raw, dict):
+            return chain
+        casts = {
+            "gain": {"enabled": bool, "db": float},
+            "agc": {"enabled": bool, "window_ms": float},
+            "bandpass": {"enabled": bool, "low_hz": float, "high_hz": float, "order": int},
+        }
+        for op_name, fields in casts.items():
+            values = raw.get(op_name)
+            if not isinstance(values, dict):
+                continue
+            op = getattr(chain, op_name)
+            for key, cast in fields.items():
+                if key in values:
+                    try:
+                        setattr(op, key, cast(values[key]))
+                    except (TypeError, ValueError):
+                        pass
+        return chain
+
     def reset(self) -> None:
         self.gain = ConstantGain()
         self.agc = AGC()

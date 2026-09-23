@@ -56,6 +56,9 @@ class ModelTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+        # Set by a session restore: turn the overlay on once the members'
+        # kinds are known, which is only after their data has arrived.
+        self.restore_overlay = False
         self.toggle_bar = ModelToggleBar(group, self)
         self.view = ModelView(group, self)
         layout.addWidget(self.toggle_bar)
@@ -216,6 +219,52 @@ class ModelWindow(QMainWindow):
         self.slice_requested.emit(tab.view, index)
         return tab.view
 
+    def restore_group(
+        self,
+        datasets: list[Dataset],
+        *,
+        name: str,
+        flicker_hz: float | None = None,
+        overlay: bool = False,
+    ) -> ModelGroup:
+        """Open a new tab holding *datasets*, as saved in a session."""
+        self._tab_count += 1
+        group = ModelGroup(datasets[0], name=name or f"Models {self._tab_count}")
+        for ds in datasets[1:]:
+            group.add_member(ds)
+        if flicker_hz is not None:
+            group.flicker_hz = float(flicker_hz)
+        tab = ModelTab(group, self)
+        tab.restore_overlay = overlay
+        tab.view.data_loaded.connect(lambda _i, t=tab: self._on_member_loaded(t))
+        group.active_index_changed.connect(lambda _i, t=tab: self._rebind_if_current(t))
+        index = self._tabs.addTab(tab, self._tab_label(group))
+        self._tabs.setCurrentIndex(index)
+        for i in range(len(group)):
+            self.slice_requested.emit(tab.view, i)
+        return group
+
+    def groups(self) -> list[ModelGroup]:
+        """Every tab's group, in tab order."""
+        return [
+            tab.group
+            for i in range(self._tabs.count())
+            if isinstance(tab := self._tabs.widget(i), ModelTab)
+        ]
+
+    @property
+    def current_group_index(self) -> int | None:
+        index = self._tabs.currentIndex()
+        return index if index >= 0 else None
+
+    def set_current_group_index(self, index: int) -> None:
+        if 0 <= index < self._tabs.count():
+            self._tabs.setCurrentIndex(index)
+
+    def close_all_tabs(self) -> None:
+        for i in reversed(range(self._tabs.count())):
+            self._close_tab(i)
+
     @property
     def has_open_tab(self) -> bool:
         return self._tabs.count() > 0
@@ -298,6 +347,9 @@ class ModelWindow(QMainWindow):
         for kind in tab.group.kinds_present():
             if tab.group.style(kind).levels_are_auto:
                 tab.group.set_levels(*tab.view.data_range(kind), kind=kind)
+        if tab.restore_overlay and tab.group.can_overlay().ok:
+            tab.restore_overlay = False
+            tab.group.set_overlay_enabled(True)
         if tab is self._current_tab():
             self._rebind_controls()
 

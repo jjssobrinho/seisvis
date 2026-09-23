@@ -19,3 +19,28 @@ class DisplayState:
     clip_high_pct: float = 99.0
     gain_db: float = 0.0
     view_hint: dict[str, tuple[float, float]] | None = field(default=None)
+
+    def to_dict(self) -> dict[str, object]:
+        """Plain-JSON form (session files). ``view_hint`` is per-run and omitted."""
+        return {
+            "colormap": self.colormap,
+            "clip_low_pct": self.clip_low_pct,
+            "clip_high_pct": self.clip_high_pct,
+            "gain_db": self.gain_db,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: object) -> DisplayState:
+        """Inverse of :meth:`to_dict`; a missing or unusable field keeps its default."""
+        state = cls()
+        if not isinstance(raw, dict):
+            return state
+        if isinstance(raw.get("colormap"), str):
+            state.colormap = raw["colormap"]
+        for key in ("clip_low_pct", "clip_high_pct", "gain_db"):
+            if key in raw:
+                try:
+                    setattr(state, key, float(raw[key]))
+                except (TypeError, ValueError):
+                    pass
+        return state

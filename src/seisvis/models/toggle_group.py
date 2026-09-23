@@ -99,9 +99,9 @@ class ToggleGroup(QObject):
         self._name: str = name
         self._members: list[Member] = []
         # Populated header fields the crosshair readout adds on hover,
-        # in the order they are shown. Session-scoped and not persisted:
-        # the .sv holds facts about the file, the session holds what the
-        # user currently wants to look at — the same line sort draws.
+        # in the order they are shown. Kept out of the .sv, which holds facts
+        # about the file; like sort, it is what the user currently wants to
+        # look at, so it is saved in a session file instead.
         self._crosshair_fields: tuple[str, ...] = ()
         self._active_index: int = 0
         self._reference_index: int = 0

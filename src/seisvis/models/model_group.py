@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import math
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from PySide6.QtCore import QObject, Signal
@@ -267,6 +267,17 @@ class ModelGroup(QObject):
         if kind not in self._styles:
             self._styles[kind] = LayerStyle.for_kind(kind)
         return self._styles[kind]
+
+    def styles(self) -> dict[LayerKind, LayerStyle]:
+        """Copies of the styles set so far, per kind (for saving a session)."""
+        return {kind: replace(style) for kind, style in self._styles.items()}
+
+    def restore_style(self, kind: LayerKind, style: LayerStyle) -> None:
+        """Replace *kind*'s style wholesale, as saved in a session."""
+        self._styles[kind] = replace(style)
+        self.colormap_changed.emit()
+        self.levels_changed.emit()
+        self.clip_pct_changed.emit()
 
     @property
     def active_kind(self) -> LayerKind:

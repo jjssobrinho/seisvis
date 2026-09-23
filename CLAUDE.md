@@ -27,6 +27,8 @@ data. Current capabilities:
   with translation rules between types and explicit commit.
 - Rectangular selection tool on the canvas feeding live FFT and
   f-k transforms in a separate window per toggle group.
+- Session files (`.svsession`): save the workspace, reopen it later,
+  with missing files located or skipped.
 
 ---
 
@@ -78,6 +80,7 @@ data. Current capabilities:
 | #     | Name                                          | Tag              |
 |-------|-----------------------------------------------|------------------|
 | v6.1  | Configurable Crosshair Readout                | `v61-done`       |
+| v6.2  | Sessions (save / open workspace)              | `v62-done`       |
 
 Milestones are sequential; each in its own session. Finish, commit,
 tag, stop. **Let tests run to completion** before tagging. Check
@@ -405,15 +408,50 @@ JSON file `<segy_name>.sv` next to the SEG-Y:
   means decide from the data.
 - Schema migration is additive: v1–v3 sidecars load unchanged, with
   the fields they predate reading as absent.
-- **Sort is not persisted.** Every session starts fresh: when a
-  dataset is loaded into a toggle group, the group's sort is
-  uncommitted / natural file order. The user commits whatever
-  sort they want each session.
+- **Sort is not persisted in the `.sv`.** A dataset loaded into a
+  toggle group starts uncommitted / natural file order. Sort is
+  workspace state and is saved in a session file (see Sessions).
 - Staleness: `sha1_prefix` (first 3600 bytes of the SEG-Y) + mtime
   must match. Stale `.sv` is loaded with a warning, not refused.
 - No trace header arrays in the `.sv`. Full scan data stays in
   memory only. (Sidecar caching of scan results is deferred beyond
   v2.)
+
+---
+
+## Sessions
+
+A session file `<name>.svsession` (JSON, saved wherever the user
+chooses) records the workspace so it can be reopened later. It is
+separate from the `.sv`: the `.sv` holds facts about one file, the
+session holds what the user was looking at.
+
+- **Saved**: every loaded file (absolute path, path relative to the
+  session file, sha1_prefix + mtime), A − B diffs (parents by key,
+  direction, name), toggle groups (name, members, active / reference /
+  edit target, link_all, per-member display state and processing
+  chain, `SortConfig`, commanded and zoomed ranges, colour scale,
+  crosshair fields, flicker rate and excluded members), Model Window
+  tabs (members, per-kind style, overlay, flicker), active tabs.
+- **Not saved**: `.sv` content (it loads with its file), header scans,
+  group indices, trace alignments, selection, transform windows,
+  crosshair position.
+- Datasets are keyed `d0…` / diffs `x0…` within the file; runtime ids
+  are never written.
+- **Restore** (`controllers/session_controller.py`): load all files →
+  wait for header scans → rebuild diffs (align B to A) → build groups,
+  apply sort/ranges/zoom → Model Window tabs.
+- **Missing files**: looked for at the saved path, then relative to the
+  session file. Still missing → dialog: Locate (siblings found in the
+  same folder) or Skip. Dependants are dropped (`services/
+  session_service.prune`): diffs need both parents, empty groups go,
+  losing the reference resets sort and view, a sort on an unavailable
+  field falls back to natural order. Changed files load with a note.
+  A summary lists everything not restored.
+- Schema versioned (`schema_version`, currently 1); newer is refused,
+  unknown keys ignored. Written atomically.
+- Unsaved-changes prompt only when a session file is open; the last
+  session is never reopened automatically (Open Recent, 8 entries).
 
 ---
 
@@ -836,8 +874,8 @@ contiguous range. Used by Range-type rows in either position.
 ## Out of Scope
 
 Wiggle / variable-area rendering; 3D volume slicing views; horizon/
-event picking; CSV export of trace data; non-SEG-Y formats; project
-save-load; view presets (deferred to a later version); auto-
+event picking; CSV export of trace data; non-SEG-Y formats; view
+presets (deferred to a later version); auto-
 resampling; whole-trace AGC; diff scale factors; diffs between
 group members; keyboard bindings for members 10+; non-uniform group
 skip; pan/zoom refetch; in-memory tile cache; three-or-more-key

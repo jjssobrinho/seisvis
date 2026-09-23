@@ -379,6 +379,77 @@ def default_sort_config(*, count: int = 1, skip: int = 1, committed: bool = Fals
     )
 
 
+# --- serialisation (session files) ---
+
+
+def row_to_dict(row: RowSelection) -> dict[str, object]:
+    """Plain-JSON form of *row*: field, direction, type and that type's params."""
+    out: dict[str, object] = {"field": row.field, "direction": row.direction, "type": row.type}
+    if row.value is not None:
+        out["value"] = {"first": row.value.first, "count": row.value.count, "skip": row.value.skip}
+    elif row.range_ is not None:
+        out["range"] = {"min": row.range_.range_min, "max": row.range_.range_max}
+    elif row.list_ is not None:
+        out["list"] = list(row.list_.group_ids)
+    return out
+
+
+def row_from_dict(raw: object) -> RowSelection:
+    """Inverse of :func:`row_to_dict`. Raises ``ValueError`` on malformed input."""
+    if not isinstance(raw, dict):
+        raise ValueError("sort row is not an object")
+    try:
+        field = str(raw["field"])
+        direction = raw.get("direction", "asc")
+        row_type = raw["type"]
+    except KeyError as exc:
+        raise ValueError(f"sort row is missing {exc.args[0]!r}") from None
+    if direction not in ("asc", "desc"):
+        raise ValueError(f"unknown sort direction {direction!r}")
+    try:
+        if row_type == "value":
+            v = raw["value"]
+            return RowSelection.value_default(
+                field, direction, first=int(v["first"]), count=int(v["count"]), skip=int(v["skip"])
+            )
+        if row_type == "range":
+            r = raw["range"]
+            return RowSelection(
+                field=field,
+                direction=direction,
+                type="range",
+                range_=RangeParams(range_min=int(r["min"]), range_max=int(r["max"])),
+            )
+        if row_type == "list":
+            ids = tuple(int(i) for i in raw["list"])
+            return RowSelection(
+                field=field, direction=direction, type="list", list_=ListParams(group_ids=ids)
+            )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"malformed {row_type} sort row: {exc}") from None
+    raise ValueError(f"unknown sort row type {row_type!r}")
+
+
+def sort_config_to_dict(config: SortConfig) -> dict[str, object]:
+    return {
+        "primary": row_to_dict(config.primary),
+        "secondary": row_to_dict(config.secondary) if config.secondary is not None else None,
+        "committed": config.committed,
+    }
+
+
+def sort_config_from_dict(raw: object) -> SortConfig:
+    """Inverse of :func:`sort_config_to_dict`. Raises ``ValueError`` on malformed input."""
+    if not isinstance(raw, dict) or "primary" not in raw:
+        raise ValueError("sort config is not an object with a primary row")
+    secondary = raw.get("secondary")
+    return SortConfig(
+        primary=row_from_dict(raw["primary"]),
+        secondary=row_from_dict(secondary) if secondary is not None else None,
+        committed=bool(raw.get("committed", False)),
+    )
+
+
 __all__ = [
     "TRACE_RANGE_FIELD",
     "Direction",
@@ -389,4 +460,8 @@ __all__ = [
     "RowSelection",
     "SortConfig",
     "default_sort_config",
+    "row_from_dict",
+    "row_to_dict",
+    "sort_config_from_dict",
+    "sort_config_to_dict",
 ]

@@ -6,8 +6,15 @@ import sys
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThreadPool
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QIcon, QKeySequence, QShortcut
+from PySide6.QtCore import Qt, QThreadPool, QTimer
+from PySide6.QtGui import (
+    QCloseEvent,
+    QDragEnterEvent,
+    QDropEvent,
+    QIcon,
+    QKeySequence,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -24,18 +31,27 @@ from PySide6.QtWidgets import (
 
 from seisvis.controllers.active_group_controller import ActiveGroupController
 from seisvis.controllers.alignment_controller import AlignmentController
+from seisvis.controllers.session_controller import SessionRestorer
 from seisvis.controllers.transforms_coordinator import TransformsCoordinator
 from seisvis.io.loader import SUPPORTED_SUFFIXES
 from seisvis.io.slice_cache import SliceCache
 from seisvis.models.dataset import Dataset
 from seisvis.models.project import Project
+from seisvis.models.session import (
+    SESSION_SUFFIX,
+    ModelGroupEntry,
+    SessionFile,
+    SessionFormatError,
+)
 from seisvis.models.sort_config import TRACE_RANGE_FIELD, RowSelection, SortConfig
 from seisvis.models.toggle_group import ToggleGroup
 from seisvis.models.trace_alignment import AlignmentStatus, TraceAlignment
 from seisvis.services.dataset_reload import ReloadError, reload_dataset
 from seisvis.services.file_watch_service import FileWatchService
+from seisvis.services.session_service import apply_model_group_entry, capture, check_session
 from seisvis.ui.dialogs.crosshair_fields_dialog import CrosshairFieldsDialog
 from seisvis.ui.dialogs.dataset_properties_dialog import DatasetPropertiesDialog
+from seisvis.ui.dialogs.missing_files_dialog import MissingFilesDialog
 from seisvis.ui.panels.catalog_panel import CatalogPanel
 from seisvis.ui.panels.display_panel import DisplayPanel
 from seisvis.ui.panels.viewport_manager_panel import ViewportManagerPanel
@@ -43,12 +59,14 @@ from seisvis.ui.toolbar.global_toolbar import GlobalToolbar
 from seisvis.ui.widgets.crosshair_readout import CrosshairReadout
 from seisvis.ui.widgets.model_view import ModelView
 from seisvis.ui.windows.model_window import ModelWindow
+from seisvis.utils import qsettings
 from seisvis.workers.field_scan_worker import FieldScanWorker
 from seisvis.workers.header_scan_worker import HeaderScanWorker
 from seisvis.workers.load_worker import LoadWorker
 from seisvis.workers.slice_worker import SliceWorker
 
 _LOG_PATH = Path("logs/seisvis.log")
+_SESSION_FILTER = f"SeisVis sessions (*{SESSION_SUFFIX});;All files (*)"
 _SUPPORTED_SUFFIXES = SUPPORTED_SUFFIXES
 log = logging.getLogger(__name__)
 
@@ -169,6 +187,12 @@ class MainWindow(QMainWindow):
         self._default_groups_per_view: int = 1
         self._default_flicker_hz: float = 2.0
 
+        # The session file this workspace was opened from or saved to, and
+        # what it looked like then — "unsaved changes" is any difference.
+        self._session_path: Path | None = None
+        self._session_restorer: SessionRestorer | None = None
+        self._saved_snapshot: str = ""
+
         self.setWindowTitle("SeisVis")
         self.resize(1280, 800)
         self.setAcceptDrops(True)
@@ -202,6 +226,14 @@ class MainWindow(QMainWindow):
         project.toggle_group_removed.connect(self._on_toggle_group_removed_for_scan)
 
         self._update_status_group_info()
+        self._mark_session_saved()
+        # Many things count as a change (zoom, a colormap, a new group), so
+        # the title's unsaved marker is refreshed on a slow tick rather than
+        # wired to every signal that could alter the workspace.
+        self._title_timer = QTimer(self)
+        self._title_timer.setInterval(1000)
+        self._title_timer.timeout.connect(self._update_window_title)
+        self._title_timer.start()
         log.info("MainWindow created")
 
     # --- Menu ---
@@ -210,6 +242,21 @@ class MainWindow(QMainWindow):
         menu = self.menuBar()
 
         file_menu = menu.addMenu("&File")
+        new_session = file_menu.addAction("&New Session")
+        new_session.setShortcut("Ctrl+N")
+        new_session.triggered.connect(self._on_new_session)
+        open_session = file_menu.addAction("Open &Session…")
+        open_session.setShortcut("Ctrl+Shift+O")
+        open_session.triggered.connect(self._on_open_session)
+        self._recent_sessions_menu = file_menu.addMenu("Open &Recent Session")
+        self._recent_sessions_menu.aboutToShow.connect(self._populate_recent_sessions)
+        save_session = file_menu.addAction("Sa&ve Session")
+        save_session.setShortcut("Ctrl+S")
+        save_session.triggered.connect(self._on_save_session)
+        save_session_as = file_menu.addAction("Save Session &As…")
+        save_session_as.setShortcut("Ctrl+Shift+S")
+        save_session_as.triggered.connect(self._on_save_session_as)
+        file_menu.addSeparator()
         open_action = file_menu.addAction("&Load data…")
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self._on_open_files)
@@ -720,12 +767,16 @@ class MainWindow(QMainWindow):
                 self._on_load_finished(ready)
 
     def _on_load_finished(self, dataset: Dataset) -> None:
-        self.project.add(dataset)
         self._pending_loads = max(0, self._pending_loads - 1)
         if self._pending_loads == 0:
             self.statusBar().showMessage(f"Loaded {dataset.name}", 3000)
         else:
             self.statusBar().showMessage(f"Loaded {dataset.name} ({self._pending_loads} pending)")
+        self.register_dataset(dataset)
+
+    def register_dataset(self, dataset: Dataset) -> None:
+        """Add a freshly loaded dataset to the project and index its headers."""
+        self.project.add(dataset)
         # Surange (~30k header probe) must run before the background full scan
         # is dispatched: both touch the same segyio handle and segyio handles
         # are not thread-safe. Per CLAUDE.md the surange scan is fast enough
@@ -1218,11 +1269,235 @@ class MainWindow(QMainWindow):
             return
         group.set_crosshair_fields(dlg.selected_fields())
 
+    # --- Sessions ---
+
+    def _capture_session(self, *, fingerprints: bool) -> SessionFile:
+        flicker = {}
+        for group in self.project.toggle_groups:
+            view = self.display_panel.view_for(group.id)
+            if view is not None:
+                bar = view.toggle_bar
+                flicker[group.id] = (bar.flicker_rate(), bar.flicker_excluded_indices())
+        mw = self._model_window
+        return capture(
+            self.project,
+            session_path=self._session_path,
+            flicker=flicker,
+            model_groups=mw.groups() if mw is not None else [],
+            active_model_group=mw.current_group_index if mw is not None else None,
+            fingerprints=fingerprints,
+        )
+
+    def _mark_session_saved(self) -> None:
+        self._saved_snapshot = self._capture_session(fingerprints=False).dumps()
+        self._update_window_title()
+
+    def _has_unsaved_session_changes(self) -> bool:
+        """Whether the open session file no longer matches the workspace.
+
+        Only a workspace backed by a session file can have unsaved changes:
+        someone who never saved a session has not asked for one, and exiting
+        stays as quick as it was before sessions existed.
+        """
+        if self._session_restorer is not None or self._session_path is None:
+            return False
+        return self._capture_session(fingerprints=False).dumps() != self._saved_snapshot
+
+    def _update_window_title(self) -> None:
+        title = "SeisVis"
+        if self._session_path is not None:
+            title += f" — {self._session_path.name}"
+        if self._has_unsaved_session_changes():
+            title += " •"
+        if self.windowTitle() != title:
+            self.setWindowTitle(title)
+
+    def _confirm_discard_session(self) -> bool:
+        """Offer to save unsaved changes; False means the user cancelled."""
+        if not self._has_unsaved_session_changes():
+            return True
+        name = self._session_path.name if self._session_path else "this session"
+        answer = QMessageBox.question(
+            self,
+            "Unsaved session",
+            f"Save the changes to {name}?",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+        if answer == QMessageBox.StandardButton.Save:
+            return self._on_save_session()
+        return answer == QMessageBox.StandardButton.Discard
+
+    def _clear_workspace(self) -> None:
+        """Close every group, model tab and dataset."""
+        if self._session_restorer is not None:
+            self._session_restorer.abort()
+            self._session_restorer = None
+        self.project.diff_selection.clear()
+        for group in list(self.project.toggle_groups):
+            self.project.remove_toggle_group(group.id)
+        if self._model_window is not None:
+            self._model_window.close_all_tabs()
+        for ds in reversed(self.project.datasets):
+            self._cancel_scan(ds.id)
+            self.project.remove(ds.id)
+
+    def _on_new_session(self) -> None:
+        if not self._confirm_discard_session():
+            return
+        self._clear_workspace()
+        self._session_path = None
+        self._mark_session_saved()
+        self.statusBar().showMessage("New session", 3000)
+
+    def _session_dialog_folder(self) -> str:
+        if self._session_path is not None:
+            return str(self._session_path.parent)
+        return str(self._last_opened_folder) if self._last_opened_folder else ""
+
+    def _on_open_session(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open session", self._session_dialog_folder(), _SESSION_FILTER
+        )
+        if path:
+            self.open_session(Path(path))
+
+    def _populate_recent_sessions(self) -> None:
+        menu = self._recent_sessions_menu
+        menu.clear()
+        recent = qsettings.recent_sessions()
+        if not recent:
+            empty = menu.addAction("No recent sessions")
+            empty.setEnabled(False)
+            return
+        for i, path in enumerate(recent, start=1):
+            action = menu.addAction(f"&{i}  {path.name}")
+            action.setToolTip(str(path))
+            action.setStatusTip(str(path))
+            action.triggered.connect(lambda _=False, p=path: self.open_session(p))
+        menu.addSeparator()
+        menu.addAction("Clear list").triggered.connect(qsettings.clear_recent_sessions)
+
+    def open_session(self, path: Path) -> None:
+        """Replace the workspace with the session saved in *path*."""
+        path = Path(path).resolve()
+        try:
+            session = SessionFile.from_json(path)
+        except FileNotFoundError:
+            qsettings.remove_recent_session(path)
+            QMessageBox.warning(self, "Open session", f"{path} no longer exists.")
+            return
+        except (OSError, SessionFormatError) as exc:
+            QMessageBox.critical(self, "Open session", f"Could not open {path.name}:\n\n{exc}")
+            return
+        if not self._confirm_discard_session():
+            return
+        plan = check_session(session, path)
+        if plan.missing and not MissingFilesDialog(plan, self).exec():
+            return
+        pruned, notes = plan.pruned()
+
+        self._clear_workspace()
+        self._session_path = path
+        qsettings.add_recent_session(path)
+        restorer = SessionRestorer(self.project, self, self._pool, self)
+        restorer.progress.connect(self.statusBar().showMessage)
+        restorer.finished.connect(self._on_session_restored)
+        self._session_restorer = restorer
+        restorer.start(pruned, plan.paths(), plan.notes() + notes)
+
+    def _on_session_restored(self, notes: list[str]) -> None:
+        restorer = self._session_restorer
+        self._session_restorer = None
+        if restorer is not None:
+            restorer.deleteLater()
+        self._mark_session_saved()
+        name = self._session_path.name if self._session_path else "session"
+        if not notes:
+            self.statusBar().showMessage(f"Restored {name}", 4000)
+            return
+        self.statusBar().showMessage(f"Restored {name} with {len(notes)} change(s)", 6000)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("Session restored")
+        box.setText(f"{name} was restored, but not everything could be put back as saved.")
+        box.setDetailedText("\n".join(notes))
+        box.exec()
+
+    def _on_save_session(self) -> bool:
+        if self._session_path is None:
+            return self._on_save_session_as()
+        return self._write_session(self._session_path)
+
+    def _on_save_session_as(self) -> bool:
+        start = self._session_dialog_folder()
+        if self._session_path is not None:
+            start = str(self._session_path)
+        path, _ = QFileDialog.getSaveFileName(self, "Save session as", start, _SESSION_FILTER)
+        if not path:
+            return False
+        target = Path(path)
+        if target.suffix.lower() != SESSION_SUFFIX:
+            target = target.with_name(target.name + SESSION_SUFFIX)
+        return self._write_session(target.resolve())
+
+    def _write_session(self, path: Path) -> bool:
+        if self._session_restorer is not None:
+            self.statusBar().showMessage("Wait for the session to finish restoring", 4000)
+            return False
+        previous = self._session_path
+        self._session_path = path  # relative paths are taken against it
+        try:
+            self._capture_session(fingerprints=True).to_json(path)
+        except OSError as exc:
+            self._session_path = previous
+            QMessageBox.critical(self, "Save session", f"Could not save {path.name}:\n\n{exc}")
+            return False
+        qsettings.add_recent_session(path)
+        self._mark_session_saved()
+        self.statusBar().showMessage(f"Saved session {path.name}", 4000)
+        return True
+
+    # SessionHost — what a restore asks of the main window.
+
+    def align_pair(self, reference, member, on_done) -> None:  # noqa: ANN001
+        self._alignment.align_pair(reference, member, on_done)
+
+    def apply_flicker(
+        self, group: ToggleGroup, hz: float | None, excluded: tuple[int, ...]
+    ) -> None:
+        view = self.display_panel.view_for(group.id)
+        if view is None:
+            return
+        if hz is not None:
+            view.toggle_bar.set_flicker_rate(hz)
+        view.toggle_bar.set_flicker_excluded_indices(excluded)
+
+    def restore_model_group(self, datasets: list[Dataset], entry: ModelGroupEntry) -> None:
+        mw = self.model_window
+        group = mw.restore_group(
+            datasets, name=entry.name, flicker_hz=entry.flicker_hz, overlay=entry.overlay_enabled
+        )
+        apply_model_group_entry(group, entry)
+        mw.show()
+
+    def set_active_model_group(self, index: int) -> None:
+        if self._model_window is not None:
+            self._model_window.set_current_group_index(index)
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt override
+        if not self._confirm_discard_session():
+            event.ignore()
+            return
+        super().closeEvent(event)
+
     # --- Drag and drop ---
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls() and any(
-            Path(u.toLocalFile()).suffix.lower() in _SUPPORTED_SUFFIXES
+            Path(u.toLocalFile()).suffix.lower() in _SUPPORTED_SUFFIXES | {SESSION_SUFFIX}
             for u in event.mimeData().urls()
         ):
             event.acceptProposedAction()
@@ -1230,6 +1505,16 @@ class MainWindow(QMainWindow):
             event.ignore()
 
     def dropEvent(self, event: QDropEvent) -> None:
+        sessions = [
+            Path(u.toLocalFile())
+            for u in event.mimeData().urls()
+            if Path(u.toLocalFile()).suffix.lower() == SESSION_SUFFIX
+        ]
+        if sessions:
+            # A session replaces the workspace, so only one can be opened.
+            event.acceptProposedAction()
+            self.open_session(sessions[0])
+            return
         for url in event.mimeData().urls():
             local = url.toLocalFile()
             if local:
@@ -1249,9 +1534,6 @@ def main() -> int:
     app.setWindowIcon(QIcon(str(Path(__file__).parent / "resources" / "seismic-view.svg")))
     project = Project()
     window = MainWindow(project)
-
-    from seisvis.utils import qsettings
-
     qsettings.restore(window)
 
     app.aboutToQuit.connect(lambda: qsettings.save(window))

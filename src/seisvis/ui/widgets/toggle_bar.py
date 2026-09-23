@@ -140,6 +140,23 @@ class ToggleBar(QWidget):
             return
         self._flicker_check.setChecked(bool(on))
 
+    def flicker_rate(self) -> float:
+        return float(self._flicker_rate.value())
+
+    def set_flicker_rate(self, hz: float) -> None:
+        self._flicker_rate.setValue(float(hz))
+
+    def flicker_excluded_indices(self) -> tuple[int, ...]:
+        """Member indices auto-flicker skips (for saving a session)."""
+        return tuple(
+            i for i, m in enumerate(self.group.members) if id(m.dataset) in self._flicker_excluded
+        )
+
+    def set_flicker_excluded_indices(self, indices: tuple[int, ...]) -> None:
+        members = self.group.members
+        self._flicker_excluded = {id(members[i].dataset) for i in indices if 0 <= i < len(members)}
+        self._refresh_flicker_members_button()
+
     def add_trailing_widget(self, widget: QWidget) -> None:
         """Append a widget after the flicker controls (e.g. the export button)."""
         widget.setParent(self)
