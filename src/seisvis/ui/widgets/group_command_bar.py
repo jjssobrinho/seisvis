@@ -385,6 +385,10 @@ class GroupCommandBar(QWidget):
         self._swap_btn.clicked.connect(self._on_swap_clicked)
         self._remove_secondary_btn.clicked.connect(self._on_remove_secondary_clicked)
         self._commit_btn.clicked.connect(self._on_commit_clicked)
+        # Enter in a List field commits, like pressing the star. Parse
+        # errors are still refused there, naming the row.
+        p.list_edit.returnPressed.connect(self._on_commit_clicked)
+        s.list_edit.returnPressed.connect(self._on_commit_clicked)
 
     # --- reference-dataset subscription ---
 
