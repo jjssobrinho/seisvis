@@ -11,16 +11,20 @@ log = logging.getLogger(__name__)
 
 
 class LoadWorkerSignals(QObject):
-    loaded = Signal(object)  # Dataset
-    failed = Signal(str, str)  # source_path, error message
+    # Each carries the submitter's sequence number so results can be put back
+    # in submission order. Receivers must be QObject methods, not lambdas:
+    # a lambda has no thread affinity and would run on the pool thread.
+    loaded = Signal(int, object)  # seq, Dataset
+    failed = Signal(int, str, str)  # seq, source_path, error message
 
 
 class LoadWorker(QRunnable):
     """QRunnable that loads a SEG-Y or SU file on the global thread pool."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, seq: int = 0) -> None:
         super().__init__()
         self.path = Path(path)
+        self.seq = seq
         self.signals = LoadWorkerSignals()
 
     @Slot()
@@ -29,7 +33,7 @@ class LoadWorker(QRunnable):
             dataset = load_dataset(self.path)
         except Exception as exc:
             log.exception("load failed for %s", self.path)
-            self.signals.failed.emit(str(self.path), str(exc))
+            self.signals.failed.emit(self.seq, str(self.path), str(exc))
             return
         # Dataset inherits QObject; it was constructed here on the pool
         # thread, which means its Qt thread affinity is this worker. Handing
@@ -39,4 +43,4 @@ class LoadWorker(QRunnable):
         app = QCoreApplication.instance()
         if app is not None:
             dataset.moveToThread(app.thread())
-        self.signals.loaded.emit(dataset)
+        self.signals.loaded.emit(self.seq, dataset)

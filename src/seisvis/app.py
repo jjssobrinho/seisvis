@@ -120,6 +120,12 @@ class MainWindow(QMainWindow):
         self._pool = QThreadPool.globalInstance()
         self._slice_cache = SliceCache(max_entries=32)
         self._pending_loads = 0
+        # Loads run in parallel and finish in any order; results are held
+        # until every earlier submission has landed so the catalog lists
+        # datasets in the order they were asked for.
+        self._load_seq = 0
+        self._next_load_to_add = 0
+        self._finished_loads: dict[int, Dataset | None] = {}
         self._scan_cancel_flags: dict[str, dict[str, bool]] = {}
         self._scan_workers: dict[str, HeaderScanWorker] = {}
         # On-demand per-field scans (e.g. CDP) dispatched when a committed
@@ -608,7 +614,8 @@ class MainWindow(QMainWindow):
             "Seismic files (*.segy *.sgy *.su);;SEG-Y files (*.segy *.sgy);;"
             "Seismic Unix files (*.su);;All files (*)",
         )
-        for p in paths:
+        # The chooser may hand back click order; list them by name instead.
+        for p in sorted(paths, key=lambda s: Path(s).name.lower()):
             path = Path(p)
             self._last_opened_folder = path.parent
             self._submit_load(path)
@@ -629,12 +636,24 @@ class MainWindow(QMainWindow):
         if path.suffix.lower() not in _SUPPORTED_SUFFIXES:
             log.warning("ignoring unsupported path: %s", path)
             return
-        worker = LoadWorker(path)
-        worker.signals.loaded.connect(self._on_load_finished)
+        seq = self._load_seq
+        self._load_seq += 1
+        worker = LoadWorker(path, seq)
+        # Bound methods, so the results are queued to the GUI thread.
+        worker.signals.loaded.connect(self._on_load_done)
         worker.signals.failed.connect(self._on_load_failed)
         self._pending_loads += 1
         self.statusBar().showMessage(f"Loading {path.name}…")
         self._pool.start(worker)
+
+    def _on_load_done(self, seq: int, dataset: Dataset | None) -> None:
+        """Record load *seq* and add every result now next in line."""
+        self._finished_loads[seq] = dataset
+        while self._next_load_to_add in self._finished_loads:
+            ready = self._finished_loads.pop(self._next_load_to_add)
+            self._next_load_to_add += 1
+            if ready is not None:
+                self._on_load_finished(ready)
 
     def _on_load_finished(self, dataset: Dataset) -> None:
         self.project.add(dataset)
@@ -853,7 +872,10 @@ class MainWindow(QMainWindow):
             f"Header field scan failed for {dataset.name}: {message}", 5000
         )
 
-    def _on_load_failed(self, source: str, error: str) -> None:
+    def _on_load_failed(self, seq: int, source: str, error: str) -> None:
+        # Free the slot first so later loads are not held behind the failure
+        # while the dialog below is open.
+        self._on_load_done(seq, None)
         self._pending_loads = max(0, self._pending_loads - 1)
         self.statusBar().showMessage(f"Failed to load {Path(source).name}", 5000)
         QMessageBox.critical(
