@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Seismic View
+Comment=View and compare 2D/3D SEG-Y seismic data
+Exec=/home/jdasilva/.local/bin/uv run --project /home/jdasilva/projects/seismic_view seismic-view
+Icon=/home/jdasilva/projects/seismic_view/src/seisvis/resources/seismic-view.svg
+Terminal=false
+Categories=Science;Geoscience;
+StartupWMClass=seismic-view

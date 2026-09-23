@@ -7,7 +7,7 @@ import traceback
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThreadPool
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence, QShortcut
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -1243,6 +1243,10 @@ def main() -> int:
     _configure_logging()
     _install_excepthook()
     app = QApplication.instance() or QApplication(sys.argv)
+    # The window icon covers X11 and the title bar; on Wayland the shell
+    # reads the dock icon from the .desktop entry matching this id.
+    app.setDesktopFileName("seismic-view")
+    app.setWindowIcon(QIcon(str(Path(__file__).parent / "resources" / "seismic-view.svg")))
     project = Project()
     window = MainWindow(project)
 
