@@ -107,6 +107,11 @@ class AppearanceGroup(QGroupBox):
         self._scale_auto = QPushButton("Auto", self)
         self._scale_auto.setToolTip("Fill min/max from the active member's current data")
 
+        # Commit on Enter / focus-out / arrow step only. With keyboard tracking
+        # every keystroke emits, the controller rebinds via setValue, and the
+        # text being typed (e.g. a lone "-") is overwritten with "0.0000".
+        self._scale_min.setKeyboardTracking(False)
+        self._scale_max.setKeyboardTracking(False)
         self._scale_min.setEnabled(False)
         self._scale_max.setEnabled(False)
 
