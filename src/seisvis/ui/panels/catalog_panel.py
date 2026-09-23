@@ -574,6 +574,25 @@ class CatalogPanel(QWidget):
                     diff.setToolTip(f"Incompatible: {compat.reason}")
                 if compat.ok:
                     diff.triggered.connect(lambda: self.diff_requested.emit(a, b))
+            # Only the files that changed on disk are re-read; the rest of the
+            # selection is left alone.
+            stale = [d for d in selected if getattr(d, "data_stale", False)]
+            if stale:
+                menu.addSeparator()
+                reload_action = menu.addAction(f"Reload {len(stale)} changed from disk")
+                reload_action.setToolTip(
+                    "Re-open the selected files that changed on disk and re-read their headers."
+                )
+                reload_action.triggered.connect(
+                    lambda checked=False, d=stale: [self.reload_requested.emit(x) for x in d]
+                )
+            menu.addSeparator()
+            remove = menu.addAction(f"Remove {len(selected)} datasets")
+            remove.triggered.connect(
+                lambda checked=False, ids=[d.id for d in selected]: [
+                    self.remove_requested.emit(i) for i in ids
+                ]
+            )
         else:
             return None
         return menu

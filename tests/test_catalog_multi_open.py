@@ -216,3 +216,45 @@ def test_end_to_end_from_the_catalog_selection(
 def test_empty_list_creates_nothing(window: MainWindow) -> None:
     window._on_open_multi_in_new_group([])
     assert window.project.toggle_groups == []
+
+
+# --- remove / reload on a multi-selection ---
+
+
+def test_multi_selection_removes_every_selected_dataset(
+    window: MainWindow, three_datasets: list[Dataset]
+) -> None:
+    menu = window.catalog_panel.build_context_menu(three_datasets[:2])
+    assert menu is not None
+    next(a for a in menu.actions() if a.text() == "Remove 2 datasets").trigger()
+
+    assert [ds.name for ds in window.project.datasets] == ["c"]
+
+
+def test_reload_is_offered_only_when_a_selected_file_changed(
+    window: MainWindow, three_datasets: list[Dataset]
+) -> None:
+    menu = window.catalog_panel.build_context_menu(three_datasets)
+    assert menu is not None
+    assert not any(label.startswith("Reload") for label in _labels(menu))
+
+    three_datasets[1].set_data_stale(True)
+    menu = window.catalog_panel.build_context_menu(three_datasets)
+    assert menu is not None
+    assert "Reload 1 changed from disk" in _labels(menu)
+
+
+def test_reload_emits_only_the_changed_datasets(
+    window: MainWindow, three_datasets: list[Dataset]
+) -> None:
+    three_datasets[0].set_data_stale(True)
+    three_datasets[2].set_data_stale(True)
+    emitted: list[Dataset] = []
+    window.catalog_panel.reload_requested.disconnect()
+    window.catalog_panel.reload_requested.connect(emitted.append)
+
+    menu = window.catalog_panel.build_context_menu(three_datasets)
+    assert menu is not None
+    next(a for a in menu.actions() if a.text() == "Reload 2 changed from disk").trigger()
+
+    assert emitted == [three_datasets[0], three_datasets[2]]
