@@ -291,6 +291,7 @@ class MainWindow(QMainWindow):
         self.display_panel.cursor_readout.connect(self._on_cursor_readout)
         self.display_panel.crosshair_readout.connect(self._on_crosshair_readout)
         self.display_panel.close_group_requested.connect(self._on_close_group_requested)
+        self.display_panel.duplicate_group_requested.connect(self._on_duplicate_group_requested)
         self.toolbar.analysis.selection_mode_toggled.connect(
             self.display_panel.set_selection_mode_active
         )
@@ -1112,6 +1113,14 @@ class MainWindow(QMainWindow):
 
     def _on_close_group_requested(self, group_id: str) -> None:
         self.project.remove_toggle_group(group_id)
+
+    def _on_duplicate_group_requested(self, group_id: str) -> None:
+        group = self.project.find_toggle_group(group_id)
+        if group is None:
+            return
+        dup = group.duplicate(f"{group.name} (copy)")
+        self.project.add_toggle_group(dup)
+        self.statusBar().showMessage(f"Duplicated {group.name} as {dup.name}", 4000)
 
     # --- Display bridging ---
 

@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 
 from PySide6.QtCore import QEvent, QObject, Qt, QThreadPool, Signal
-from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QInputDialog, QTabBar, QTabWidget, QToolButton, QWidget
+from PySide6.QtGui import QContextMenuEvent, QMouseEvent
+from PySide6.QtWidgets import QInputDialog, QMenu, QTabBar, QTabWidget, QToolButton, QWidget
 
 from seisvis.io.slice_cache import SliceCache
 from seisvis.models.project import Project
@@ -15,9 +15,25 @@ log = logging.getLogger(__name__)
 
 
 class _RenameableTabBar(QTabBar):
-    """QTabBar that requests a rename when its tab is double-clicked."""
+    """QTabBar that requests a rename on double-click, and offers a
+    right-click menu to rename or duplicate the tab's group."""
 
     rename_requested = Signal(int)
+    duplicate_requested = Signal(int)
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:  # noqa: N802 - Qt override
+        tab_index = self.tabAt(event.pos())
+        if tab_index < 0:
+            super().contextMenuEvent(event)
+            return
+        menu = QMenu(self)
+        rename = menu.addAction("Rename…")
+        rename.triggered.connect(lambda: self.rename_requested.emit(tab_index))
+        duplicate = menu.addAction("Duplicate")
+        duplicate.setToolTip("Open the same datasets, with the same settings, in a new tab")
+        duplicate.triggered.connect(lambda: self.duplicate_requested.emit(tab_index))
+        menu.exec(event.globalPos())
+        event.accept()
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: D401
         tab_index = self.tabAt(event.pos())
@@ -35,6 +51,7 @@ class DisplayPanel(QTabWidget):
     crosshair_readout = Signal(str)
     cursor_readout = Signal(object, object, object)  # trace, t_ms, amp
     close_group_requested = Signal(str)  # group id
+    duplicate_group_requested = Signal(str)  # group id
     datasets_dropped = Signal(str, object)  # group id, list[str] of dataset ids
     full_display_toggled = Signal(bool)
 
@@ -57,6 +74,7 @@ class DisplayPanel(QTabWidget):
 
         tab_bar = _RenameableTabBar(self)
         tab_bar.rename_requested.connect(self._prompt_rename)
+        tab_bar.duplicate_requested.connect(self._on_tab_duplicate_requested)
         self.setTabBar(tab_bar)
         self.setMovable(False)
         self.setTabsClosable(True)
@@ -136,6 +154,12 @@ class DisplayPanel(QTabWidget):
         group_id = next((gid for gid, v in self._views.items() if v is widget), None)
         if group_id is not None:
             self.close_group_requested.emit(group_id)
+
+    def _on_tab_duplicate_requested(self, tab_index: int) -> None:
+        widget = self.widget(tab_index)
+        group_id = next((gid for gid, v in self._views.items() if v is widget), None)
+        if group_id is not None:
+            self.duplicate_group_requested.emit(group_id)
 
     def _prompt_rename(self, tab_index: int) -> None:
         widget = self.widget(tab_index)

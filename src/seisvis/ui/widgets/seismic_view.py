@@ -250,6 +250,7 @@ class SeismicView(QWidget):
         # Build ImageItems for any pre-existing members (created-with-member path).
         for i in range(group.n_members):
             self._on_member_added(i)
+        self._sync_sorted_indices()
         self._apply_plot_ranges()
         self._apply_active_visibility()
         self._refresh_scale_bar()
@@ -985,6 +986,25 @@ class SeismicView(QWidget):
         self._refresh_overlay_geometry()
         for i in range(len(self._image_items)):
             self._request_slice(i)
+
+    def _sync_sorted_indices(self) -> None:
+        """Adopt a group's already-committed sort (e.g. a duplicated group).
+
+        ``_current_trace_indices`` is otherwise only set when a sort is
+        committed while this view exists; without it the crosshair and info
+        track would read the packed columns as physical traces.
+        """
+        state = self.group.shared_state
+        if not state.sort_config.committed or self.group.is_empty:
+            return
+        ref_ds = self.group.members[self.group.reference_index].dataset
+        gi = getattr(ref_ds, "group_index", None)
+        if gi is None:
+            return
+        indices = gi.get_trace_indices(state.sort_config)
+        if indices.size:
+            self._current_trace_indices = indices
+            self._refresh_info_track()
 
     def _on_zoom_changed(self) -> None:
         # Zoom is a pure view operation — update the viewbox and the info

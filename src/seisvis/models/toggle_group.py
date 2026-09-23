@@ -173,6 +173,34 @@ class ToggleGroup(QObject):
         self._name = name
         self.name_changed.emit(name)
 
+    def duplicate(self, name: str) -> ToggleGroup:
+        """A new group holding the same datasets, set up the same way.
+
+        Members share their ``Dataset`` objects (derived datasets included)
+        but get their own copies of display state and processing chain, so
+        the two groups can then be changed independently. Cursors, link-all,
+        crosshair fields and the shared state (sort, ranges, color scale)
+        are copied. The canvas selection and transform window are not: they
+        belong to the original tab.
+        """
+        dup = ToggleGroup(name=name)
+        dup._members = [
+            Member(
+                dataset=m.dataset,
+                display_state=deepcopy(m.display_state),
+                processing_chain=deepcopy(m.processing_chain),
+                alignment=m.alignment,
+            )
+            for m in self._members
+        ]
+        dup._active_index = self._active_index
+        dup._reference_index = self._reference_index
+        dup._edit_target_index = self._edit_target_index
+        dup._link_all = self._link_all
+        dup._crosshair_fields = self._crosshair_fields
+        dup.shared_state = deepcopy(self.shared_state)
+        return dup
+
     def add_member(self, dataset: Dataset, at_index: int | None = None) -> int:
         insert_at = len(self._members) if at_index is None else int(at_index)
         insert_at = max(0, min(insert_at, len(self._members)))

@@ -158,3 +158,35 @@ def test_update_shared_state_signal_once_per_change(group: ToggleGroup, segy_3d:
         assert hits == [1]
     finally:
         ds.close()
+
+
+def test_duplicate_shares_datasets_and_copies_settings(group: ToggleGroup, segy_3d: Path) -> None:
+    a = load_segy(segy_3d)
+    b = load_segy(segy_3d)
+    try:
+        group.add_member(a)
+        group.add_member(b)
+        group.set_active(1)
+        group.update_member_display_state(1, colormap="seismic")
+        group.set_crosshair_fields(["offset"])
+        group.set_color_scale((-1.0, 1.0))
+
+        dup = group.duplicate("Group 1 (copy)")
+
+        assert dup.id != group.id
+        assert dup.name == "Group 1 (copy)"
+        assert [m.dataset for m in dup.members] == [a, b]
+        assert dup.active_index == 1
+        assert dup.reference_index == group.reference_index
+        assert dup.crosshair_fields == ("offset",)
+        assert dup.shared_state == group.shared_state
+        assert dup.members[1].display_state.colormap == "seismic"
+
+        # Independent afterwards: editing the copy leaves the original alone.
+        dup.update_member_display_state(1, colormap="gray")
+        dup.set_color_scale(None)
+        assert group.members[1].display_state.colormap == "seismic"
+        assert group.shared_state.color_scale == (-1.0, 1.0)
+    finally:
+        a.close()
+        b.close()
