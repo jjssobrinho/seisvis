@@ -1,8 +1,9 @@
-"""Canvas toggle bar: auto-flicker + compat status.
+"""Canvas toggle bar: member buttons, auto-flicker + compat status.
 
-Sits at the top of every :class:`SeismicView`. The numbered per-member
-buttons live in the Viewport Manager (next to each dataset name) — this
-bar only carries the auto-flicker controls and the compatibility badge.
+Sits at the top of every :class:`SeismicView`. The numbered member buttons
+live in a :class:`MemberStrip` that keeps the active member's button at the
+centre of the bar, labelled with its dataset name — the same strip the
+Model Window uses. The Viewport Manager keeps its own per-dataset buttons.
 """
 
 from __future__ import annotations
@@ -12,14 +13,18 @@ import logging
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QWidget,
 )
 
 from seisvis.models.toggle_group import ToggleGroup
+from seisvis.ui.widgets.member_strip import MemberStrip
+from seisvis.utils.member_colors import member_color
 
 log = logging.getLogger(__name__)
 
@@ -59,7 +64,15 @@ class ToggleBar(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
         layout.setSpacing(6)
-        layout.addStretch(1)
+
+        self._buttons: list[QPushButton] = []
+        self._button_group = QButtonGroup(self)
+        self._button_group.setExclusive(True)
+        self._button_group.idClicked.connect(self.group.set_active)
+        # First in the row so its centre maths starts from the bar's left edge;
+        # it takes all the slack, which leaves the other controls at the right.
+        self._strip = MemberStrip(self)
+        layout.addWidget(self._strip, 1)
         layout.addWidget(self._compat_label)
         layout.addSpacing(8)
         layout.addWidget(self._flicker_check)
@@ -73,6 +86,7 @@ class ToggleBar(QWidget):
         group.member_removed.connect(self._on_members_changed)
         group.members_reordered.connect(self._on_members_changed)
         group.reference_index_changed.connect(self._on_reference_changed)
+        group.active_index_changed.connect(self._on_active_changed)
 
         self._on_members_changed()
 
@@ -100,11 +114,50 @@ class ToggleBar(QWidget):
     # --- signal handlers ---
 
     def _on_members_changed(self, *_args) -> None:
+        self._rebuild_buttons()
         self._update_flicker_enabled()
         self._refresh_compat_label()
 
     def _on_reference_changed(self, _index: int) -> None:
         self._refresh_compat_label()
+
+    def _on_active_changed(self, _index: int) -> None:
+        self._sync_checked()
+
+    # --- member buttons ---
+
+    def _rebuild_buttons(self) -> None:
+        for btn in self._buttons:
+            self._button_group.removeButton(btn)
+            btn.deleteLater()
+        self._buttons.clear()
+
+        names = [m.dataset.name for m in self.group.members]
+        for i, name in enumerate(names):
+            btn = QPushButton(str(i + 1), self._strip)
+            btn.setCheckable(True)
+            btn.setToolTip(name)
+            colour = member_color(i)
+            btn.setStyleSheet(
+                f"QPushButton {{ color: {colour.name()}; font-weight: bold; }}"
+                f"QPushButton:checked {{ background: {colour.name()}; color: white; }}"
+            )
+            self._button_group.addButton(btn, i)
+            btn.show()
+            self._buttons.append(btn)
+        self._strip.set_buttons(list(self._buttons), names)
+        self._strip.updateGeometry()
+        self._sync_checked()
+
+    def _sync_checked(self) -> None:
+        index = self.group.active_index
+        if 0 <= index < len(self._buttons):
+            btn = self._buttons[index]
+            btn.blockSignals(True)
+            btn.setChecked(True)
+            btn.blockSignals(False)
+        # Sliding at flicker rates would never settle; jump instead.
+        self._strip.set_active(index, animate=not self._flicker_timer.isActive())
 
     # --- flicker ---
 
