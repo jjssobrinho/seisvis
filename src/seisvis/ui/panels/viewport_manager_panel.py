@@ -7,7 +7,9 @@ badge, Remove button, up/down reorder buttons), and a summary line.
 
 Diff is launched per-member: right-click a member row → "Compute
 Difference…" opens the diff dialog (compatibility-checked before
-the menu is enabled).
+the menu is enabled). With several rows of one group selected, "Compute
+all differences with respect to reference" builds reference − member for
+each selected non-reference member and adds them to the group in order.
 
 Drag-and-drop and button-based reordering both route through
 ``ToggleGroup.move_member`` — the widget is a projection of the model,
@@ -395,6 +397,8 @@ class ViewportManagerPanel(QWidget):
     group_selected = Signal(str)
     # (a, b) datasets for an A − B diff; a is the member clicked first.
     diff_requested = Signal(object, object)
+    # (group, [datasets]) — reference − each dataset, added in member order.
+    diff_all_requested = Signal(object, object)
 
     def __init__(self, project: Project, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -519,22 +523,58 @@ class ViewportManagerPanel(QWidget):
         from seisvis.models.compatibility import are_toggle_compatible
 
         datasets = self._selected_datasets()
-        if len(datasets) != 2:
-            return
-        a, b = datasets[0], datasets[1]
-        compat = are_toggle_compatible(a, b)
-
         menu = QMenu(self)
-        diff_action = menu.addAction("Compute Difference…")
-        diff_action.setEnabled(compat.ok)
-        if not compat.ok:
-            diff_action.setToolTip(f"Incompatible: {compat.reason}")
 
+        diff_action = None
+        compat = None
+        if len(datasets) == 2:
+            a, b = datasets[0], datasets[1]
+            compat = are_toggle_compatible(a, b)
+            diff_action = menu.addAction("Compute Difference…")
+            diff_action.setEnabled(compat.ok)
+            if not compat.ok:
+                diff_action.setToolTip(f"Incompatible: {compat.reason}")
+
+        # Reference − every other selected member, when the selection spans
+        # several rows of one group.
+        diff_all_action = None
+        group = row.group
+        tests = self._selected_non_reference_members(group)
+        if len(self._selected_members) >= 2 and tests is not None:
+            diff_all_action = menu.addAction("Compute all differences with respect to reference")
+            diff_all_action.setEnabled(bool(tests))
+            if not tests:
+                diff_all_action.setToolTip("Select at least one member besides the reference")
+
+        if menu.isEmpty():
+            return
         action = menu.exec(global_pos)
-        if action is diff_action and compat.ok:
+        if action is None:
+            return
+        if action is diff_action and compat is not None and compat.ok:
             self._selected_members.clear()
             self._apply_selection_highlights()
-            self.diff_requested.emit(a, b)
+            self.diff_requested.emit(datasets[0], datasets[1])
+        elif action is diff_all_action and tests:
+            self._selected_members.clear()
+            self._apply_selection_highlights()
+            self.diff_all_requested.emit(group, tests)
+
+    def _selected_non_reference_members(self, group: ToggleGroup) -> list | None:
+        """Selected members of *group* other than its reference, in member order.
+
+        ``None`` when the selection includes rows from another group — the
+        reference would be ambiguous.
+        """
+        if any(gid != group.id for gid, _ in self._selected_members):
+            return None
+        members = group.members
+        ref = members[group.reference_index].dataset if members else None
+        return [
+            members[idx].dataset
+            for idx in sorted(idx for _, idx in self._selected_members)
+            if 0 <= idx < len(members) and members[idx].dataset is not ref
+        ]
 
     def _show_context_menu(self, pos: QPoint) -> None:
         menu = QMenu(self)

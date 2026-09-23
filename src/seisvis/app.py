@@ -270,6 +270,7 @@ class MainWindow(QMainWindow):
         self.viewport_manager.diff_requested.connect(
             lambda a, b: self._run_diff(a, b, add_to_active_group=True)
         )
+        self.viewport_manager.diff_all_requested.connect(self._run_diffs_against_reference)
         self.project.diff_selection.diff_selection_invalidated.connect(
             lambda: self.statusBar().showMessage(
                 "Diff selection cleared — selected group was removed", 4000
@@ -531,6 +532,68 @@ class MainWindow(QMainWindow):
                 active_group.add_member(derived)
         if clear_group_selection:
             self.project.diff_selection.clear()
+
+    def _run_diffs_against_reference(self, group: ToggleGroup, tests: list[Dataset]) -> None:
+        """Build reference − B for every B in *tests* and add them to *group*.
+
+        No dialog: the sign is always reference − test and the names are the
+        single-diff defaults. Pairing runs off-thread per dataset and may
+        finish in any order, so the diffs are created and added only once
+        every pairing is back, in the order *tests* lists them.
+        """
+        from seisvis.models.compatibility import are_toggle_compatible
+        from seisvis.services.derivation import IncompatibleDatasetsError, compute_difference
+
+        if group.is_empty:
+            return
+        ref = group.members[group.reference_index].dataset
+        skipped = [b.name for b in tests if not are_toggle_compatible(ref, b).ok]
+        tests = [b for b in tests if are_toggle_compatible(ref, b).ok]
+        if not tests:
+            self.statusBar().showMessage(
+                f"No differences computed — incompatible with {ref.name}: {', '.join(skipped)}",
+                6000,
+            )
+            return
+
+        alignments: dict[int, TraceAlignment] = {}
+
+        def _finish() -> None:
+            if self.project.find_toggle_group(group.id) is None or ref.is_closed:
+                self.statusBar().showMessage("Differences cancelled — group or reference removed")
+                return
+            created = []
+            for i, b in enumerate(tests):
+                if b.is_closed:
+                    skipped.append(b.name)
+                    continue
+                try:
+                    derived = compute_difference(
+                        self.project,
+                        ref,
+                        b,
+                        "a_minus_b",
+                        f"{ref.name} \u2212 {b.name}",
+                        b_alignment=alignments[i],
+                    )
+                except IncompatibleDatasetsError:
+                    skipped.append(b.name)
+                    continue
+                group.add_member(derived)
+                created.append(derived)
+            message = f"Added {len(created)} difference(s) against {ref.name} to {group.name}"
+            if skipped:
+                message += f"; skipped {', '.join(skipped)}"
+            self.statusBar().showMessage(message, 6000)
+
+        def _on_aligned(i: int, alignment: TraceAlignment) -> None:
+            alignments[i] = alignment
+            if len(alignments) == len(tests):
+                _finish()
+
+        self.statusBar().showMessage(f"Pairing {len(tests)} dataset(s) with {ref.name}…")
+        for i, b in enumerate(tests):
+            self._alignment.align_pair(ref, b, lambda al, i=i: _on_aligned(i, al))
 
     # --- Help menu handlers ---
 
