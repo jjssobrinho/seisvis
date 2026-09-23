@@ -31,12 +31,6 @@ _DEFAULT_ROLE_FIELDS: dict[GroupingMode, str] = {
     GroupingMode.CROSSLINE: "CROSSLINE_3D",
 }
 
-_MODE_ROLE_KEY: dict[GroupingMode, str] = {
-    GroupingMode.SHOT: "shot",
-    GroupingMode.INLINE: "inline",
-    GroupingMode.CROSSLINE: "crossline",
-}
-
 
 class Dataset(QObject):
     """Open SEG-Y handle + cached metadata + group index.
@@ -228,18 +222,12 @@ class Dataset(QObject):
     def display_name_for_mode(self, mode: GroupingMode) -> str:
         """Return the display label for the key field of *mode*.
 
-        For TRACE_RANGE returns ``"T"``. For other modes, resolves the role
-        field from the sidecar (or SEG-Y standard default), then calls
-        ``display_name_for``.
+        For TRACE_RANGE returns ``"T"``. For other modes, calls
+        ``display_name_for`` on the mode's SEG-Y standard field.
         """
         if mode is GroupingMode.TRACE_RANGE:
             return "T"
-        role_key = _MODE_ROLE_KEY.get(mode)
-        field: str | None = None
-        if role_key and self.sv and role_key in self.sv.role_mappings:
-            field = self.sv.role_mappings[role_key]
-        if not field:
-            field = _DEFAULT_ROLE_FIELDS.get(mode, "")
+        field = _DEFAULT_ROLE_FIELDS.get(mode, "")
         if not field:
             return ""
         return self.display_name_for(field)

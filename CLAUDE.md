@@ -20,9 +20,8 @@ data. Current capabilities:
 - Zoom restricted to the currently fetched traces; F fits back.
 - Per-member processing (colormap, clip, gain, bandpass, AGC) via a
   global toolbar with N-way edit target + All.
-- Per-file header field inspection (surange-style scanner),
-  remapping of SHOT/INLINE/CROSSLINE roles, and display-name
-  rename, persisted in a `.sv` JSON sidecar.
+- Per-file header field inspection (surange-style scanner) and
+  display-name rename, persisted in a `.sv` JSON sidecar.
 - Per-row Value / Range / List type selection in the command bar,
   with translation rules between types and explicit commit.
 - Rectangular selection tool on the canvas feeding live FFT and
@@ -188,9 +187,9 @@ Per-mode group indexing maps group IDs to trace indices.
 
 - **TRACE_RANGE** always READY, computable from `n_traces`.
 - **SHOT / INLINE / CROSSLINE** go `UNSCANNED → SCANNING → READY`
-  based on the full scan. Default mappings use SEG-Y standard byte
-  offsets (FieldRecord, INLINE_3D, CROSSLINE_3D); `.sv` overrides
-  these per file.
+  based on the full scan, keyed on the SEG-Y standard fields
+  (FieldRecord, INLINE_3D, CROSSLINE_3D). Not remappable — other
+  fields are reached by sorting on them.
 - `available_modes` = READY modes + TRACE_RANGE.
 
 ### API
@@ -373,11 +372,6 @@ JSON file `<segy_name>.sv` next to the SEG-Y:
   "segy_path": "shot_line_07.segy",
   "sha1_prefix": "9a3f2b...",
   "mtime": 1738473829.0,
-  "role_mappings": {
-    "shot":      {"field": "FieldRecord"},
-    "inline":    null,
-    "crossline": null
-  },
   "display_names": {
     "FieldRecord":  "SP",
     "TraceNumber":  "Channel"
@@ -392,8 +386,8 @@ JSON file `<segy_name>.sv` next to the SEG-Y:
 }
 ```
 
-- `role_mappings` override SEG-Y standard byte offsets for SHOT /
-  INLINE / CROSSLINE.
+- `role_mappings` (written by v2.2–v0.6 to remap SHOT / INLINE /
+  CROSSLINE) is removed: ignored on read, not written.
 - `display_names` are per-file renames, keyed by standard field
   name. Apply to info track, crosshair, command-bar dropdowns,
   and dialog labels.

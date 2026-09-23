@@ -168,7 +168,6 @@ def test_depth_dataset_is_badged_in_the_catalog(qapp, su_depth_model: Path, segy
         GROUP_LOADED,
         CatalogModel,
         _is_depth,
-        _shows_trace_range_hint,
     )
 
     depth = load_su(su_depth_model)
@@ -176,9 +175,6 @@ def test_depth_dataset_is_badged_in_the_catalog(qapp, su_depth_model: Path, segy
     try:
         assert _is_depth(depth)
         assert not _is_depth(time_ds)
-        # The "configure your headers" hint would send the user nowhere useful.
-        depth.populate_surange()
-        assert not _shows_trace_range_hint(depth)
 
         project = Project()
         model = CatalogModel(project)

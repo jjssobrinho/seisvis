@@ -52,9 +52,9 @@ def test_v1_parses_and_drops_last_sort(tmp_path: Path) -> None:
 
     sv = SVSidecar.from_json(sv_path)
     assert sv.schema_version == 1
-    assert sv.role_mappings == {"shot": "FieldRecord", "inline": None, "crossline": None}
     assert sv.display_names == {"FieldRecord": "SP"}
     assert not hasattr(sv, "last_sort")
+    assert not hasattr(sv, "role_mappings")
 
 
 def test_v2_parses(tmp_path: Path) -> None:
@@ -63,7 +63,7 @@ def test_v2_parses(tmp_path: Path) -> None:
 
     sv = SVSidecar.from_json(sv_path)
     assert sv.schema_version == 2
-    assert sv.role_mappings == {"shot": "FieldRecord"}
+    assert sv.display_names == {"FieldRecord": "SP"}
 
 
 def test_v5_refused(tmp_path: Path) -> None:
@@ -84,10 +84,11 @@ def test_round_trip_writes_current_and_omits_last_sort(tmp_path: Path) -> None:
 
     assert written["schema_version"] == CURRENT_SCHEMA_VERSION
     assert "last_sort" not in written
+    assert "role_mappings" not in written
     # Round-tripping again loads cleanly as v2.
     reloaded = SVSidecar.from_json(dst)
     assert reloaded.schema_version == CURRENT_SCHEMA_VERSION
-    assert reloaded.role_mappings == {"shot": "FieldRecord", "inline": None, "crossline": None}
+    assert reloaded.display_names == {"FieldRecord": "SP"}
 
 
 def test_v1_and_v2_carry_no_domain(tmp_path: Path) -> None:

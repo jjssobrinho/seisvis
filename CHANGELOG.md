@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Removed: Role Mapping in Configure Headers
+
+- **The Shot / Inline / Crossline role mapping is gone.** It only
+  changed the prefix on info-track labels; grouping always used
+  FieldRecord / INLINE_3D / CROSSLINE_3D whatever was picked. Sorting by
+  any populated field from the command bar covers what it was for.
+- The catalog's "only trace-range grouping is available" info icon,
+  which pointed at the mapping, is removed with it.
+- Existing `.sv` files still load; their `role_mappings` block is
+  ignored and dropped the next time the sidecar is written.
+
 ### Sessions: save the workspace and pick it up later
 
 - **File → Save Session (Ctrl+S) / Save Session As… (Ctrl+Shift+S)**
@@ -29,7 +40,7 @@
   open, the title shows `•` when there are unsaved changes, and New,
   Open or Exit offer to save them. An untitled workspace never prompts.
 - The last session is **not** reopened on startup; use Open Recent.
-- Header remaps, renames and domain stay in each file's `.sv`, which
+- Header renames and domain stay in each file's `.sv`, which
   loads with the file; the session never copies them. Header scans,
   trace alignments, the canvas selection and transform windows are not
   saved.

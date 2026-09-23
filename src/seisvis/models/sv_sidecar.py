@@ -96,9 +96,9 @@ def _parse_domain(raw: object, path: Path) -> DepthGeometry | None:
 class SVSidecar:
     """Persisted per-file configuration stored in ``<segy_stem>.sv``.
 
-    ``role_mappings`` keys are ``"shot"``, ``"inline"``, ``"crossline"``;
-    values are SEG-Y field names (e.g. ``"FieldRecord"``) or ``None`` when
-    unmapped. ``display_names`` maps field names to user-visible labels.
+    ``display_names`` maps field names to user-visible labels. Sidecars
+    written before the role-mapping removal carry a ``role_mappings`` block;
+    it is ignored on read and dropped on the next write.
 
     v3 adds ``depth_geometry``: when non-None the file is declared to live in
     the depth domain with that physical grid. v4 adds ``layer_kind``,
@@ -113,7 +113,6 @@ class SVSidecar:
     segy_path: str = ""
     sha1_prefix: str = ""
     mtime: float = 0.0
-    role_mappings: dict[str, str | None] = field(default_factory=dict)
     display_names: dict[str, str] = field(default_factory=dict)
     depth_geometry: DepthGeometry | None = None
     # None means "decide from the data" — see models.layer_kind.
@@ -127,10 +126,6 @@ class SVSidecar:
             "segy_path": self.segy_path,
             "sha1_prefix": self.sha1_prefix,
             "mtime": self.mtime,
-            "role_mappings": {
-                role: ({"field": f} if f is not None else None)
-                for role, f in self.role_mappings.items()
-            },
             "display_names": self.display_names,
         }
         if self.depth_geometry is not None:
@@ -158,20 +153,11 @@ class SVSidecar:
                 f"Unsupported .sv schema version {version} "
                 f"(max supported: {CURRENT_SCHEMA_VERSION})"
             )
-        role_mappings: dict[str, str | None] = {}
-        for role, val in raw.get("role_mappings", {}).items():
-            if val is None:
-                role_mappings[role] = None
-            elif isinstance(val, dict):
-                role_mappings[role] = val.get("field")
-            else:
-                role_mappings[role] = str(val)
         return cls(
             schema_version=version,
             segy_path=raw.get("segy_path", ""),
             sha1_prefix=raw.get("sha1_prefix", ""),
             mtime=float(raw.get("mtime", 0.0)),
-            role_mappings=role_mappings,
             display_names=dict(raw.get("display_names", {})),
             depth_geometry=_parse_domain(raw.get("domain"), path),
             layer_kind=_parse_layer_kind(raw.get("domain"), path),
@@ -193,7 +179,6 @@ class SVSidecar:
 def build_sidecar_for(
     segy_path: Path,
     *,
-    role_mappings: dict[str, str | None],
     display_names: dict[str, str],
     depth_geometry: DepthGeometry | None = None,
     layer_kind: LayerKind | None = None,
@@ -210,7 +195,6 @@ def build_sidecar_for(
         segy_path=str(segy_path),
         sha1_prefix=compute_sha1_prefix(segy_path),
         mtime=stat.st_mtime,
-        role_mappings=role_mappings,
         display_names=display_names,
         depth_geometry=depth_geometry,
         layer_kind=layer_kind,

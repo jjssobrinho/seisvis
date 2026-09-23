@@ -157,22 +157,19 @@ def test_declaring_time_clears_a_previous_declaration(qapp, dialogs, su_depth_mo
         ds.close()
 
 
-def test_role_mappings_survive_a_domain_write(qapp, dialogs, segy_2d: Path) -> None:
+def test_display_names_survive_a_domain_write(qapp, dialogs, segy_2d: Path) -> None:
     """One .sv write carries everything the dialog owns."""
     ds = load_dataset(segy_2d)
     try:
         dlg = dialogs(ds)
-        combo = dlg._role_combos["shot"]
-        idx = combo.findData("FieldRecord")
-        if idx >= 0:
-            combo.setCurrentIndex(idx)
+        field, edit = next(iter(dlg._name_edits.items()))
+        edit.setText("Renamed")
         _set_depth(dlg, dz=4.0, dx=25.0)
         dlg._on_apply()
 
         reloaded = SVSidecar.from_json(segy_2d.with_suffix(".sv"))
         assert reloaded.depth_geometry is not None
-        if idx >= 0:
-            assert reloaded.role_mappings["shot"] == "FieldRecord"
+        assert reloaded.display_names[field] == "Renamed"
     finally:
         ds.close()
 

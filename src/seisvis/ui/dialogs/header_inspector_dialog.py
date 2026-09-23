@@ -6,7 +6,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
-    QFormLayout,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -23,22 +22,9 @@ from seisvis.models.layer_kind import LayerKind
 from seisvis.models.sv_sidecar import build_sidecar_for
 from seisvis.models.vertical_domain import DEFAULT_SPACING, DepthGeometry
 
-# SEG-Y standard role→field defaults shown in the dropdowns.
-_DEFAULT_ROLE_FIELDS: dict[str, str] = {
-    "shot": "FieldRecord",
-    "inline": "INLINE_3D",
-    "crossline": "CROSSLINE_3D",
-}
-
-_ROLE_LABELS: list[tuple[str, str]] = [
-    ("shot", "Shot"),
-    ("inline", "Inline"),
-    ("crossline", "Crossline"),
-]
-
 
 class HeaderInspectorDialog(QDialog):
-    """Header inspector: domain, role mapping and display-name rename."""
+    """Header inspector: domain and display-name rename."""
 
     # Emitted on Apply when the dataset's vertical domain actually changed,
     # so the main window can re-route it (a model leaves its toggle group
@@ -68,7 +54,6 @@ class HeaderInspectorDialog(QDialog):
         layout = QVBoxLayout(self)
 
         layout.addWidget(self._build_domain_panel())
-        layout.addWidget(self._build_role_panel())
         layout.addWidget(self._build_fields_table())
         layout.addWidget(self._build_preview_panel())
 
@@ -215,41 +200,6 @@ class HeaderInspectorDialog(QDialog):
             value_unit=self._unit_edit.text().strip() or None,
         )
 
-    def _build_role_panel(self) -> QGroupBox:
-        box = QGroupBox("Role Mapping", self)
-        form = QFormLayout(box)
-        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
-
-        none_option = "(None)"
-        self._role_combos: dict[str, QComboBox] = {}
-
-        for role_key, role_label in _ROLE_LABELS:
-            combo = QComboBox(box)
-            combo.addItem(none_option, userData=None)
-            for fname in self._field_names:
-                combo.addItem(fname, userData=fname)
-
-            # Default value: from sv, then standard, then None.
-            current: str | None = None
-            sv = self._dataset.sv
-            if sv and role_key in sv.role_mappings:
-                current = sv.role_mappings[role_key]
-            else:
-                default_field = _DEFAULT_ROLE_FIELDS.get(role_key)
-                if default_field and default_field in self._fields:
-                    current = default_field
-
-            if current is not None:
-                idx = combo.findData(current)
-                if idx >= 0:
-                    combo.setCurrentIndex(idx)
-
-            combo.currentIndexChanged.connect(self._update_preview)
-            self._role_combos[role_key] = combo
-            form.addRow(role_label + ":", combo)
-
-        return box
-
     def _build_fields_table(self) -> QGroupBox:
         box = QGroupBox("Header Fields", self)
         vbox = QVBoxLayout(box)
@@ -296,17 +246,15 @@ class HeaderInspectorDialog(QDialog):
     # --- live preview ---
 
     def _update_preview(self) -> None:
-        shot_combo = self._role_combos["shot"]
-        shot_field = shot_combo.currentData()
-
+        shot_field = "FieldRecord"
         shot_name = "Shot"
-        if shot_field:
-            edit = self._name_edits.get(shot_field)
-            shot_name = edit.text().strip() if edit and edit.text().strip() else shot_field
+        edit = self._name_edits.get(shot_field)
+        if edit and edit.text().strip():
+            shot_name = edit.text().strip()
 
         # Pick a sample shot number from the field's samples if available.
         shot_sample = 469
-        if shot_field and shot_field in self._fields:
+        if shot_field in self._fields:
             samples = self._fields[shot_field].samples
             if samples:
                 shot_sample = samples[-1]
@@ -341,10 +289,6 @@ class HeaderInspectorDialog(QDialog):
             return
         self._domain_error.setText("")
 
-        role_mappings: dict[str, str | None] = {
-            role_key: self._role_combos[role_key].currentData() for role_key, _ in _ROLE_LABELS
-        }
-
         display_names: dict[str, str] = {}
         for fname, edit in self._name_edits.items():
             text = edit.text().strip()
@@ -356,7 +300,6 @@ class HeaderInspectorDialog(QDialog):
 
         sidecar = build_sidecar_for(
             ds.source_path,
-            role_mappings=role_mappings,
             display_names=display_names,
             depth_geometry=geometry,
             layer_kind=self._layer_kind_from_panel(),

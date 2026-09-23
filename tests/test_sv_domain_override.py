@@ -149,9 +149,8 @@ def test_build_sidecar_for_preserves_geometry(segy_2d: Path) -> None:
     g = DepthGeometry(dz=4.0, z0=0.0, dx=25.0, x0=0.0)
     sv = build_sidecar_for(
         segy_2d,
-        role_mappings={"shot": "FieldRecord"},
         display_names={},
         depth_geometry=g,
     )
     assert sv.depth_geometry == g
-    assert build_sidecar_for(segy_2d, role_mappings={}, display_names={}).depth_geometry is None
+    assert build_sidecar_for(segy_2d, display_names={}).depth_geometry is None

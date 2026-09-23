@@ -66,7 +66,6 @@ def test_display_name_for_uses_sv_rename(tmp_path: Path) -> None:
         segy_path="t.sgy",
         sha1_prefix="x",
         mtime=0.0,
-        role_mappings={},
         display_names={"FieldRecord": "SP"},
     )
     ds = _make_dataset(tmp_path, sv=sv)
@@ -79,7 +78,6 @@ def test_display_name_for_rename_does_not_affect_other_fields(tmp_path: Path) ->
         segy_path="t.sgy",
         sha1_prefix="x",
         mtime=0.0,
-        role_mappings={},
         display_names={"FieldRecord": "SP"},
     )
     ds = _make_dataset(tmp_path, sv=sv)
@@ -122,25 +120,23 @@ def test_display_name_for_mode_uses_sv_display_name(tmp_path: Path) -> None:
         segy_path="t.sgy",
         sha1_prefix="x",
         mtime=0.0,
-        role_mappings={"shot": "FieldRecord"},
         display_names={"FieldRecord": "SP"},
     )
     ds = _make_dataset(tmp_path, sv=sv)
     assert ds.display_name_for_mode(GroupingMode.SHOT) == "SP"
 
 
-def test_display_name_for_mode_uses_sv_role_mapping(tmp_path: Path) -> None:
-    """When shot is remapped to a non-standard field, the display name reflects it."""
+def test_display_name_for_mode_ignores_other_fields_renames(tmp_path: Path) -> None:
+    """SHOT always labels by FieldRecord; renaming another field doesn't leak in."""
     sv = SVSidecar(
         schema_version=1,
         segy_path="t.sgy",
         sha1_prefix="x",
         mtime=0.0,
-        role_mappings={"shot": "ShotPointScalar"},
-        display_names={"ShotPointScalar": "SP"},
+        display_names={"EnergySourcePoint": "SP"},
     )
     ds = _make_dataset(tmp_path, sv=sv)
-    assert ds.display_name_for_mode(GroupingMode.SHOT) == "SP"
+    assert ds.display_name_for_mode(GroupingMode.SHOT) == "Shot"
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +162,7 @@ def test_persist_sv_emits_signal(tmp_path: Path) -> None:
         byte_format=1,
         group_index=gi,
     )
-    ds.sv = build_sidecar_for(p, role_mappings={}, display_names={})
+    ds.sv = build_sidecar_for(p, display_names={})
 
     fired: list[bool] = []
     ds.sv_changed.connect(lambda: fired.append(True))

@@ -45,9 +45,8 @@ uv run python -m seisvis
 
 2. **Inspect headers** — Right-click the dataset in the catalog and
    choose *Configure Headers…*. The dialog shows which trace-header
-   fields are populated. If the catalog row has a small info icon, the
-   file lacks the standard role fields and you'll want to remap from
-   here. Click the icon to jump straight in.
+   fields are populated. Any populated field can be picked as a sort
+   key in the command bar.
 
 3. **Rename a field** — In the same dialog, edit a field's
    *Display name* (e.g. `FieldRecord` → `SP`). Apply. The new name now
@@ -76,7 +75,7 @@ uv run python -m seisvis
    use File → *Open Recent Session*: the files, groups, sorts,
    processing and zoom come back as you left them. Without a session,
    only window geometry, toolbar defaults and each file's `.sv` renames
-   and role mappings are restored, and each group starts in natural
+   are restored, and each group starts in natural
    file order. See [Sessions](#sessions).
 
 ## Loading files
@@ -384,7 +383,7 @@ session is **not** reopened on startup — use *Open Recent Session*.
   and overlay settings;
 - which tab was active.
 
-Header remaps, renames and depth declarations stay in each file's `.sv`
+Header renames and depth declarations stay in each file's `.sv`
 and come back when the file loads. Header scans and trace pairing are
 redone on opening. The canvas selection, transform windows and
 crosshair position are not saved.

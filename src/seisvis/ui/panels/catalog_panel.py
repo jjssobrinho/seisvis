@@ -37,40 +37,9 @@ GROUP_DERIVED = 1
 _GROUP_LABELS = ("Loaded", "Derived")
 
 
-# SEG-Y header fields that, if any are populated, mean shot/inline/crossline
-# grouping is natively available. When the surange scan finishes and none of
-# these are present, the catalog row gets a hint icon so the user knows they
-# can remap a different field via "Configure Headers…".
-_ROLE_FIELDS = ("FieldRecord", "INLINE_3D", "CROSSLINE_3D")
-
-
 def _is_depth(ds: Dataset) -> bool:
     """True when this dataset renders in metres rather than milliseconds."""
     return getattr(ds, "vertical_domain", "time") == "depth"
-
-
-def _shows_trace_range_hint(ds: Dataset) -> bool:
-    """Return True when the dataset's catalog row should display the hint icon.
-
-    True iff the surange scan has completed, none of the standard
-    role-providing fields are populated, AND the user hasn't yet remapped
-    any role via the .sv sidecar. Derived datasets never show the hint.
-    """
-    if isinstance(ds, DerivedDataset):
-        return False
-    # A model has no shot/inline/crossline to configure; telling the user to
-    # go remap headers would send them somewhere with nothing to do.
-    if _is_depth(ds):
-        return False
-    fields = getattr(ds, "header_fields_available", None)
-    if fields is None:
-        return False
-    if any(f in fields for f in _ROLE_FIELDS):
-        return False
-    sv = getattr(ds, "sv", None)
-    if sv is not None and any(v for v in sv.role_mappings.values()):
-        return False
-    return True
 
 
 class CatalogModel(QAbstractItemModel):
@@ -230,10 +199,6 @@ class CatalogModel(QAbstractItemModel):
         if role == Qt.ItemDataRole.DecorationRole:
             if getattr(ds, "sv_stale", False):
                 return QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
-            if _shows_trace_range_hint(ds):
-                return QApplication.style().standardIcon(
-                    QStyle.StandardPixmap.SP_MessageBoxInformation
-                )
         if role == Qt.ItemDataRole.ToolTipRole:
             if _is_depth(ds):
                 g = ds.depth_geometry
@@ -251,12 +216,6 @@ class CatalogModel(QAbstractItemModel):
                 return (
                     "The .sv for this file was generated against an older version"
                     " of the SEG-Y. Click to re-validate."
-                )
-            if _shows_trace_range_hint(ds):
-                return (
-                    "Only trace-range grouping is available. Use "
-                    "'Inspect Headers…' to configure which field provides "
-                    "shot / inline / crossline."
                 )
             if isinstance(ds, DerivedDataset):
                 direction = "A \u2212 B" if ds.direction == "a_minus_b" else "B \u2212 A"
@@ -640,15 +599,15 @@ class CatalogPanel(QWidget):
             self.open_in_new_group_requested.emit(ds)
 
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001
-        # A click on the row's decoration icon (trace-range hint or stale-sv
-        # warning) opens the header inspector. Keeps the icon discoverable as
-        # an actionable affordance, not just decoration.
+        # A click on the row's decoration icon (stale-sv warning) opens the
+        # header inspector. Keeps the icon discoverable as an actionable
+        # affordance, not just decoration.
         if obj is self._view.viewport() and event.type() == QEvent.Type.MouseButtonRelease:
             if event.button() == Qt.MouseButton.LeftButton:
                 index = self._view.indexAt(event.position().toPoint())
                 ds = self._model.dataset_for_index(index)
                 if ds is not None and self._click_on_decoration(index, event.position().toPoint()):
-                    if _shows_trace_range_hint(ds) or getattr(ds, "sv_stale", False):
+                    if getattr(ds, "sv_stale", False):
                         self._open_header_inspector(ds)
                         return True
         return super().eventFilter(obj, event)
