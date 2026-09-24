@@ -143,6 +143,13 @@ class GroupCommandBar(QWidget):
         self._dragging = False
         self._subscribed_dataset = None
         self._draft: SortConfig = group.shared_state.sort_config
+        # Rows ("primary" / "secondary") staged as Range before their key was
+        # indexed: their 0–0 range is a placeholder, reseeded to the full
+        # domain once the header scan lands.
+        self._placeholder_ranges: set[str] = set()
+        # The group's sort config as of the last rebuild, to tell a real sort
+        # change from unrelated shared-state traffic.
+        self._seen_sort_config: SortConfig = self._draft
 
         # Per-row latest text-input state (parse errors keep the draft's
         # last good ListParams; we surface a warning on commit if needed).
@@ -431,7 +438,60 @@ class GroupCommandBar(QWidget):
                     sig.connect(slot)
 
     def _on_index_ready(self) -> None:
-        self._rebuild()
+        # A field scan landing must not throw away an uncommitted draft — the
+        # scan is usually one that draft asked for.
+        if self._draft == self.group.shared_state.sort_config:
+            self._rebuild()
+            return
+        self._reseed_placeholder_ranges()
+        self._resync_widgets()
+
+    def _reseed_placeholder_ranges(self) -> None:
+        """Give placeholder Range rows their full domain once it is known."""
+        gi = self._reference_index()
+        if gi is None:
+            return
+        for who in tuple(self._placeholder_ranges):
+            row = self._draft.primary if who == "primary" else self._draft.secondary
+            if row is None or row.type != "range":
+                self._placeholder_ranges.discard(who)
+                continue
+            domain = self._field_domain(gi, row.field)
+            if domain is None:
+                continue
+            self._placeholder_ranges.discard(who)
+            new_row = RowSelection.range_default(row.field, row.direction, domain=domain)
+            if who == "primary":
+                self._draft = SortConfig(
+                    primary=new_row, secondary=self._draft.secondary, committed=False
+                )
+            else:
+                self._draft = SortConfig(
+                    primary=self._draft.primary, secondary=new_row, committed=False
+                )
+
+    def _note_draft_fields(self) -> None:
+        """Track placeholder ranges in the draft and ask for its keys to be indexed.
+
+        Keys outside the default scan (CDP, offset, …) have no per-trace
+        values until read. Asking as soon as a row picks one means the Range
+        track gets a real domain, and the commit's coverage check has data,
+        before the user presses commit.
+        """
+        gi = self._reference_index()
+        for who, row in (("primary", self._draft.primary), ("secondary", self._draft.secondary)):
+            if (
+                row is not None
+                and row.type == "range"
+                and row.field != TRACE_RANGE_FIELD
+                and (gi is None or gi.field_value_range(row.field) is None)
+            ):
+                self._placeholder_ranges.add(who)
+            else:
+                self._placeholder_ranges.discard(who)
+        self.group.request_sort_fields(
+            row.field for row in (self._draft.primary, self._draft.secondary) if row is not None
+        )
 
     # --- active-member domain validation ---
 
@@ -533,6 +593,8 @@ class GroupCommandBar(QWidget):
 
     def _rebuild(self, *_args) -> None:
         self._draft = self.group.shared_state.sort_config
+        self._seen_sort_config = self._draft
+        self._placeholder_ranges.clear()
         self._primary_list_error = None
         self._secondary_list_error = None
         self._primary_list_warned_large = False
@@ -785,8 +847,15 @@ class GroupCommandBar(QWidget):
             return
         sc = self.group.shared_state.sort_config
         if sc == self._draft:
+            self._seen_sort_config = sc
             self._update_status()
             self._update_commit_icon()
+            return
+        if sc == self._seen_sort_config:
+            # Something else in the shared state changed (e.g. a field scan
+            # landed); the group's sort didn't, so keep the staged draft.
+            self._reseed_placeholder_ranges()
+            self._resync_widgets()
             return
         self._rebuild()
 
@@ -848,6 +917,7 @@ class GroupCommandBar(QWidget):
             field=new_field, direction=current.direction, type_=current.type
         )
         self._replace_row(is_primary=is_primary, new_row=new_row)
+        self._note_draft_fields()
         self._resync_widgets()
         who = "primary" if is_primary else "secondary"
         self.status_message.emit(
@@ -867,8 +937,16 @@ class GroupCommandBar(QWidget):
             return
         gi = self._reference_index()
         domain = self._field_domain(gi, current.field) if gi is not None else None
-        new_row, warn = current.translate_to(new_type, domain)
+        # A primary Value row counts positions among the key's groups, so
+        # translating into or out of it needs the group sequence.
+        group_ids = (
+            gi.ordered_group_ids(current.field)
+            if is_primary and gi is not None and new_type == "value"
+            else None
+        )
+        new_row, warn = current.translate_to(new_type, domain, group_ids=group_ids)
         self._replace_row(is_primary=is_primary, new_row=new_row)
+        self._note_draft_fields()
         if warn:
             who = "primary" if is_primary else "secondary"
             self.status_message.emit(f"{who} row: {warn}")
@@ -1106,6 +1184,7 @@ class GroupCommandBar(QWidget):
         domain = gi.field_value_range(field) or (0, 0)
         sec = RowSelection.range_default(field, "asc", domain=domain)
         self._stage_secondary(sec)
+        self._note_draft_fields()
         self._resync_widgets()
 
     def _on_remove_secondary_clicked(self) -> None:
@@ -1143,6 +1222,7 @@ class GroupCommandBar(QWidget):
         self._secondary_list_error = None
         self._primary_list_warned_large = False
         self._secondary_list_warned_large = False
+        self._note_draft_fields()
         self._resync_widgets()
 
     def _row_default_for_type(self, *, field: str, direction: str, type_: RowType) -> RowSelection:
@@ -1199,6 +1279,17 @@ class GroupCommandBar(QWidget):
         ref_ds = self._reference_dataset()
         if ref_ds is None:
             return
+        # A Range row's coverage check needs the key's per-trace values on
+        # every member. Ask for any that are missing; while they are being
+        # read, hold the commit rather than report a false mismatch.
+        self._note_draft_fields()
+        indexing = self._range_fields_indexing()
+        if indexing:
+            names = ", ".join(self._field_label(f) for f in sorted(indexing))
+            self.status_message.emit(
+                f"Indexing {names} headers — press commit again when it finishes"
+            )
+            return
         for i, m in enumerate(self.group.members):
             if i == self.group.reference_index:
                 continue
@@ -1220,6 +1311,21 @@ class GroupCommandBar(QWidget):
         self.group.update_sort_config(sc)
         self._update_commit_icon()
         self._update_status()
+
+    def _range_fields_indexing(self) -> set[str]:
+        """Range-row keys still being read on some member of the group."""
+        fields = {
+            row.field
+            for row in (self._draft.primary, self._draft.secondary)
+            if row is not None and row.type == "range" and row.field != TRACE_RANGE_FIELD
+        }
+        busy: set[str] = set()
+        for m in self.group.members:
+            gi = getattr(m.dataset, "group_index", None)
+            if gi is None:
+                continue
+            busy.update(f for f in fields if gi.is_field_scanning(f))
+        return busy
 
     # --- keyboard-driven helpers (called by SeismicView shortcuts) ---
 

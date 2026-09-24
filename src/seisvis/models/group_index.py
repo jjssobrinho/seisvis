@@ -366,6 +366,28 @@ class GroupIndex:
         """True while *field_name* is queued in a background scan."""
         return field_name in self._pending_field_scans
 
+    def ordered_group_ids(self, field_name: str) -> list[int]:
+        """Group ids of *field_name* in ascending key order.
+
+        This is the sequence a primary Value row's First/Count/Skip index
+        into. ``TRACE_RANGE`` yields its synthetic ids; an unscanned field
+        yields ``[]``.
+        """
+        return list(self._primary_sequence(field_name)[1])
+
+    def _primary_sequence(self, field: str) -> tuple[dict[int, np.ndarray], list[int]]:
+        """Groups of a sort key and their ids in ascending key order.
+
+        A sort's direction is about the key's values, so ``asc`` must mean
+        ascending ids — not the order groups first appear in the file. A
+        shot-ordered file meets CDPs 234, 233, 232… first, which would put
+        the highest CDP on the left of an ascending sort.
+        """
+        if field == TRACE_RANGE_FIELD:
+            return self._build_trace_range(self._trace_range_size)
+        groups, ids = self._groups_for_field(field)
+        return groups, sorted(ids)
+
     def field_value_range(self, field_name: str) -> tuple[int, int] | None:
         """Return ``(min, max)`` of the per-trace values for *field_name*.
 
@@ -472,20 +494,16 @@ class GroupIndex:
         return result
 
     def _resolve_primary_groups(self, row: RowSelection) -> list[tuple[int, np.ndarray]]:
-        """Return ``(group_id, trace_indices)`` pairs for *row* in natural order
-        (before direction is applied).
+        """Return ``(group_id, trace_indices)`` pairs for *row* in ascending
+        key order (before direction is applied).
 
         - ``value`` rows use M4.1 positional first/count/skip over ``ordered_ids``.
         - ``range`` rows return all groups whose id lies in ``[min, max]``.
         - ``list`` rows return groups whose id appears in the list.
         """
-        field = row.field
-        if field == TRACE_RANGE_FIELD:
-            groups, ordered_ids = self._build_trace_range(self._trace_range_size)
-        else:
-            groups, ordered_ids = self._groups_for_field(field)
-            if not ordered_ids:
-                return []
+        groups, ordered_ids = self._primary_sequence(row.field)
+        if not ordered_ids:
+            return []
         if row.type == "value":
             assert row.value is not None
             return self._select_by_position(groups, ordered_ids, row.value)
@@ -721,8 +739,8 @@ class GroupIndex:
     def primary_groups_for(self, row: RowSelection) -> list[tuple[int, np.ndarray]]:
         """Public wrapper around :meth:`_resolve_primary_groups`.
 
-        Returns selected ``(group_id, trace_indices)`` pairs in natural order
-        (no direction flip applied). UI layers use this to reason about
+        Returns selected ``(group_id, trace_indices)`` pairs in ascending key
+        order (no direction flip applied). UI layers use this to reason about
         displayed groups for an arbitrary primary field — the mode-based
         :attr:`_groups` map only carries the current mode's groups, so it
         can't answer "what groups would TraceNumber produce" while the
@@ -769,10 +787,9 @@ class GroupIndex:
         hundred ms, which keeps page navigation off the UI thread's
         critical path.
 
-        ``ordered_ids`` preserves first-occurrence order in *values* (the
-        same ordering the previous implementation produced), so callers that
-        rely on natural file order — e.g. the primary-row position-to-gid
-        mapping — keep working unchanged.
+        ``ordered_ids`` preserves first-occurrence order in *values* — the
+        file order the SHOT / INLINE / CROSSLINE modes page through. Sorts
+        re-order it by key value (see :meth:`_primary_sequence`).
         """
         if values is None or values.size == 0:
             return {}, []

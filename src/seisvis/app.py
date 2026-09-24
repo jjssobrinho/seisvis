@@ -868,6 +868,11 @@ class MainWindow(QMainWindow):
         # unrelated command-bar edit re-commits the sort and sweeps every
         # member again.
         group.member_added.connect(lambda _i, g=group: self._scan_fields_for_new_member(g))
+        # A staged Range row needs its key indexed before it can show a domain
+        # or pass the commit's coverage check, so don't wait for the commit.
+        group.sort_fields_requested.connect(
+            lambda fields, g=group: self._ensure_fields_scanned(g, fields)
+        )
 
     def _on_toggle_group_removed_for_scan(self, group_id: str) -> None:
         self._sort_scan_wired_groups.discard(group_id)
@@ -896,6 +901,10 @@ class MainWindow(QMainWindow):
         for row in (config.primary, config.secondary):
             if row is not None and row.field and row.field != TRACE_RANGE_FIELD:
                 fields.add(row.field)
+        self._ensure_fields_scanned(group, fields)
+
+    def _ensure_fields_scanned(self, group: ToggleGroup, fields: set[str]) -> None:
+        """Scan *fields* on every member whose group index lacks them."""
         if not fields:
             return
 

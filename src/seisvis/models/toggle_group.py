@@ -15,7 +15,7 @@ from seisvis.models.dataset import Dataset
 from seisvis.models.display_state import DisplayState
 from seisvis.models.processing_chain import ProcessingChain
 from seisvis.models.selection import Selection
-from seisvis.models.sort_config import SortConfig, default_sort_config
+from seisvis.models.sort_config import TRACE_RANGE_FIELD, SortConfig, default_sort_config
 from seisvis.models.trace_alignment import AlignmentStatus, TraceAlignment
 
 log = logging.getLogger(__name__)
@@ -88,6 +88,9 @@ class ToggleGroup(QObject):
     color_scale_changed = Signal()
     auto_color_scale_requested = Signal()
     sort_config_committed = Signal(object)  # SortConfig
+    # Header fields a staged (uncommitted) sort row needs indexed — e.g. a
+    # Range row on CDP can't show its domain until CDP has been read.
+    sort_fields_requested = Signal(object)  # set[str]
     # Extra header fields the crosshair readout shows on hover.
     crosshair_fields_changed = Signal()
     selection_changed = Signal(object)  # Selection | None
@@ -635,6 +638,12 @@ class ToggleGroup(QObject):
         if config.committed:
             self.set_selection(None)
             self.sort_config_committed.emit(config)
+
+    def request_sort_fields(self, fields: Iterable[str]) -> None:
+        """Ask for *fields* to be indexed on every member ahead of a commit."""
+        wanted = {str(f) for f in fields if f and f != TRACE_RANGE_FIELD}
+        if wanted:
+            self.sort_fields_requested.emit(wanted)
 
     def update_zoomed_ranges(
         self,

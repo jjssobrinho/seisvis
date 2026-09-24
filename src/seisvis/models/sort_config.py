@@ -14,6 +14,7 @@ type.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -127,33 +128,30 @@ class RowSelection:
         self,
         new_type: RowType,
         domain: tuple[int, int] | None = None,
+        group_ids: Sequence[int] | None = None,
     ) -> tuple[RowSelection, str | None]:
         """Translate this row's selection to *new_type*.
 
         Returns ``(new_selection, optional_warning_text)``. ``domain`` is the
-        full ``(min, max)`` of the row's field's value space, used only for
-        the empty-list → Range fallback. Translation rules mirror the table
-        in CLAUDE.md.
+        full ``(min, max)`` of the row's field's value space, used for
+        Value → Range and the empty-list → Range fallback. ``group_ids`` is
+        the key's group ids in natural order, passed for a primary row: its
+        Value selection counts positions in that sequence, so Range → Value
+        and List → Value map key values onto positions. Without it (secondary
+        rows, whose Value selects key values) the values carry over as-is.
+        Translation rules mirror the table in CLAUDE.md.
         """
         if new_type == self.type:
             return self, None
 
-        # Value → Range
+        # Value → Range: First/Count/Skip are positions among the key's
+        # groups, not key values, so they can't bound a Range (CDP 121…712
+        # would get [0, 0]). Cover the full domain instead; with none known
+        # yet, 0–0 stands in until the key is indexed.
         if self.type == "value" and new_type == "range":
-            assert self.value is not None
-            v = self.value
-            lo = v.first
-            hi = v.first + (v.count - 1) * v.skip
-            if hi < lo:
-                lo, hi = hi, lo
-            new = RowSelection(
-                field=self.field,
-                direction=self.direction,
-                type="range",
-                range_=RangeParams(range_min=lo, range_max=hi),
-            )
-            warn = "skip discarded" if v.skip > 1 else None
-            return new, warn
+            return RowSelection.range_default(
+                self.field, self.direction, domain=domain or (0, 0)
+            ), None
 
         # Value → List
         if self.type == "value" and new_type == "list":
@@ -163,6 +161,8 @@ class RowSelection:
         if self.type == "range" and new_type == "value":
             assert self.range_ is not None
             r = self.range_
+            if group_ids is not None:
+                return self._range_to_positions(r, group_ids)
             new = RowSelection.value_default(
                 self.field,
                 self.direction,
@@ -186,29 +186,28 @@ class RowSelection:
                     RowSelection.value_default(self.field, self.direction),
                     "list was empty",
                 )
-            sorted_ids = sorted(ids)
-            if _is_arithmetic_progression(sorted_ids):
-                first = sorted_ids[0]
-                step = sorted_ids[1] - sorted_ids[0] if len(sorted_ids) > 1 else 1
-                new = RowSelection.value_default(
-                    self.field,
-                    self.direction,
-                    first=first,
-                    count=len(sorted_ids),
-                    skip=max(1, step),
-                )
-                return new, None
-            # Non-AP: keep first/last, drop gaps.
-            first = sorted_ids[0]
-            last = sorted_ids[-1]
-            new = RowSelection.value_default(
-                self.field,
-                self.direction,
-                first=first,
-                count=last - first + 1,
-                skip=1,
-            )
-            return new, "list gaps lost"
+            dropped = False
+            if group_ids is not None:
+                # Primary: the listed key values become positions among the
+                # key's groups; values the data lacks have no position.
+                if not group_ids:
+                    # Key not indexed yet: nothing to map onto.
+                    return RowSelection.value_default(self.field, self.direction), None
+                wanted = set(ids)
+                seq = [i for i, gid in enumerate(group_ids) if gid in wanted]
+                dropped = len(seq) < len(wanted)
+                if not seq:
+                    return (
+                        RowSelection.value_default(self.field, self.direction),
+                        "no listed groups present",
+                    )
+            else:
+                seq = sorted(ids)
+            new, warn = self._progression_through(seq)
+            if dropped:
+                missing = "listed groups not present dropped"
+                warn = f"{warn}; {missing}" if warn else missing
+            return new, warn
 
         # List → Range
         if self.type == "list" and new_type == "range":
@@ -238,6 +237,41 @@ class RowSelection:
 
         # Should be unreachable — every (from, to) pair is covered above.
         raise ValueError(f"unsupported translation {self.type!r} -> {new_type!r}")
+
+    def _progression_through(self, seq: list[int]) -> tuple[RowSelection, str | None]:
+        """Closest Value progression through sorted *seq* (first to last)."""
+        if _is_arithmetic_progression(seq):
+            step = seq[1] - seq[0] if len(seq) > 1 else 1
+            new = RowSelection.value_default(
+                self.field, self.direction, first=seq[0], count=len(seq), skip=max(1, step)
+            )
+            return new, None
+        # Non-AP: keep first/last, drop gaps.
+        new = RowSelection.value_default(
+            self.field, self.direction, first=seq[0], count=seq[-1] - seq[0] + 1, skip=1
+        )
+        return new, "list gaps lost"
+
+    def _range_to_positions(
+        self, r: RangeParams, group_ids: Sequence[int]
+    ) -> tuple[RowSelection, str | None]:
+        """Primary Range → Value: span the positions of the groups in range."""
+        if not group_ids:
+            # Key not indexed yet: nothing to map onto, start at the first group.
+            return RowSelection.value_default(self.field, self.direction), None
+        positions = [i for i, gid in enumerate(group_ids) if r.range_min <= gid <= r.range_max]
+        if not positions:
+            return (
+                RowSelection.value_default(self.field, self.direction),
+                "no groups in range",
+            )
+        first, last = positions[0], positions[-1]
+        count = last - first + 1
+        new = RowSelection.value_default(
+            self.field, self.direction, first=first, count=count, skip=1
+        )
+        warn = None if count == len(positions) else "groups outside the range included"
+        return new, warn
 
     def with_direction(self, direction: Direction) -> RowSelection:
         return replace(self, direction=direction)

@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Fixed: Sorting on keys outside the default header scan (CDP, offset, …)
+
+- **A Range row on such a key no longer fails to commit.** Its values
+  are only read on demand, so the Range track was seeded `0–0` and the
+  commit's coverage check refused it ("CDP range [0, 0] does not overlap
+  …") before the read could run. Choosing the key now starts the read;
+  the track fills in to the full range when it lands, keeping the
+  uncommitted draft, and a commit while it runs is held with a status
+  note instead of an error.
+- **Switching a row to Range covers the key's full range.** A Value row's
+  First/Count/Skip are positions among the groups, not key values, and
+  were being copied across as values.
+- **Range → Value and List → Value on the primary row keep the same
+  groups**, mapping key values onto positions (listed values not in the
+  data are dropped with a warning).
+- **Ascending means ascending key values.** Primary groups were ordered
+  by where they first appear in the file, so a shot-ordered file put
+  its highest CDP on the left of an ascending sort. Saved sessions with
+  a primary Value sort on such a key open on different groups.
+
 ### Removed: Role Mapping in Configure Headers
 
 - **The Shot / Inline / Crossline role mapping is gone.** It only

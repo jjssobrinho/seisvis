@@ -198,3 +198,49 @@ def test_missing_secondary_field_renders_empty() -> None:
     sec = RowSelection.range_default("NOT_SCANNED", "asc", domain=(0, 999))
     cfg = _cfg(_value_primary("FieldRecord", count=4), sec)
     assert gi.get_trace_indices(cfg).size == 0
+
+
+# --- key order, not file order ---
+
+
+def _shot_ordered_cdp_index() -> GroupIndex:
+    """Shot-ordered file whose first shot meets CDPs in descending order.
+
+    CDP per trace: [5, 4, 3, 6, 5, 4] — groups first appear as 5, 4, 3, 6.
+    """
+    gi = GroupIndex(
+        n_traces=6,
+        field_records=np.repeat(np.array([1, 2]), 3),
+        trace_numbers=np.tile(np.array([1, 2, 3]), 2),
+    )
+    gi.set_field_array("CDP", np.array([5, 4, 3, 6, 5, 4]))
+    return gi
+
+
+def test_primary_value_asc_walks_ascending_key_values() -> None:
+    gi = _shot_ordered_cdp_index()
+    out = gi._trace_indices_for_sort(_cfg(_value_primary("CDP", count=4)))
+    # CDP 3, 4, 4, 5, 5, 6 — traces grouped by ascending CDP.
+    assert gi.field_array("CDP")[out].tolist() == [3, 4, 4, 5, 5, 6]
+    assert gi.ordered_group_ids("CDP") == [3, 4, 5, 6]
+
+
+def test_primary_value_first_position_is_lowest_key() -> None:
+    gi = _shot_ordered_cdp_index()
+    row = RowSelection.value_default("CDP", "asc", first=0, count=1, skip=1)
+    out = gi._trace_indices_for_sort(_cfg(row))
+    assert gi.field_array("CDP")[out].tolist() == [3]
+
+
+def test_primary_range_asc_is_ascending_key_order() -> None:
+    gi = _shot_ordered_cdp_index()
+    row = RowSelection.range_default("CDP", "asc", domain=(3, 6))
+    out = gi._trace_indices_for_sort(_cfg(row))
+    assert gi.field_array("CDP")[out].tolist() == [3, 4, 4, 5, 5, 6]
+
+
+def test_primary_value_desc_walks_descending_key_values() -> None:
+    gi = _shot_ordered_cdp_index()
+    row = RowSelection.value_default("CDP", "desc", first=0, count=4, skip=1)
+    out = gi._trace_indices_for_sort(_cfg(row))
+    assert gi.field_array("CDP")[out].tolist() == [6, 5, 5, 4, 4, 3]

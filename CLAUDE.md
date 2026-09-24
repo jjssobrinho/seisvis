@@ -171,11 +171,15 @@ ui/  →  controllers/  →  services/  →  models/ ← processing/, io/
 - Cancellable via `is_cancelled` flag; cancelled on dataset removal
   or app shutdown.
 - Does **not** run automatically after load. The user has to ask
-  (by committing a sort, or via the header-mapping dialog's "Scan
-  fully" action where applicable). Exception: trace alignment may read
-  extra match fields (source/receiver, offset, CDP) for a group member
-  when the default scan's FieldRecord + TraceNumber cannot pair its
-  traces with the reference's — adding the member is the request.
+  (by choosing a key in a command-bar row or committing a sort, or via
+  the header-mapping dialog's "Scan fully" action where applicable).
+  A Range row on a key not yet read is staged with a 0–0 placeholder,
+  reseeded to the full domain when the scan lands; a commit while the
+  scan runs is held, not reported as a coverage mismatch.
+  Exception: trace alignment may read extra match fields
+  (source/receiver, offset, CDP) for a group member when the default
+  scan's FieldRecord + TraceNumber cannot pair its traces with the
+  reference's — adding the member is the request.
 
 ---
 
@@ -270,18 +274,21 @@ empty list (the user must enter values explicitly).
 
 | From → To       | Behavior                                                   |
 |-----------------|------------------------------------------------------------|
-| Value → Range   | `min=F, max=F+(C-1)*S`. Silent if `S==1`; warn if `S>1`.   |
+| Value → Range   | Full domain of the key (First/Count/Skip are positions, not key values). Silent. |
 | Value → List    | **Empty list.**                                            |
-| Range → Value   | `First=L, Count=H-L+1, Skip=1`. Silent.                    |
+| Range → Value   | Primary: First/Count span the positions of the groups with ids in `[L, H]`, Skip=1; warn if that span includes groups outside the range, or if none are in it. Secondary: `First=L, Count=H-L+1, Skip=1`. Silent. |
 | Range → List    | **Empty list.**                                            |
-| List → Value    | If list is arithmetic progression: silent. Else: convert to closest progression hitting first/last; warn that gaps are lost. |
+| List → Value    | Primary: listed ids map to their group positions first (ids not present dropped, with a warning). Then: arithmetic progression → silent; else closest progression hitting first/last, warn that gaps are lost. |
 | List → Range    | `min=min(list), max=max(list)`. Silent if list was contiguous; warn if gaps existed. |
 | same → same     | Identity, no-op.                                           |
 
 ### Semantics
 
 - **Primary row** selects which groups of the primary key to display
-  and their left-to-right order on the x-axis.
+  and their left-to-right order on the x-axis. Groups are ordered by
+  key value (ascending before direction), never by where they first
+  appear in the file; a Value row's First/Count/Skip are positions in
+  that ascending sequence.
 - **Secondary row** selects which values of the secondary key to
   include within each primary group and their top-to-bottom order
   within each group's image.
