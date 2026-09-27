@@ -26,6 +26,16 @@ def qapp() -> QCoreApplication:
     return app
 
 
+@pytest.fixture(autouse=True)
+def header_cache_dir(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Point the header cache at a per-test directory, never ``~/.cache``."""
+    root = tmp_path_factory.mktemp("seisvis-cache")
+    monkeypatch.setenv("SEISVIS_CACHE_DIR", str(root))
+    return root
+
+
 def _make_segy(
     path: Path,
     *,

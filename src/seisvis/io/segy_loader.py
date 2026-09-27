@@ -5,6 +5,7 @@ from pathlib import Path
 
 import segyio
 
+from seisvis.io.header_cache import HeaderCacheKey
 from seisvis.io.sidecar_apply import apply_sidecar
 from seisvis.models.dataset import Dataset
 from seisvis.models.group_index import GroupIndex
@@ -74,6 +75,7 @@ def load_segy(path: Path) -> Dataset:
         xline_range=xline_range,
         group_index=group_index,
     )
+    ds.file_key = HeaderCacheKey.try_for_file(path, n_traces)
     # SEG-Y carries no spacing headers to detect a depth grid from, so a
     # SEG-Y file is depth-domain only when the .sv says so explicitly.
     apply_sidecar(ds, path)

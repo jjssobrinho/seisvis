@@ -25,6 +25,7 @@ from pathlib import Path
 import numpy as np
 import segyio
 
+from seisvis.io.header_cache import HeaderCache, HeaderCacheKey
 from seisvis.io.su_reader import FIELD_WIDTHS, SUFile
 
 log = logging.getLogger(__name__)
@@ -242,6 +243,78 @@ def _read_blocks(
     return arrays
 
 
+@dataclass
+class CachedRead:
+    """Result of :func:`read_fields_cached`."""
+
+    arrays: dict[str, np.ndarray]
+    from_cache: frozenset[str]
+
+    @property
+    def all_cached(self) -> bool:
+        return bool(self.arrays) and self.from_cache == frozenset(self.arrays)
+
+
+def read_fields_cached(
+    handle: object,
+    path: Path,
+    n_traces: int,
+    fields: Iterable[str],
+    *,
+    key: HeaderCacheKey | None,
+    cache: HeaderCache | None = None,
+    dtype: np.dtype | type = np.int64,
+    progress: Callable[[float], None] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
+    chunk_traces: int = DEFAULT_CHUNK_TRACES,
+) -> CachedRead | None:
+    """:func:`read_header_fields` for whole files, backed by the header cache.
+
+    *key* fingerprints the file as the dataset opened it (``None`` disables
+    the cache). Cached fields are taken as-is, only the rest are read, and
+    what was read is stored — unless the file no longer matches *key*, in
+    which case the arrays are returned but not cached. ``None`` = cancelled.
+    """
+    wanted = [n for n in dict.fromkeys(fields) if n in TRACE_FIELD_OFFSETS]
+    if key is None or key.n_traces != n_traces or n_traces <= 0:
+        arrays = read_header_fields(
+            handle,
+            path,
+            n_traces,
+            wanted,
+            dtype=dtype,
+            progress=progress,
+            is_cancelled=is_cancelled,
+            chunk_traces=chunk_traces,
+        )
+        return None if arrays is None else CachedRead(arrays, frozenset())
+
+    cache = cache if cache is not None else HeaderCache()
+    cached = {n: a.astype(dtype, copy=False) for n, a in cache.load(key, wanted).items()}
+    missing = [n for n in wanted if n not in cached]
+    if missing:
+        read = read_header_fields(
+            handle,
+            path,
+            n_traces,
+            missing,
+            dtype=dtype,
+            progress=progress,
+            is_cancelled=is_cancelled,
+            chunk_traces=chunk_traces,
+        )
+        if read is None:
+            return None
+        if HeaderCacheKey.try_for_file(path, n_traces) == key:
+            cache.store(key, read)
+        else:
+            log.info("%s changed while its headers were read; not caching", path)
+    else:
+        read = {}
+        log.info("header fields %s for %s loaded from cache", wanted, Path(path).name)
+    return CachedRead({**cached, **read}, frozenset(cached))
+
+
 def _read_via_handle(
     handle: object,
     n: int,
@@ -269,8 +342,10 @@ def _read_via_handle(
 
 __all__ = [
     "DEFAULT_CHUNK_TRACES",
+    "CachedRead",
     "HeaderLayout",
     "TRACE_FIELD_OFFSETS",
     "header_layout",
+    "read_fields_cached",
     "read_header_fields",
 ]

@@ -21,7 +21,7 @@ from collections.abc import Callable, Mapping
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
-from seisvis.io.header_reader import TRACE_FIELD_OFFSETS, read_header_fields
+from seisvis.io.header_reader import TRACE_FIELD_OFFSETS, read_fields_cached
 from seisvis.models.trace_alignment import (
     MATCH_KEY_CANDIDATES,
     AlignmentStatus,
@@ -109,17 +109,18 @@ class AlignmentWorker(QRunnable):
         wanted = [n for n in names if n in TRACE_FIELD_OFFSETS and n not in unavailable]
         if not wanted:
             return {}
-        arrays = read_header_fields(
+        result = read_fields_cached(
             handle,
             ds.source_path,  # type: ignore[attr-defined]
             int(getattr(ds, "n_traces", 0)),
             wanted,
+            key=getattr(ds, "file_key", None),
             progress=self.signals.progress.emit,
             is_cancelled=self._cancelled,
         )
-        if arrays is None:
+        if result is None:
             return None
-        return {k: v for k, v in arrays.items() if v.size and np.any(v != v[0])}
+        return {k: v for k, v in result.arrays.items() if v.size and np.any(v != v[0])}
 
 
 __all__ = ["AlignmentWorker", "AlignmentWorkerSignals"]

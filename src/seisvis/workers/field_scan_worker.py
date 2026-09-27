@@ -7,7 +7,8 @@ import numpy as np
 import segyio
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
-from seisvis.io.header_reader import DEFAULT_CHUNK_TRACES, read_header_fields
+from seisvis.io.header_cache import HeaderCache
+from seisvis.io.header_reader import DEFAULT_CHUNK_TRACES, read_fields_cached
 from seisvis.models.dataset import Dataset
 
 log = logging.getLogger(__name__)
@@ -41,10 +42,12 @@ class FieldScanWorker(QRunnable):
         *,
         is_cancelled: Callable[[], bool] | None = None,
         chunk_traces: int = DEFAULT_CHUNK_TRACES,
+        cache: HeaderCache | None = None,
     ) -> None:
         super().__init__()
         self.dataset = dataset
         self.fields = list(fields)
+        self._cache = cache
         self.signals = FieldScanWorkerSignals()
         self._is_cancelled = is_cancelled if is_cancelled is not None else (lambda: False)
         self._chunk_traces = chunk_traces
@@ -77,11 +80,13 @@ class FieldScanWorker(QRunnable):
             return
 
         try:
-            arrays = read_header_fields(
+            result = read_fields_cached(
                 ds.handle,
                 ds.source_path,
                 n,
                 offsets,
+                key=ds.file_key,
+                cache=self._cache,
                 progress=self.signals.progress.emit,
                 is_cancelled=self._is_cancelled,
                 chunk_traces=self._chunk_traces,
@@ -91,11 +96,11 @@ class FieldScanWorker(QRunnable):
             self.signals.failed.emit(ds.id, str(exc))
             return
 
-        if arrays is None or self._is_cancelled():
+        if result is None or self._is_cancelled():
             log.info("field scan cancelled for %s", ds.name)
             return
         self.signals.progress.emit(100.0)
-        self.signals.finished.emit(ds.id, arrays)
+        self.signals.finished.emit(ds.id, result.arrays)
 
 
 __all__ = ["FieldScanWorker", "FieldScanWorkerSignals"]

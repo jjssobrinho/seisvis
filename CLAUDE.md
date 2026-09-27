@@ -171,6 +171,27 @@ structured dtype, layout checked against segyio on three traces, with
 a per-trace `handle.header` fallback. Don't iterate `handle.header`
 for a whole file elsewhere.
 
+### Scan cache
+
+Full-scan arrays (default fields, sort-key fields, alignment match
+fields) persist between launches in `io/header_cache.HeaderCache`:
+
+- `<root>/headers/<sha1(abs_path)>/` with `key.json` + one int32
+  `<Field>.npy` per field; fields are added as they are first read.
+  `<root>` = `$SEISVIS_CACHE_DIR` > `$XDG_CACHE_HOME/seisvis` >
+  `~/.cache/seisvis`. Tests point it at a tmp dir (autouse fixture).
+- Keyed on `Dataset.file_key` (`HeaderCacheKey`: abs path, size,
+  mtime_ns, sha1_prefix, n_traces), fingerprinted by the loaders at
+  open. Any mismatch discards the entry. A file that no longer matches
+  its key when a scan ends is not cached.
+- Loaded with `allow_pickle=False`; unreadable / wrong-shape arrays are
+  misses. Writes are temp + rename, `key.json` last; write failures
+  are logged, never raised.
+- LRU (key.json mtime, touched on hit) pruned to 2 GB after each write.
+  File → Clear Header Cache… empties it.
+- All workers go through `header_reader.read_fields_cached`; the
+  surange probe (30k traces) is not cached.
+
 ### Full scan (permutation build)
 
 - Reads **all** trace headers to produce arrays used by `GroupIndex`
@@ -425,9 +446,8 @@ JSON file `<segy_name>.sv` next to the SEG-Y:
   workspace state and is saved in a session file (see Sessions).
 - Staleness: `sha1_prefix` (first 3600 bytes of the SEG-Y) + mtime
   must match. Stale `.sv` is loaded with a warning, not refused.
-- No trace header arrays in the `.sv`. Full scan data stays in
-  memory only. (Sidecar caching of scan results is deferred beyond
-  v2.)
+- No trace header arrays in the `.sv`. Full scan results are kept
+  in the header cache instead (see Header Scanning → Scan cache).
 
 ---
 
@@ -445,8 +465,8 @@ session holds what the user was looking at.
   chain, `SortConfig`, commanded and zoomed ranges, colour scale,
   crosshair fields, flicker rate and excluded members), Model Window
   tabs (members, per-kind style, overlay, flicker), active tabs.
-- **Not saved**: `.sv` content (it loads with its file), header scans,
-  group indices, trace alignments, selection, transform windows,
+- **Not saved**: `.sv` content (it loads with its file), header scans
+  (cached per file, see Scan cache), group indices, trace alignments, selection, transform windows,
   crosshair position.
 - Datasets are keyed `d0…` / diffs `x0…` within the file; runtime ids
   are never written.
@@ -891,8 +911,7 @@ presets (deferred to a later version); auto-
 resampling; whole-trace AGC; diff scale factors; diffs between
 group members; keyboard bindings for members 10+; non-uniform group
 skip; pan/zoom refetch; in-memory tile cache; three-or-more-key
-sort; non-lexicographic sort semantics; `.svh` header-array sidecar
-cache; app-wide (non-per-file) rename preferences; physical-distance
+sort; non-lexicographic sort semantics; app-wide (non-per-file) rename preferences; physical-distance
 wavenumber axis on f-k (cycles-per-trace only); progressive /
 chunked transform computation; transform result caching across
 window lifecycle.

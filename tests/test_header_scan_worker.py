@@ -75,3 +75,69 @@ def test_progress_emitted_and_final_is_100(segy_3d: Path) -> None:
         assert collector.progress[-1] == 100.0
     finally:
         ds.close()
+
+
+def _run(worker: HeaderScanWorker) -> tuple[_Collector, list[bool]]:
+    collector = _Collector()
+    collector.wire(worker)
+    hits: list[bool] = []
+    worker.signals.cache_hit.connect(lambda: hits.append(True))
+    worker.run()
+    return collector, hits
+
+
+def test_second_scan_comes_from_cache(segy_3d: Path, monkeypatch) -> None:  # noqa: ANN001
+    from seisvis.io import header_reader
+
+    ds = load_segy(segy_3d)
+    try:
+        first, hits = _run(HeaderScanWorker(ds))
+        assert not hits
+
+        def no_disk_reads(*args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError("headers read from the SEG-Y on a cache hit")
+
+        monkeypatch.setattr(header_reader, "read_header_fields", no_disk_reads)
+        second, hits = _run(HeaderScanWorker(ds))
+        assert hits == [True]
+        assert not second.failed
+        for a, b in zip(first.finished[0], second.finished[0], strict=True):
+            np.testing.assert_array_equal(a, b)
+            assert b.dtype == np.int32
+    finally:
+        ds.close()
+
+
+def test_changed_file_is_rescanned(segy_3d: Path) -> None:
+    import os
+
+    ds = load_segy(segy_3d)
+    try:
+        _run(HeaderScanWorker(ds))
+        ds.close()
+        st = segy_3d.stat()
+        os.utime(segy_3d, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+        ds = load_segy(segy_3d)
+        collector, hits = _run(HeaderScanWorker(ds))
+        assert not hits
+        assert len(collector.finished) == 1
+    finally:
+        ds.close()
+
+
+def test_file_changed_during_scan_is_not_cached(segy_3d: Path) -> None:
+    import os
+
+    from seisvis.io.header_cache import HeaderCache
+
+    ds = load_segy(segy_3d)
+    try:
+        # The fingerprint taken at load no longer matches the file by the
+        # time the scan finishes.
+        st = segy_3d.stat()
+        os.utime(segy_3d, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+        collector, _ = _run(HeaderScanWorker(ds))
+        assert len(collector.finished) == 1
+        assert HeaderCache().size_bytes() == 0
+    finally:
+        ds.close()

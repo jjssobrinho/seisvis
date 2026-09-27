@@ -8,6 +8,7 @@ import numpy as np
 import segyio
 from PySide6.QtCore import QObject, Signal
 
+from seisvis.io.header_cache import HeaderCacheKey
 from seisvis.io.surange import FieldSample, scan_populated_fields
 from seisvis.models.group_index import GroupIndex, GroupingMode, ModeState
 from seisvis.models.layer_kind import LayerKind
@@ -109,6 +110,9 @@ class Dataset(QObject):
         # Cached metadata, header-scan arrays and any already-fetched traces
         # may no longer describe what is on disk until the user reloads.
         self.data_stale: bool = False
+        # The file as the handle opened it (size, mtime, first 3600 bytes),
+        # set by the loaders. Keys this file's arrays in the header cache.
+        self.file_key: HeaderCacheKey | None = None
 
     def populate_surange(self, force: bool = False) -> None:
         """Run the surange header scan and cache the result.
@@ -289,6 +293,7 @@ class Dataset(QObject):
         self.depth_geometry = other.depth_geometry
         self.layer_kind = other.layer_kind
         self.sv_stale = other.sv_stale
+        self.file_key = other.file_key
         self._closed = False
         # Neutralize the donor so its close() can't shut the handle we took.
         other._closed = True

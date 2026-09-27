@@ -145,6 +145,36 @@ def test_save_then_open_restores_the_workspace(
     assert window.windowTitle() == "SeisVis — work.svsession"
 
 
+def test_reopening_reads_header_indexes_from_the_cache(
+    window: MainWindow,
+    gui_app: QApplication,
+    data_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from seisvis.io import header_reader
+
+    _build_workspace(window, gui_app, data_dir)
+    session_path = tmp_path / "work.svsession"
+    assert window._write_session(session_path)
+    before = _snapshot(window)
+
+    full_reads: list[list[str]] = []
+    real = header_reader.read_header_fields
+
+    def spy(handle, path, n, fields, **kw):  # noqa: ANN001, ANN003
+        if kw.get("stop") is None:
+            full_reads.append(list(fields))
+        return real(handle, path, n, fields, **kw)
+
+    monkeypatch.setattr(header_reader, "read_header_fields", spy)
+    _start_fresh(window)
+    _restore(window, gui_app, session_path)
+
+    assert full_reads == []
+    assert _snapshot(window) == before
+
+
 def test_open_with_a_deleted_file_drops_what_depended_on_it(
     window: MainWindow,
     gui_app: QApplication,

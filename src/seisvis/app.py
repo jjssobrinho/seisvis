@@ -33,6 +33,7 @@ from seisvis.controllers.active_group_controller import ActiveGroupController
 from seisvis.controllers.alignment_controller import AlignmentController
 from seisvis.controllers.session_controller import SessionRestorer
 from seisvis.controllers.transforms_coordinator import TransformsCoordinator
+from seisvis.io.header_cache import HeaderCache
 from seisvis.io.loader import SUPPORTED_SUFFIXES
 from seisvis.io.slice_cache import SliceCache
 from seisvis.models.dataset import Dataset
@@ -260,6 +261,9 @@ class MainWindow(QMainWindow):
         open_action = file_menu.addAction("&Load data…")
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self._on_open_files)
+        file_menu.addSeparator()
+        clear_cache = file_menu.addAction("Clear &Header Cache…")
+        clear_cache.triggered.connect(self._on_clear_header_cache)
         file_menu.addSeparator()
         exit_action = file_menu.addAction("E&xit")
         exit_action.triggered.connect(self.close)
@@ -790,6 +794,20 @@ class MainWindow(QMainWindow):
             log.exception("surange auto-scan failed for %s", dataset.name)
         self._start_header_scan(dataset)
 
+    def _on_clear_header_cache(self) -> None:
+        cache = HeaderCache()
+        size_mb = cache.size_bytes() / 2**20
+        answer = QMessageBox.question(
+            self,
+            "Clear header cache",
+            f"Delete the cached header indexes ({size_mb:,.0f} MB in {cache.dir})?\n\n"
+            "Files opened afterwards are indexed from scratch.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        freed = cache.clear() / 2**20
+        self.statusBar().showMessage(f"Header cache cleared ({freed:,.0f} MB freed)", 4000)
+
     def _start_header_scan(self, dataset: Dataset) -> None:
         gi = dataset.group_index
         if gi is None or not gi.has_pending_scan:
@@ -804,21 +822,35 @@ class MainWindow(QMainWindow):
                 f"Indexing headers for {name}… {pct:.0f}%"
             )
         )
+        from_cache: dict[str, bool] = {"hit": False}
+        worker.signals.cache_hit.connect(lambda c=from_cache: c.update(hit=True))
         worker.signals.finished.connect(
-            lambda fr, il, xl, tn, ds=dataset: self._on_scan_finished(ds, fr, il, xl, tn)
+            lambda fr, il, xl, tn, ds=dataset, c=from_cache: self._on_scan_finished(
+                ds, fr, il, xl, tn, from_cache=c["hit"]
+            )
         )
         worker.signals.failed.connect(lambda msg, ds=dataset: self._on_scan_failed(ds, msg))
         log.info("dispatching header scan for %s (%d traces)", dataset.name, dataset.n_traces)
         self._pool.start(worker)
 
-    def _on_scan_finished(self, dataset: Dataset, fr, il, xl, tn) -> None:  # noqa: ANN001
+    def _on_scan_finished(
+        self,
+        dataset: Dataset,
+        fr,  # noqa: ANN001
+        il,  # noqa: ANN001
+        xl,  # noqa: ANN001
+        tn,  # noqa: ANN001
+        *,
+        from_cache: bool = False,
+    ) -> None:
         self._scan_cancel_flags.pop(dataset.id, None)
         self._scan_workers.pop(dataset.id, None)
         if dataset.is_closed or dataset.group_index is None:
             return
         dataset.group_index.update_from_scan(fr, il, xl, tn)
         dataset.group_index_ready.emit()
-        self.statusBar().showMessage(f"Indexed {dataset.name}", 3000)
+        suffix = " (from cache)" if from_cache else ""
+        self.statusBar().showMessage(f"Indexed {dataset.name}{suffix}", 3000)
         self._update_status_group_info()
 
     def _on_scan_failed(self, dataset: Dataset, message: str) -> None:

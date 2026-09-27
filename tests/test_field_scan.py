@@ -82,3 +82,31 @@ def test_field_scan_worker_all_unknown_fails(su_line: Path) -> None:
         assert errors
     finally:
         ds.close()
+
+
+def test_field_scan_reads_only_uncached_fields(su_line: Path, monkeypatch) -> None:  # noqa: ANN001
+    from seisvis.io import header_reader
+
+    ds = load_su(su_line)
+    try:
+        worker = FieldScanWorker(ds, ["CDP"])
+        worker.run()
+
+        real = header_reader.read_header_fields
+        asked: list[list[str]] = []
+
+        def spy(handle, path, n, fields, **kw):  # noqa: ANN001, ANN003
+            asked.append(list(fields))
+            return real(handle, path, n, fields, **kw)
+
+        monkeypatch.setattr(header_reader, "read_header_fields", spy)
+        captured: dict = {}
+        worker = FieldScanWorker(ds, ["CDP", "TraceNumber"])
+        worker.signals.finished.connect(lambda ds_id, arrays: captured.update(arrays))
+        worker.run()
+        assert asked == [["TraceNumber"]]
+        np.testing.assert_array_equal(captured["CDP"], 100 + np.arange(8))
+        np.testing.assert_array_equal(captured["TraceNumber"], 1 + np.arange(8))
+        assert captured["CDP"].dtype == np.int64
+    finally:
+        ds.close()

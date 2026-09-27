@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Header indexes are remembered between launches
+
+- **Reopening a file no longer re-indexes its headers.** The arrays a
+  full header scan produces are cached under `~/.cache/seisvis`
+  (or `$XDG_CACHE_HOME/seisvis`) and reused while the file is unchanged
+  (same size, modification time and first 3600 bytes). Reopening a
+  session on a 108 GB file went from about 55 s to 2.5 s.
+- Sort keys read on demand (CDP, offset, …) and alignment match fields
+  are cached the same way, added to the file's entry as they are read.
+- The cache is capped at 2 GB, dropping the least recently used files
+  first. **File → Clear Header Cache…** empties it.
+
 ### Faster header indexing
 
 - **Indexing headers is about 2.3× faster on large files.** The scans

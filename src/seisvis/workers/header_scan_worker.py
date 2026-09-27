@@ -7,7 +7,8 @@ from collections.abc import Callable
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
-from seisvis.io.header_reader import DEFAULT_CHUNK_TRACES, read_header_fields
+from seisvis.io.header_cache import HeaderCache
+from seisvis.io.header_reader import DEFAULT_CHUNK_TRACES, read_fields_cached
 from seisvis.models.dataset import Dataset
 
 log = logging.getLogger(__name__)
@@ -25,15 +26,17 @@ class HeaderScanWorkerSignals(QObject):
     # FieldRecord, INLINE_3D, CROSSLINE_3D, TraceNumber arrays.
     finished = Signal(object, object, object, object)
     failed = Signal(str)
+    # Emitted just before ``finished`` when every array came from the cache.
+    cache_hit = Signal()
 
 
 class HeaderScanWorker(QRunnable):
     """Single-pass scan of a SEG-Y file's per-trace header fields.
 
     Reads ``FieldRecord``, ``INLINE_3D``, ``CROSSLINE_3D``, and ``TraceNumber``
-    for every trace through :func:`~seisvis.io.header_reader.read_header_fields`,
-    which pulls blocks of headers with one strided memmap read each rather
-    than iterating ``handle.header`` trace by trace.
+    for every trace through :func:`~seisvis.io.header_reader.read_fields_cached`:
+    from the header cache when the file is unchanged since it was last
+    scanned, otherwise by parallel block reads (then cached).
     """
 
     def __init__(
@@ -42,10 +45,12 @@ class HeaderScanWorker(QRunnable):
         *,
         is_cancelled: Callable[[], bool] | None = None,
         chunk_traces: int = DEFAULT_CHUNK_TRACES,
+        cache: HeaderCache | None = None,
     ) -> None:
         super().__init__()
         self.dataset = dataset
         self.signals = HeaderScanWorkerSignals()
+        self._cache = cache
         self._is_cancelled = is_cancelled if is_cancelled is not None else (lambda: False)
         self._chunk_traces = chunk_traces
 
@@ -68,11 +73,13 @@ class HeaderScanWorker(QRunnable):
 
         t0 = time.perf_counter()
         try:
-            arrays = read_header_fields(
+            result = read_fields_cached(
                 ds.handle,
                 ds.source_path,
                 n,
                 _FIELDS,
+                key=ds.file_key,
+                cache=self._cache,
                 dtype=np.int32,
                 progress=self.signals.progress.emit,
                 is_cancelled=self._is_cancelled,
@@ -82,12 +89,14 @@ class HeaderScanWorker(QRunnable):
             log.exception("header scan failed for %s", ds.name)
             self.signals.failed.emit(str(exc))
             return
-        if arrays is None or self._is_cancelled():
+        if result is None or self._is_cancelled():
             log.info("header scan cancelled for %s", ds.name)
             return
         log.info("header scan of %s (%d traces) took %.2f s", ds.name, n, time.perf_counter() - t0)
+        if result.all_cached:
+            self.signals.cache_hit.emit()
         self.signals.progress.emit(100.0)
-        self.signals.finished.emit(*(arrays[name] for name in _FIELDS))
+        self.signals.finished.emit(*(result.arrays[name] for name in _FIELDS))
 
 
 __all__ = ["HeaderScanWorker", "HeaderScanWorkerSignals"]

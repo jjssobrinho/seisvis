@@ -5,6 +5,7 @@ from pathlib import Path
 
 import segyio
 
+from seisvis.io.header_cache import HeaderCacheKey
 from seisvis.io.sidecar_apply import apply_sidecar
 from seisvis.io.su_reader import (
     SU_ALIASED_SEGY_FIELDS,
@@ -123,6 +124,7 @@ def load_su(path: Path) -> Dataset:
         depth_geometry=depth_geometry,
     )
     ds.unavailable_header_fields = SU_ALIASED_SEGY_FIELDS
+    ds.file_key = HeaderCacheKey.try_for_file(path, ds.n_traces)
 
     # A .sv depth declaration overrides whatever trid said.
     apply_sidecar(ds, path)
