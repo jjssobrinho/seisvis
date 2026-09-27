@@ -19,9 +19,9 @@ import logging
 from collections.abc import Callable, Mapping
 
 import numpy as np
-import segyio
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
+from seisvis.io.header_reader import TRACE_FIELD_OFFSETS, read_header_fields
 from seisvis.models.trace_alignment import (
     MATCH_KEY_CANDIDATES,
     AlignmentStatus,
@@ -105,25 +105,20 @@ class AlignmentWorker(QRunnable):
         handle = getattr(ds, "handle", None)
         if handle is None or getattr(ds, "is_closed", False):
             return {}
-        offsets = {
-            n: int(getattr(segyio.TraceField, n)) for n in names if hasattr(segyio.TraceField, n)
-        }
         unavailable = getattr(ds, "unavailable_header_fields", frozenset())
-        offsets = {n: o for n, o in offsets.items() if n not in unavailable}
-        if not offsets:
+        wanted = [n for n in names if n in TRACE_FIELD_OFFSETS and n not in unavailable]
+        if not wanted:
             return {}
-        n = int(getattr(ds, "n_traces", 0))
-        arrays = {name: np.empty(n, dtype=np.int64) for name in offsets}
-        report_every = max(1, n // 100)
-        for i, hdr in enumerate(handle.header):
-            if i >= n:
-                break
-            if self._cancelled():
-                return None
-            for name, off in offsets.items():
-                arrays[name][i] = hdr[off]
-            if i % report_every == 0:
-                self.signals.progress.emit(100.0 * i / max(1, n))
+        arrays = read_header_fields(
+            handle,
+            ds.source_path,  # type: ignore[attr-defined]
+            int(getattr(ds, "n_traces", 0)),
+            wanted,
+            progress=self.signals.progress.emit,
+            is_cancelled=self._cancelled,
+        )
+        if arrays is None:
+            return None
         return {k: v for k, v in arrays.items() if v.size and np.any(v != v[0])}
 
 

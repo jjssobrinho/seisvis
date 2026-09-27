@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Faster header indexing
+
+- **Indexing headers is about 2.3× faster on large files.** The scans
+  that read every trace header (grouping by shot / inline / crossline,
+  sorting on a key such as CDP, pairing a member's traces with the
+  reference's, and the populated-fields probe) read blocks of headers
+  several at a time instead of one trace at a time. A 108 GB file with
+  17.4 M traces now indexes in about 55 s instead of 130 s.
+- Files whose layout does not fit a fixed trace length are still read
+  header by header, as before.
+
 ### Fixed: Sorting on keys outside the default header scan (CDP, offset, …)
 
 - **A Range row on such a key no longer fails to commit.** Its values

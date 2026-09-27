@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 
 import numpy as np
-import segyio
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
+from seisvis.io.header_reader import DEFAULT_CHUNK_TRACES, read_header_fields
 from seisvis.models.dataset import Dataset
 
 log = logging.getLogger(__name__)
+
+# Emitted by ``finished`` in this order.
+_FIELDS = ("FieldRecord", "INLINE_3D", "CROSSLINE_3D", "TraceNumber")
 
 
 class HeaderScanWorkerSignals(QObject):
@@ -27,14 +31,9 @@ class HeaderScanWorker(QRunnable):
     """Single-pass scan of a SEG-Y file's per-trace header fields.
 
     Reads ``FieldRecord``, ``INLINE_3D``, ``CROSSLINE_3D``, and ``TraceNumber``
-    for every trace in one loop, so each 240-byte header block is fetched from
-    disk once. Empirically this is cheaper than four separate
-    ``handle.attributes(field)[:]`` calls on files that don't fit in OS
-    page cache, because the per-call form traverses the file
-    stride-by-stride once per field — that many times the disk I/O. On files
-    small enough to be fully page-cached the per-call form can be
-    faster due to vectorized reads in segyio, but the worst-case (cold
-    multi-GB file) is what drives this choice.
+    for every trace through :func:`~seisvis.io.header_reader.read_header_fields`,
+    which pulls blocks of headers with one strided memmap read each rather
+    than iterating ``handle.header`` trace by trace.
     """
 
     def __init__(
@@ -42,22 +41,24 @@ class HeaderScanWorker(QRunnable):
         dataset: Dataset,
         *,
         is_cancelled: Callable[[], bool] | None = None,
+        chunk_traces: int = DEFAULT_CHUNK_TRACES,
     ) -> None:
         super().__init__()
         self.dataset = dataset
         self.signals = HeaderScanWorkerSignals()
         self._is_cancelled = is_cancelled if is_cancelled is not None else (lambda: False)
+        self._chunk_traces = chunk_traces
 
     def cancel_check(self) -> bool:
         return bool(self._is_cancelled())
 
     @Slot()
     def run(self) -> None:
-        if self.dataset.is_closed:
+        ds = self.dataset
+        if ds.is_closed:
             self.signals.failed.emit("dataset is closed")
             return
-        handle = self.dataset.handle
-        n = int(self.dataset.n_traces)
+        n = int(ds.n_traces)
         if n <= 0:
             # Empty file: emit empty arrays so the index flips to READY/FAILED
             # deterministically rather than leaving SCANNING.
@@ -65,33 +66,28 @@ class HeaderScanWorker(QRunnable):
             self.signals.finished.emit(empty, empty, empty, empty)
             return
 
+        t0 = time.perf_counter()
         try:
-            fr = np.empty(n, dtype=np.int32)
-            il = np.empty(n, dtype=np.int32)
-            xl = np.empty(n, dtype=np.int32)
-            tn = np.empty(n, dtype=np.int32)
-            report_every = max(1, n // 100)
-            last_reported = -1
-            for i, h in enumerate(handle.header):
-                if self._is_cancelled():
-                    log.info("header scan cancelled for %s at %d/%d", self.dataset.name, i, n)
-                    return
-                fr[i] = h[segyio.TraceField.FieldRecord]
-                il[i] = h[segyio.TraceField.INLINE_3D]
-                xl[i] = h[segyio.TraceField.CROSSLINE_3D]
-                tn[i] = h[segyio.TraceField.TraceNumber]
-                if i % report_every == 0 and i != last_reported:
-                    last_reported = i
-                    self.signals.progress.emit(100.0 * i / n)
+            arrays = read_header_fields(
+                ds.handle,
+                ds.source_path,
+                n,
+                _FIELDS,
+                dtype=np.int32,
+                progress=self.signals.progress.emit,
+                is_cancelled=self._is_cancelled,
+                chunk_traces=self._chunk_traces,
+            )
         except Exception as exc:
-            log.exception("header scan failed for %s", self.dataset.name)
+            log.exception("header scan failed for %s", ds.name)
             self.signals.failed.emit(str(exc))
             return
-
-        if self._is_cancelled():
+        if arrays is None or self._is_cancelled():
+            log.info("header scan cancelled for %s", ds.name)
             return
+        log.info("header scan of %s (%d traces) took %.2f s", ds.name, n, time.perf_counter() - t0)
         self.signals.progress.emit(100.0)
-        self.signals.finished.emit(fr, il, xl, tn)
+        self.signals.finished.emit(*(arrays[name] for name in _FIELDS))
 
 
 __all__ = ["HeaderScanWorker", "HeaderScanWorkerSignals"]

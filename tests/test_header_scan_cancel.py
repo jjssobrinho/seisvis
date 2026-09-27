@@ -48,7 +48,8 @@ def test_cancel_midway_does_not_corrupt(segy_3d: Path) -> None:
             iters["n"] += 1
             return iters["n"] > 6  # let ~half of 12 iterations through
 
-        worker = HeaderScanWorker(ds, is_cancelled=is_cancelled)
+        # One-trace blocks so the cancel check runs once per trace.
+        worker = HeaderScanWorker(ds, is_cancelled=is_cancelled, chunk_traces=1)
         emissions: list = []
         worker.signals.finished.connect(lambda *args: emissions.append(("finished", args)))
         worker.signals.failed.connect(lambda msg: emissions.append(("failed", msg)))

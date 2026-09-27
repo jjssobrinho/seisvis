@@ -95,3 +95,11 @@ def test_all_zero_field_absent(tmp_path: Path) -> None:
         result = scan_populated_fields(h)
     assert "INLINE_3D" not in result
     assert "FieldRecord" in result
+
+
+@pytest.mark.parametrize("max_traces", [1, 3, 5, 30_000])
+def test_vectorized_matches_per_trace(tiny_segy: Path, max_traces: int) -> None:
+    with segyio.open(str(tiny_segy), ignore_geometry=True) as h:
+        per_trace = scan_populated_fields(h, max_traces=max_traces)
+        vectorized = scan_populated_fields(h, max_traces=max_traces, path=tiny_segy)
+    assert vectorized == per_trace

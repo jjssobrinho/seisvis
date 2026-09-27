@@ -48,7 +48,7 @@ def _build_field_widths() -> dict[int, str]:
     return widths
 
 
-_FIELD_WIDTHS: dict[int, str] = _build_field_widths()
+FIELD_WIDTHS: dict[int, str] = _build_field_widths()
 
 # SU's "cwp local assignments" occupy the bytes that SEG-Y assigns to
 # CDP_X / CDP_Y / INLINE_3D / CROSSLINE_3D, but hold IEEE float32 rather than
@@ -129,7 +129,7 @@ class _SUHeader:
         self._endian = endian
 
     def __getitem__(self, offset: int) -> int:
-        fmt = _FIELD_WIDTHS.get(int(offset), "i")
+        fmt = FIELD_WIDTHS.get(int(offset), "i")
         return int(struct.unpack_from(self._endian + fmt, self._raw, int(offset) - 1)[0])
 
     def float_at(self, offset: int) -> float:
@@ -234,6 +234,16 @@ class SUFile:
             segyio.BinField.Samples: self.n_samples,
         }
 
+    @property
+    def record_bytes(self) -> int:
+        """Bytes per trace record: the 240-byte header plus samples."""
+        return self._record_bytes
+
+    @property
+    def endian(self) -> str:
+        """``"<"`` or ``">"`` as detected from the first header."""
+        return self._endian
+
     def close(self) -> None:
         mm = self._mm
         self._mm = None
@@ -243,4 +253,4 @@ class SUFile:
             del mm
 
 
-__all__ = ["SUFile"]
+__all__ = ["FIELD_WIDTHS", "SUFile"]

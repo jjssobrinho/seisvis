@@ -1,85 +1,62 @@
-Milestone v6.2 — Sessions
-Prerequisite: v61-done.
+Milestone v6.3 — Fast Header Scan
+Prerequisite: v62-done.
 
-Save the workspace to a `.svsession` file and reopen it later: the files
-loaded, the differences between them, every toggle group and Model
-Window tab and how each was set up. Files that moved or were deleted
-since are located or skipped, and whatever depended on a skipped file is
-dropped with a report.
-
-Removes "project save-load" from Out of Scope. Sort stays out of the
-`.sv` (a fact-about-the-file store) and goes into the session instead.
+Every full pass over a file's trace headers — the default index scan
+(FieldRecord / INLINE_3D / CROSSLINE_3D / TraceNumber), the on-demand
+field scan behind a sort key, the alignment match-field read and the
+surange probe — iterated `handle.header` one trace at a time. They now
+share one vectorized reader. Nothing about when scans run changes; they
+just finish sooner. Caching the result across launches is v6.4.
 
 ---
 
-File menu
+Reader
 
 ```
-File
-  New Session                 Ctrl+N
-  Open Session…               Ctrl+Shift+O
-  Open Recent Session       ▸  (8 entries, missing files pruned)
-  Save Session                Ctrl+S
-  Save Session As…            Ctrl+Shift+S
-  ─────────
-  Load data…                  Ctrl+O
-  ─────────
-  Exit
+io/header_reader.py
+  header_layout(handle, path, n_traces) -> HeaderLayout | None
+  read_header_fields(handle, path, n_traces, fields, *, stop, dtype,
+                     progress, is_cancelled, chunk_traces)
+                     -> dict[str, np.ndarray] | None   # None = cancelled
 ```
 
-Dropping a `.svsession` on the window opens it. The last session is not
-reopened on startup.
+- `HeaderLayout(data_offset, trace_stride, endian, n_traces)`. SEG-Y:
+  stride `240 + ns · bytes_per_sample(format)`, big-endian, data offset
+  inferred from the file size (`3600 + 3200·k`), so a rev-2 `-1`
+  extended-header count is harmless. SU: offset 0, the record size and
+  endian `SUFile` already detected.
+- Blocks of up to 16 MB are read with plain file reads, 8 in flight on
+  a thread pool, and the fields pulled out with a structured numpy
+  dtype (int32 / int16 per segyio's field widths).
+- Before trusting the layout, the first, middle and last trace are read
+  both ways and compared with segyio. A size that does not fit a fixed
+  trace length, or a disagreement, falls back to the old per-trace loop.
+- Progress and cancellation are checked between blocks, on the calling
+  thread. The reads use their own file objects, not the segyio handle.
 
 ---
 
-Layers
+Measured
 
-```
-models/session.py              SessionFile + entries, JSON (pure data)
-models/sort_config.py          sort_config_to_dict / _from_dict
-models/processing_chain.py     ProcessingChain.to_dict / from_dict
-models/display_state.py        DisplayState.to_dict / from_dict
-models/model_group.py          styles() / restore_style()
-services/session_service.py    capture, check_session → RestorePlan
-                               (relink, skip), prune, filter_group,
-                               build_toggle_group, restore_group_view
-controllers/session_controller SessionRestorer: load → scans → diffs
-                               → groups / model tabs; SessionHost protocol
-ui/dialogs/missing_files_dialog Locate… / Skip / Continue / Cancel
-utils/qsettings.py             recent sessions
-```
-
-`MainWindow` implements `SessionHost` (`register_dataset`, `align_pair`,
-`apply_flicker`, `restore_model_group`, `set_active_model_group`).
-
----
-
-Unsaved changes
-
-A capture without fingerprints is compared with the one taken at the
-last save or open; the title shows `•` on a 1 s tick. Only a workspace
-backed by a session file prompts (New / Open / Exit) — someone who never
-saved a session has not asked for one.
+108 GB SEG-Y, 17.4 M traces × 1501 samples, NVMe, page cache dropped:
+opening the session to index ready went from 130.7 s to 56.1 s. The scan
+is disk-bound; a warm cache on a small file is not faster than before
+in any way that matters (0.2 s against 0.4 s for 100 k traces).
 
 ---
 
 Tests
 
-- `test_session_model.py` — sort / processing / display round trips,
-  full-session JSON round trip, unknown keys ignored, newer schema and
-  malformed files refused.
-- `test_session_service.py` — capture contents, relative paths, a diff
-  with missing parents left out; deleted → missing, moved-with-session →
-  relocated, rewritten → stale, touched → not stale; relink finds
-  siblings; prune drops members / diffs / empty groups, cursors follow
-  their datasets, losing the reference resets sort and view; unusable
-  sort dropped; natural-order ranges restored and clamped.
-- `test_session_restore.py` — save → reopen through `MainWindow`
-  reproduces the capture exactly (diff, committed sort, flicker, model
-  tab); a deleted file drops its diff and member; title marker.
+- `test_header_reader.py` — every standard field matches segyio for
+  formats 1 / 5 / 3 / 8 and with extended textual headers; SU in both
+  byte orders; `stop`, `dtype`, unknown names skipped; progress per
+  block and cancellation between blocks; size mismatch and probe
+  disagreement fall back to per-trace reads.
+- `test_surange.py` — the vectorized surange equals the per-trace one.
+- `test_header_scan_cancel.py` — mid-scan cancel now uses one-trace
+  blocks (cancellation is per block).
 
-Out of scope for v6.2
+Out of scope for v6.3
 
-Autosave; reopening the last session on startup; saving the selection,
-transform windows or crosshair position; embedding `.sv` content;
-restoring a diff whose parents were already gone when saved.
+Caching scan results on disk (v6.4); memory-mapped reads (slower than
+buffered reads on a cold cache); changing when scans are triggered.

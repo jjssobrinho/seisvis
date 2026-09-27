@@ -80,6 +80,8 @@ data. Current capabilities:
 |-------|-----------------------------------------------|------------------|
 | v6.1  | Configurable Crosshair Readout                | `v61-done`       |
 | v6.2  | Sessions (save / open workspace)              | `v62-done`       |
+| v6.3  | Fast Header Scan (vectorized, parallel reads) | `v63-done`       |
+| v6.4  | Header Index Cache (`~/.cache/seisvis`)       | `v64-done`       |
 
 Milestones are sequential; each in its own session. Finish, commit,
 tag, stop. **Let tests run to completion** before tagging. Check
@@ -159,6 +161,15 @@ ui/  →  controllers/  →  services/  →  models/ ← processing/, io/
 - Produces `Dataset.header_fields_available: set[str]` and a small
   cache of sample values per populated field (from trace 0, midpoint,
   and 29,999).
+
+### Reading headers
+
+Every pass over per-trace headers (fast scan, full scan, alignment
+match fields) goes through `io/header_reader.read_header_fields`:
+strided block reads on a small thread pool, fields extracted by a
+structured dtype, layout checked against segyio on three traces, with
+a per-trace `handle.header` fallback. Don't iterate `handle.header`
+for a whole file elsewhere.
 
 ### Full scan (permutation build)
 

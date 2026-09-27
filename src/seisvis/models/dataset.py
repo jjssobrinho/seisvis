@@ -118,7 +118,7 @@ class Dataset(QObject):
         """
         if self.header_fields_available is not None and not force:
             return
-        scanned = scan_populated_fields(self.handle)
+        scanned = scan_populated_fields(self.handle, path=self.source_path)
         for name in self.unavailable_header_fields:
             scanned.pop(name, None)
         self.header_fields_available = scanned

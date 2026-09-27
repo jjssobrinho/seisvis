@@ -7,6 +7,7 @@ import numpy as np
 import segyio
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
+from seisvis.io.header_reader import DEFAULT_CHUNK_TRACES, read_header_fields
 from seisvis.models.dataset import Dataset
 
 log = logging.getLogger(__name__)
@@ -28,8 +29,8 @@ class FieldScanWorker(QRunnable):
     CROSSLINE_3D, TraceNumber). When a committed sort keys off any other
     populated field — ``CDP`` being the common one for stacked / CMP data —
     that field has no per-trace array and grouping produces nothing. This
-    worker fills the gap: given a list of SEG-Y field names it reads each
-    header once and returns one int array per field, which the controller
+    worker fills the gap: given a list of SEG-Y field names it reads them in
+    one vectorized pass and returns one int array per field, which the controller
     hands to :meth:`GroupIndex.set_field_array`.
     """
 
@@ -39,12 +40,14 @@ class FieldScanWorker(QRunnable):
         fields: list[str],
         *,
         is_cancelled: Callable[[], bool] | None = None,
+        chunk_traces: int = DEFAULT_CHUNK_TRACES,
     ) -> None:
         super().__init__()
         self.dataset = dataset
         self.fields = list(fields)
         self.signals = FieldScanWorkerSignals()
         self._is_cancelled = is_cancelled if is_cancelled is not None else (lambda: False)
+        self._chunk_traces = chunk_traces
 
     @Slot()
     def run(self) -> None:
@@ -74,25 +77,22 @@ class FieldScanWorker(QRunnable):
             return
 
         try:
-            arrays = {name: np.empty(n, dtype=np.int64) for name in offsets}
-            handle = ds.handle
-            report_every = max(1, n // 100)
-            last_reported = -1
-            for i, hdr in enumerate(handle.header):
-                if self._is_cancelled():
-                    log.info("field scan cancelled for %s at %d/%d", ds.name, i, n)
-                    return
-                for name, off in offsets.items():
-                    arrays[name][i] = hdr[off]
-                if i % report_every == 0 and i != last_reported:
-                    last_reported = i
-                    self.signals.progress.emit(100.0 * i / n)
+            arrays = read_header_fields(
+                ds.handle,
+                ds.source_path,
+                n,
+                offsets,
+                progress=self.signals.progress.emit,
+                is_cancelled=self._is_cancelled,
+                chunk_traces=self._chunk_traces,
+            )
         except Exception as exc:
             log.exception("field scan failed for %s", ds.name)
             self.signals.failed.emit(ds.id, str(exc))
             return
 
-        if self._is_cancelled():
+        if arrays is None or self._is_cancelled():
+            log.info("field scan cancelled for %s", ds.name)
             return
         self.signals.progress.emit(100.0)
         self.signals.finished.emit(ds.id, arrays)
