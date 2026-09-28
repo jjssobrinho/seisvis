@@ -64,14 +64,29 @@ def test_update_from_scan_populates_maps_and_flags() -> None:
     assert gi.n_groups() == 3
 
 
-def test_update_from_scan_single_value_marks_failed() -> None:
-    # A structured file where every trace happens to carry the same inline —
-    # no grouping information, so INLINE mode stays unavailable.
+def test_update_from_scan_single_value_is_one_group() -> None:
+    # A single-inline file: every trace carries inline 7. The mode is still
+    # available, with one group holding every trace.
     gi = GroupIndex.from_metadata(n_traces=4, is_structured=True)
     gi.mark_scanning()
     gi.update_from_scan(
         field_records=np.array([1, 2, 3, 4]),
         inlines=np.array([7, 7, 7, 7]),
+        crosslines=np.array([10, 11, 12, 13]),
+    )
+    assert GroupingMode.INLINE in gi.available_modes
+    gi.set_mode(GroupingMode.INLINE)
+    assert gi.n_groups() == 1
+    np.testing.assert_array_equal(gi.get_trace_indices(0), np.arange(4))
+
+
+def test_update_from_scan_all_zero_marks_failed() -> None:
+    # A file that never fills INLINE_3D in: no INLINE mode.
+    gi = GroupIndex.from_metadata(n_traces=4, is_structured=True)
+    gi.mark_scanning()
+    gi.update_from_scan(
+        field_records=np.array([1, 2, 3, 4]),
+        inlines=np.zeros(4, dtype=np.int64),
         crosslines=np.array([10, 11, 12, 13]),
     )
     assert GroupingMode.SHOT in gi.available_modes

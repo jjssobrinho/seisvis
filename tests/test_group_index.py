@@ -51,11 +51,12 @@ def test_3d_available_modes(segy_3d: Path) -> None:
     }
 
 
-def test_2d_has_no_inline_mode(segy_2d: Path) -> None:
+def test_2d_single_inline_is_one_group(segy_2d: Path) -> None:
     gi = _load(segy_2d)
-    # Only one inline in the 2D fixture → INLINE mode excluded.
-    assert GroupingMode.INLINE not in gi.available_modes
-    # Single FieldRecord-per-trace still yields SHOT (unique count > 1).
+    # One inline in the 2D fixture → INLINE mode with a single group.
+    assert GroupingMode.INLINE in gi.available_modes
+    gi.set_mode(GroupingMode.INLINE)
+    assert gi.n_groups() == 1
     assert GroupingMode.SHOT in gi.available_modes
     assert GroupingMode.TRACE_RANGE in gi.available_modes
 

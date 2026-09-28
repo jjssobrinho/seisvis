@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed: Single-gather files hide their gather key
+
+- **A file holding one CDP, shot, channel, inline or crossline now
+  offers that key.** A header counted as present only when its value
+  varied, so a single CDP gather (CDP 265 on every trace) had no CDP
+  sort key. A header is now present when any trace carries a non-zero
+  value; the key sorts into one group. Shot / Inline / Crossline modes
+  follow the same rule.
+- Sample count, sample interval, coordinate scalars and coordinate
+  units are no longer offered as sort keys (the Header Inspector still
+  lists them).
+
 ### Header indexes are remembered between launches
 
 - **Reopening a file no longer re-indexes its headers.** The arrays a

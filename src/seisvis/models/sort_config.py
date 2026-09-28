@@ -23,6 +23,19 @@ from typing import Literal
 # pure-data record (no enum round-tripping).
 TRACE_RANGE_FIELD = "TRACE_RANGE"
 
+# Populated fields that describe the trace format rather than where a trace
+# sits, and are constant in any readable file. Never offered as sort keys;
+# the header inspector still lists them.
+NON_KEY_FIELDS: frozenset[str] = frozenset(
+    {
+        "TRACE_SAMPLE_COUNT",
+        "TRACE_SAMPLE_INTERVAL",
+        "ElevationScalar",
+        "SourceGroupScalar",
+        "CoordinateUnits",
+    }
+)
+
 Direction = Literal["asc", "desc"]
 RowType = Literal["value", "range", "list"]
 

@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
 from seisvis.models.group_index import GroupIndex, GroupingMode
 from seisvis.models.list_parser import ParseResult, parse_list
 from seisvis.models.sort_config import (
+    NON_KEY_FIELDS,
     TRACE_RANGE_FIELD,
     ListParams,
     RangeParams,
@@ -557,7 +558,7 @@ class GroupCommandBar(QWidget):
 
     def _available_fields(self) -> list[str]:
         fields: list[str] = [TRACE_RANGE_FIELD]
-        seen: set[str] = {TRACE_RANGE_FIELD}
+        seen: set[str] = {TRACE_RANGE_FIELD, *NON_KEY_FIELDS}
         ds = self._reference_dataset()
         surange = getattr(ds, "header_fields_available", None) if ds is not None else None
         if isinstance(surange, dict):

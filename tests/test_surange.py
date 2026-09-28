@@ -97,6 +97,34 @@ def test_all_zero_field_absent(tmp_path: Path) -> None:
     assert "FieldRecord" in result
 
 
+def test_constant_nonzero_field_present(tmp_path: Path) -> None:
+    """A single CDP gather: CDP is the same on every trace but still a key."""
+    p = tmp_path / "one_cdp.segy"
+    spec = segyio.spec()
+    spec.sorting = None
+    spec.format = 1
+    spec.samples = list(range(4))
+    spec.tracecount = 3
+    with segyio.create(str(p), spec) as f:
+        f.bin[segyio.BinField.Interval] = 2000
+        for i in range(3):
+            f.header[i] = {
+                segyio.TraceField.CDP: 265,
+                segyio.TraceField.offset: 100 * (i + 1),
+                segyio.TraceField.TRACE_SAMPLE_COUNT: 4,
+                segyio.TraceField.TRACE_SAMPLE_INTERVAL: 2000,
+            }
+            f.trace[i] = [0.0] * 4
+    with segyio.open(str(p), ignore_geometry=True) as h:
+        per_trace = scan_populated_fields(h)
+        vectorized = scan_populated_fields(h, path=p)
+    for result in (per_trace, vectorized):
+        assert result["CDP"].unique_count == 1
+        assert result["CDP"].samples == [265, 265, 265]
+        assert "offset" in result
+        assert "INLINE_3D" not in result
+
+
 @pytest.mark.parametrize("max_traces", [1, 3, 5, 30_000])
 def test_vectorized_matches_per_trace(tiny_segy: Path, max_traces: int) -> None:
     with segyio.open(str(tiny_segy), ignore_geometry=True) as h:

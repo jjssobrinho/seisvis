@@ -32,11 +32,12 @@ def scan_populated_fields(
 ) -> dict[str, FieldSample]:
     """Return populated header fields from the first ``max_traces`` traces.
 
-    A field is populated when it has more than one unique value across the
-    scanned window. Returns a dict keyed by SEG-Y field name. With *path*
-    the window is read in one vectorized pass (see
-    :func:`~seisvis.io.header_reader.read_header_fields`); without it, header
-    by header through *handle*.
+    A field is populated when any trace in the scanned window carries a
+    non-zero value. A constant non-zero field counts: a file holding a single
+    CDP, shot, channel or line gather still offers that key. Returns a dict
+    keyed by SEG-Y field name. With *path* the window is read in one
+    vectorized pass (see :func:`~seisvis.io.header_reader.read_header_fields`);
+    without it, header by header through *handle*.
     """
     n_traces = int(handle.tracecount)
     n = min(max_traces, n_traces)
@@ -50,6 +51,7 @@ def scan_populated_fields(
         arrays = read_header_fields(handle, path, n_traces, _TRACE_FIELDS, stop=n)
         assert arrays is not None  # no cancellation hook passed
         unique_counts = {name: int(np.unique(arr).size) for name, arr in arrays.items()}
+        nonzero = {name: bool(np.any(arr != 0)) for name, arr in arrays.items()}
         collected = {name: [int(arr[i]) for i in sample_indices] for name, arr in arrays.items()}
     else:
         # segyio header objects are views into a shared buffer — values must
@@ -64,13 +66,14 @@ def scan_populated_fields(
                 if is_sample:
                     collected[name].append(val)
         unique_counts = {name: len(vals) for name, vals in seen.items()}
+        nonzero = {name: any(v != 0 for v in vals) for name, vals in seen.items()}
 
     elapsed = time.perf_counter() - t0
     log.info("surange scan of %d traces completed in %.3f s", n, elapsed)
 
     result: dict[str, FieldSample] = {}
     for name, byte_off in _TRACE_FIELDS.items():
-        if unique_counts[name] > 1:
+        if nonzero[name]:
             result[name] = FieldSample(
                 field_name=name,
                 byte_offset=byte_off,

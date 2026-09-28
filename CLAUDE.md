@@ -151,8 +151,15 @@ ui/  →  controllers/  →  services/  →  models/ ← processing/, io/
 ### Fast scan (surange-equivalent)
 
 - Reads the first **30,000 traces' headers** in a single pass and
-  reports which standard SEG-Y fields are populated.
-- Populated = `unique_count > 1` across the scanned slice.
+  reports which standard SEG-Y fields the file fills in.
+- Populated = **any non-zero value** across the scanned slice. A
+  constant non-zero field counts: a single CDP, shot, channel, inline
+  or crossline gather still offers its key (one group). All-zero
+  fields are absent. The same rule decides whether SHOT / INLINE /
+  CROSSLINE modes are available.
+- Format bookkeeping fields (sample count/interval, coordinate
+  scalars, coordinate units — `sort_config.NON_KEY_FIELDS`) are never
+  offered as sort keys; the Header Inspector still lists them.
 - Runs synchronously or near-synchronously — fast enough (~200 ms
   on NVMe, ~1 s on spinning disk) that no progress indicator is
   needed.

@@ -44,6 +44,15 @@ MODE_TO_DEFAULT_FIELD: dict[GroupingMode, str] = {
 }
 
 
+def _is_set(arr: np.ndarray) -> bool:
+    """True when the file fills the field in: any trace carries a non-zero value.
+
+    A constant non-zero array counts, so a single-shot or single-line file
+    still gets its mode (with one group).
+    """
+    return bool(np.any(np.asarray(arr) != 0))
+
+
 class GroupIndex:
     """Maps a grouping mode to ordered group ids and their member trace indices.
 
@@ -85,13 +94,13 @@ class GroupIndex:
             GroupingMode.TRACE_RANGE: ModeState.READY,
         }
         if self._field_arrays.get("FieldRecord") is not None:
-            if np.unique(self._field_arrays["FieldRecord"]).size > 1:
+            if _is_set(self._field_arrays["FieldRecord"]):
                 self._mode_state[GroupingMode.SHOT] = ModeState.READY
         if self._field_arrays.get("INLINE_3D") is not None:
-            if np.unique(self._field_arrays["INLINE_3D"]).size > 1:
+            if _is_set(self._field_arrays["INLINE_3D"]):
                 self._mode_state[GroupingMode.INLINE] = ModeState.READY
         if self._field_arrays.get("CROSSLINE_3D") is not None:
-            if np.unique(self._field_arrays["CROSSLINE_3D"]).size > 1:
+            if _is_set(self._field_arrays["CROSSLINE_3D"]):
                 self._mode_state[GroupingMode.CROSSLINE] = ModeState.READY
 
         self._current_mode: GroupingMode = self.default_mode
@@ -175,15 +184,9 @@ class GroupIndex:
         signature remains backward compatible with tests and callers that
         only pass the three core arrays.
         """
-        self._apply_scan_field(
-            GroupingMode.SHOT, field_records, self._n_traces, allow_single_value=False
-        )
-        self._apply_scan_field(
-            GroupingMode.INLINE, inlines, self._n_traces, allow_single_value=False
-        )
-        self._apply_scan_field(
-            GroupingMode.CROSSLINE, crosslines, self._n_traces, allow_single_value=False
-        )
+        self._apply_scan_field(GroupingMode.SHOT, field_records, self._n_traces)
+        self._apply_scan_field(GroupingMode.INLINE, inlines, self._n_traces)
+        self._apply_scan_field(GroupingMode.CROSSLINE, crosslines, self._n_traces)
         # TraceNumber isn't a mode — just stash the per-trace array for
         # SortConfig lookups. Quietly ignore shape mismatches.
         if trace_numbers is not None:
@@ -203,8 +206,6 @@ class GroupIndex:
         mode: GroupingMode,
         arr: np.ndarray | None,
         expected_len: int,
-        *,
-        allow_single_value: bool,
     ) -> None:
         # Mode wasn't applicable for this dataset (e.g. INLINE on 2D).
         if mode not in self._mode_state:
@@ -230,8 +231,8 @@ class GroupIndex:
         a64 = a.astype(np.int64, copy=False)
         if field_name:
             self._field_arrays[field_name] = a64
-        if not allow_single_value and np.unique(a64).size <= 1:
-            # Only a single unique value → mode carries no grouping info.
+        if not _is_set(a64):
+            # All zero → the file doesn't fill this field in.
             self._mode_state[mode] = ModeState.FAILED
             return
         self._mode_state[mode] = ModeState.READY
@@ -321,10 +322,8 @@ class GroupIndex:
         ``_mode_state`` entirely, which reads as "not applicable to this
         dataset" rather than "not scanned yet".
 
-        Without this the exclusion holds only by luck: d2 and f2 are constant
-        within a file, so the ``unique_count > 1`` test happens to reject
-        them. A file whose locals vary per trace would otherwise surface a
-        grouping mode built on garbage.
+        Without this, any non-zero d2 / f2 would read as a populated
+        INLINE_3D / CROSSLINE_3D and surface a grouping mode built on garbage.
         """
         names = {str(f) for f in field_names}
         if not names:
