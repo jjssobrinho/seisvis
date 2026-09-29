@@ -218,12 +218,22 @@ class SeismicView(QWidget):
         self._pool = pool
         self._cache = cache
         self._image_items: list[pg.ImageItem] = []
-        # Header values for the traces currently on screen, aligned to
-        # _current_trace_indices so a lookup is an index by column. Read
-        # on the fly like the traces themselves — nothing outside the
-        # view is touched.
+        # Header values for the traces the active member draws, one per
+        # column starting at display x ``_header_x0``. Read on the fly like
+        # the traces themselves — nothing outside the view is touched.
         self._header_values: dict[str, object] = {}
         self._header_workers: list[object] = []
+        self._header_x0: int = 0
+        # What the header values describe: the active member's trace indices
+        # for the current frame. None until a frame has been resolved.
+        self._header_indices: np.ndarray | None = None
+        self._header_dataset_id: str | None = None
+        # Bumped per frame so a read that finished for an older frame is
+        # dropped instead of merged into this one.
+        self._header_generation: int = 0
+        # Last hovered (display x, t_ms), so values landing after the cursor
+        # stopped still reach the readout. None while off the plot.
+        self._last_cursor: tuple[int, float] | None = None
         self._active_workers: list[SliceWorker] = []
         self._last_arrays: list[np.ndarray | None] = []
         self._last_rects: list[QRectF | None] = []
@@ -587,7 +597,7 @@ class SeismicView(QWidget):
     # --- Group signal wiring ---
 
     def _wire_group_signals(self) -> None:
-        self.group.crosshair_fields_changed.connect(self._refresh_header_values)
+        self.group.crosshair_fields_changed.connect(self._on_crosshair_fields_changed)
         self.group.member_added.connect(self._on_member_added)
         self.group.member_removed.connect(self._on_member_removed)
         self.group.member_moved.connect(self._on_member_moved)
@@ -1223,6 +1233,11 @@ class SeismicView(QWidget):
             member = self.group.members[member_index]
         except IndexError:
             return
+        # First, and whether or not a worker ends up dispatched: a frame
+        # served from the cache moves the traces on screen as much as a
+        # fetched one does.
+        if member_index == self.group.active_index:
+            self._refresh_header_values()
         state = self.group.shared_state
         if state.commanded_time_range_ms is None:
             return
@@ -1289,7 +1304,6 @@ class SeismicView(QWidget):
         )
         worker.signals.finished.connect(self._on_slice_finished)
         worker.signals.failed.connect(self._on_slice_failed)
-        self._refresh_header_values()
         self._active_workers.append(worker)
         self.loading_label.setVisible(True)
         self._pool.start(worker)
@@ -1487,6 +1501,7 @@ class SeismicView(QWidget):
         if not self.plot_item.sceneBoundingRect().contains(scene_pos):
             self._v_line.setVisible(False)
             self._h_line.setVisible(False)
+            self._last_cursor = None
             self.cursor_readout.emit(None, None, None)
             return
         data_pt = vb.mapSceneToView(scene_pos)
@@ -1502,6 +1517,7 @@ class SeismicView(QWidget):
         self._emit_status_for_cursor(trace, t_ms, amp)
 
     def _emit_status_for_cursor(self, trace: int, t_ms: float, amp: float | None) -> None:
+        self._last_cursor = (trace, t_ms)
         ds = self._active_dataset()
         state = self.group.shared_state
         primary_field = _primary_field(state.sort_config) if state.sort_config.committed else None
@@ -1591,53 +1607,108 @@ class SeismicView(QWidget):
         return out
 
     def _column_for_display_x(self, display_x: int) -> int | None:
-        """Which fetched column a display x lands on, or None if off-view."""
-        indices = self._current_trace_indices
-        state = self.group.shared_state
-        if indices is None or state.commanded_trace_range is None:
+        """Which header-value column a display x lands on, or None if off-view."""
+        indices = self._header_indices
+        if indices is None:
             return None
-        col = int(display_x) - int(state.commanded_trace_range[0])
+        col = int(display_x) - self._header_x0
         return col if 0 <= col < len(indices) else None
 
     # --- on-the-fly header reads -----------------------------------------
 
     def _refresh_header_values(self) -> None:
-        """Read the chosen fields for the traces on screen.
+        """Re-resolve the active member's frame and read the chosen fields.
 
-        Dispatched on the two events that change what the answer would be: a
-        new fetch (the commanded traces moved) and a change to the chosen
-        fields. The cache is dropped first so a stale value can never outlive
-        the frame it described.
+        Runs whenever the traces on screen may have moved — any slice request
+        for the active member, fetched or served from the cache. Values from
+        the previous frame are dropped first so a stale value can never
+        outlive the frame it described; if the frame is unchanged they are
+        kept and nothing is re-read.
         """
+        ds = self._active_dataset()
+        ds_id = ds.id if ds is not None else None
+        indices, (x0, _x1) = self.group.resolve_member_trace_indices(self.group.active_index)
+        if isinstance(indices, slice):
+            indices = np.arange(indices.start, indices.stop, dtype=np.int64)
+        elif indices is not None:
+            indices = np.asarray(indices, dtype=np.int64)
+        if (
+            indices is not None
+            and self._header_indices is not None
+            and x0 == self._header_x0
+            and ds_id == self._header_dataset_id
+            and np.array_equal(indices, self._header_indices)
+        ):
+            return
+
         for w in self._header_workers:
             w.is_cancelled = True
         self._header_workers.clear()
         self._header_values = {}
+        self._header_generation += 1
+        self._header_indices = indices
+        self._header_x0 = int(x0)
+        self._header_dataset_id = ds_id
+        self._read_header_fields(list(self.group.crosshair_fields))
 
-        fields = list(self.group.crosshair_fields)
+    def _on_crosshair_fields_changed(self) -> None:
+        """Read just the newly chosen fields for the frame already on screen.
+
+        Fields already read stay; unchosen ones are dropped. The readout is
+        redrawn at once so a removed field disappears without a mouse move.
+        """
+        chosen = self.group.crosshair_fields
+        self._header_values = {f: v for f, v in self._header_values.items() if f in chosen}
+        pending = {f for w in self._header_workers for f in w.fields}
+        missing = [f for f in chosen if f not in self._header_values and f not in pending]
+        if self._header_indices is None:
+            self._refresh_header_values()
+        else:
+            self._read_header_fields(missing)
+        self._reemit_readout()
+
+    def _read_header_fields(self, fields: list[str]) -> None:
+        """Dispatch a read of *fields* for the current frame's traces."""
         ds = self._active_dataset()
-        indices = self._current_trace_indices
+        indices = self._header_indices
         if not fields or ds is None or indices is None or len(indices) == 0:
             return
-        alignment = self.group.member_alignment(self.group.active_index)
-        if alignment is not None and alignment.is_mapped:
-            indices = np.asarray(alignment.map_indices(indices))
         if getattr(ds, "handle", None) is None or ds.is_closed:
             return
 
+        generation = self._header_generation
         worker = TraceHeaderWorker(ds, indices, fields)
-        worker.signals.finished.connect(self._on_header_values_ready)
-        worker.signals.failed.connect(self._on_header_values_failed)
+        worker.signals.finished.connect(
+            lambda _id, arrays, g=generation, w=worker: self._on_header_values_ready(g, w, arrays)
+        )
+        worker.signals.failed.connect(
+            lambda _id, msg, w=worker: self._on_header_values_failed(w, msg)
+        )
         self._header_workers.append(worker)
         self._pool.start(worker)
 
-    def _on_header_values_ready(self, _dataset_id: str, arrays: dict) -> None:
-        self._header_values = arrays
-        self._header_workers.clear()
+    def _on_header_values_ready(
+        self, generation: int, worker: TraceHeaderWorker, arrays: dict
+    ) -> None:
+        if worker in self._header_workers:
+            self._header_workers.remove(worker)
+        if generation != self._header_generation:
+            return
+        chosen = self.group.crosshair_fields
+        self._header_values.update({f: a for f, a in arrays.items() if f in chosen})
+        self._reemit_readout()
 
-    def _on_header_values_failed(self, _dataset_id: str, message: str) -> None:
+    def _on_header_values_failed(self, worker: TraceHeaderWorker, message: str) -> None:
         log.warning("crosshair header read failed: %s", message)
-        self._header_workers.clear()
+        if worker in self._header_workers:
+            self._header_workers.remove(worker)
+
+    def _reemit_readout(self) -> None:
+        """Redraw the readout at the last cursor position, if it is on the plot."""
+        if self._last_cursor is None:
+            return
+        trace, t_ms = self._last_cursor
+        self._emit_status_for_cursor(trace, t_ms, self._amplitude_at(trace, t_ms))
 
     def _build_group_x_positions(
         self, gi: GroupIndex | None, primary_field: str | None
