@@ -1004,10 +1004,11 @@ class MainWindow(QMainWindow):
         gi = getattr(dataset, "group_index", None)
         if gi is not None:
             gi.mark_fields_scanning(fields)
+        # Shared by every field scan of this dataset; cancelling pops it, so
+        # one found here is always live.
         flag: dict[str, bool] = self._field_scan_cancel_flags.setdefault(
             dataset.id, {"cancelled": False}
         )
-        flag["cancelled"] = False
         worker = FieldScanWorker(
             dataset, sorted(fields), is_cancelled=lambda f=flag: f["cancelled"]
         )
@@ -1047,8 +1048,7 @@ class MainWindow(QMainWindow):
         self._field_scan_workers.discard(worker)
         if flag is not None and flag["cancelled"]:
             return  # dataset removed or reloaded: these arrays are the old file's
-        self._field_scan_inflight.pop(dataset.id, None)
-        self._field_scan_cancel_flags.pop(dataset.id, None)
+        self._end_field_scan(dataset, worker)
         gi = getattr(dataset, "group_index", None)
         if dataset.is_closed or gi is None:
             return
@@ -1057,12 +1057,13 @@ class MainWindow(QMainWindow):
                 gi.set_field_array(name, arr)
         except ValueError:
             log.exception("field scan produced a mismatched array for %s", dataset.name)
-            gi.clear_fields_scanning()
+            gi.clear_fields_scanning(worker.fields)
             return
         # A field the worker skipped (unknown name, unreadable header) never
-        # reaches set_field_array, so drop whatever is still marked pending —
-        # otherwise the canvas suppresses the "not present" overlay forever.
-        gi.clear_fields_scanning()
+        # reaches set_field_array, so drop its pending mark — otherwise the
+        # canvas suppresses the "not present" overlay forever. Fields another
+        # scan is still reading keep theirs.
+        gi.clear_fields_scanning(worker.fields)
         dataset.group_index_ready.emit()
         # Re-run the committed sort now that the keys are materialized.
         group.shared_state_changed.emit()
@@ -1079,14 +1080,27 @@ class MainWindow(QMainWindow):
         self._field_scan_workers.discard(worker)
         if flag is not None and flag["cancelled"]:
             return
-        self._field_scan_inflight.pop(dataset.id, None)
-        self._field_scan_cancel_flags.pop(dataset.id, None)
+        self._end_field_scan(dataset, worker)
         gi = getattr(dataset, "group_index", None)
         if gi is not None:
-            gi.clear_fields_scanning()
+            gi.clear_fields_scanning(worker.fields)
         self.statusBar().showMessage(
             f"Header field scan failed for {dataset.name}: {message}", 5000
         )
+
+    def _end_field_scan(self, dataset: Dataset, worker: FieldScanWorker) -> None:
+        """Forget *worker*'s fields; drop the dataset's flag after its last scan.
+
+        Several field scans of one dataset can run at once (a staged Range
+        row, then a commit on another key); each retires only its own.
+        """
+        inflight = self._field_scan_inflight.get(dataset.id)
+        if inflight is not None:
+            inflight.difference_update(worker.fields)
+            if inflight:
+                return
+            del self._field_scan_inflight[dataset.id]
+        self._field_scan_cancel_flags.pop(dataset.id, None)
 
     def _on_load_failed(self, seq: int, source: str, error: str) -> None:
         # Free the slot first so later loads are not held behind the failure

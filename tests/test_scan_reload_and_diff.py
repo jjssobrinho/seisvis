@@ -146,3 +146,57 @@ def test_reload_rescans_the_committed_sort_key(window: MainWindow, su_line: Path
         np.testing.assert_array_equal(ds.group_index.field_array("CDP"), 100 + np.arange(8))
     finally:
         ds.close()
+
+
+def test_concurrent_field_scans_retire_only_their_own_fields(
+    window: MainWindow, su_line: Path
+) -> None:
+    """Regression: the first field scan of a dataset to finish cleared the
+    in-flight record, the cancel flag and every pending mark — including
+    those of a second scan still reading another key, which then read as
+    "not present" and could be dispatched again."""
+    pool = _HeldPool()
+    window._pool = pool
+    ds = load_su(su_line)
+    try:
+        window.register_dataset(ds)
+        pool.of(HeaderScanWorker)[-1].run()
+        group = window._create_group_for(ds)
+        group.request_sort_fields({"CDP"})
+        group.request_sort_fields({"offset"})
+        cdp_scan, offset_scan = pool.of(FieldScanWorker)
+        assert (cdp_scan.fields, offset_scan.fields) == (["CDP"], ["offset"])
+        flag = window._field_scan_cancel_flags[ds.id]
+
+        cdp_scan.run()
+        gi = ds.group_index
+        assert gi.field_array("CDP") is not None
+        assert gi.is_field_scanning("offset")
+        assert window._field_scan_cancel_flags.get(ds.id) is flag
+        # Still in flight: asking again dispatches nothing new.
+        group.request_sort_fields({"offset"})
+        assert len(pool.of(FieldScanWorker)) == 2
+        # ...and the shared flag still cancels it.
+        window._cancel_scan(ds.id)
+        assert flag["cancelled"]
+    finally:
+        ds.close()
+
+
+def test_last_field_scan_retires_the_dataset(window: MainWindow, su_line: Path) -> None:
+    pool = _HeldPool()
+    window._pool = pool
+    ds = load_su(su_line)
+    try:
+        window.register_dataset(ds)
+        pool.of(HeaderScanWorker)[-1].run()
+        group = window._create_group_for(ds)
+        group.request_sort_fields({"CDP"})
+        group.request_sort_fields({"offset"})
+        for worker in pool.of(FieldScanWorker):
+            worker.run()
+        assert not ds.group_index.is_field_scanning("offset")
+        assert ds.id not in window._field_scan_inflight
+        assert ds.id not in window._field_scan_cancel_flags
+    finally:
+        ds.close()
