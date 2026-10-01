@@ -2,6 +2,62 @@
 
 ## [Unreleased]
 
+### Fixed: Sorted views and the spectra drawn from them
+
+- **Flipping a sort's direction redraws in the new order.** The canvas
+  cached a frame by the span of traces it covered, so ↑/↓, or a sort
+  re-filtered to the same span, brought back the previous image. The
+  cache now tells trace orders apart.
+- **FFT and f-k analyse the traces inside the rectangle under a sort.**
+  The selection's columns were read as file trace numbers, so with any
+  sort other than natural order the spectra came from other traces.
+- **Spectra show each member's processing.** FFT and f-k were taken of
+  the raw samples, so members of one file with different gain, AGC or
+  bandpass showed identical spectra. Each member's chain is now applied
+  (with the same edge padding as the canvas), and editing it recomputes
+  the open transforms.
+
+### Changing the reference keeps the view
+
+- **Choosing another reference, or removing the reference, keeps the
+  sort, ranges, zoom, time window, colour scale and selection.** The
+  sort used to be reset to natural order without the canvas being told,
+  so the old sorted image stayed up. Only the member pairings are
+  redone; a range the new reference cannot hold is refitted (clearing
+  the selection), and every member is redrawn.
+- Removing the reference when it is the first member is now treated as
+  a reference change (members are re-paired with the new one); removing
+  a member *before* the reference no longer throws the sort away.
+- A Value primary row no longer warns "positions 0…0 are outside
+  available range" on every member switch: its First / Count / Skip are
+  checked against the number of groups, not the key's values.
+
+### Fixed: Header scans, reloads and diffs
+
+- **A diff sorted on CDP (or any key outside the default scan) shows
+  its traces.** The key is now read from the diff's first parent, which
+  need not be in any group.
+- **Reloading a file stops the scans still reading the old one.** A
+  late result could mark the new index failed or install the old
+  file's values. Committed sort keys are read again for the reloaded
+  file, so a CDP sort survives a reload.
+- Two key scans of one file at once (a staged Range row, then a commit
+  on another key) no longer cut each other short.
+- **A diff follows a reloaded parent.** It shows "Pairing traces with
+  the reloaded parent…" while B is re-paired with A, then redraws. If
+  the reload changed a parent's shape, the diff stays off with the
+  reason on the canvas ("Parents no longer compatible: n_traces differ
+  (6 vs 8)") instead of reading past the end of a file.
+
+### Fixed: Loading and List input
+
+- **SEG-Y files with no sample interval in the binary header load with
+  the right one.** It is taken from the first trace header; with none
+  anywhere, the file loads as before and a warning is logged.
+- **A huge List range no longer freezes the app.** A list that expands
+  to more than 1,000,000 ids (`1-99999999`) is a parse error, shown
+  under the input; commit refuses until it is fixed.
+
 ### Time window in the Appearance tab
 
 - **Time min / max boxes set the time range shown on the canvas.** They
