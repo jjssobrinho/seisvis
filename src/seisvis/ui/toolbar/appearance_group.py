@@ -158,17 +158,22 @@ class AppearanceGroup(QGroupBox):
         colormap_layout.addWidget(self._colormap)
         colormap_layout.addStretch(1)
 
+        # Three rows, two label/control column pairs: the toolbar is pinned
+        # above the canvas, so width is cheap and height is not.
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(2)
         layout.addWidget(QLabel("Colormap"), 0, 0)
         layout.addWidget(colormap_row, 0, 1)
+        layout.addWidget(QLabel("Gain"), 0, 3)
+        layout.addWidget(gain_row, 0, 4)
         layout.addWidget(QLabel("Clip"), 1, 0)
         layout.addWidget(clip_row, 1, 1)
-        layout.addWidget(QLabel("Gain"), 2, 0)
-        layout.addWidget(gain_row, 2, 1)
-        layout.addWidget(QLabel("Scale"), 3, 0)
-        layout.addWidget(scale_row, 3, 1)
-        layout.addWidget(QLabel("Time"), 4, 0)
-        layout.addWidget(time_row, 4, 1)
-        layout.setColumnStretch(2, 1)
+        layout.addWidget(QLabel("Time"), 1, 3)
+        layout.addWidget(time_row, 1, 4)
+        layout.addWidget(QLabel("Scale"), 2, 0)
+        layout.addWidget(scale_row, 2, 1, 1, 4)
+        layout.setColumnMinimumWidth(2, 16)  # gap between the two pairs
+        layout.setColumnStretch(5, 1)
 
     def _on_clip_changed(self, _value: float) -> None:
         low = float(self._clip_low.value())
