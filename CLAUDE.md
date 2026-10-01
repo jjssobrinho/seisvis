@@ -469,7 +469,8 @@ session holds what the user was looking at.
   session file, sha1_prefix + mtime), A − B diffs (parents by key,
   direction, name), toggle groups (name, members, active / reference /
   edit target, link_all, per-member display state and processing
-  chain, `SortConfig`, commanded and zoomed ranges, colour scale,
+  chain, `SortConfig`, commanded and zoomed ranges (incl. the time window, restored
+  under any sort), colour scale,
   crosshair fields, flicker rate and excluded members), Model Window
   tabs (members, per-kind style, overlay, flicker), active tabs.
 - **Not saved**: `.sv` content (it loads with its file), header scans
@@ -780,7 +781,10 @@ computed. Users with regular trace spacing can convert mentally.
 
 - **Top toolbar** (global, pinned), three sections separated by
   visual dividers:
-  - **Appearance**: colormap, clip %, gain.
+  - **Appearance**: colormap, clip %, gain, colour scale, time
+    window (Time min / max → the group's `commanded_time_range_ms`,
+    bounded to 0 … reference `n_samples * dt`, ≥ 1 sample wide;
+    a change refetches and clears the selection).
   - **Analysis**: rectangle-selection button, FFT button, f-k button.
   - **Processing**: bandpass, AGC.
   - At the right end: edit-target selector `[1] [2] … [All]`.

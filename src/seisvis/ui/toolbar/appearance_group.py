@@ -41,6 +41,7 @@ class AppearanceGroup(QGroupBox):
     gain_changed = Signal(float)  # dB
     color_scale_changed = Signal(bool, float, float)  # enabled, vmin, vmax
     color_scale_auto_requested = Signal()
+    time_window_changed = Signal(float, float)  # t_min_ms, t_max_ms
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Appearance", parent)
@@ -130,6 +131,27 @@ class AppearanceGroup(QGroupBox):
         scale_layout.addWidget(self._scale_auto)
         scale_layout.addStretch(1)
 
+        # Time window: the commanded time range of the active group. Bounds
+        # are 0 .. record end of the reference member (set_time_window).
+        self._time_min = QDoubleSpinBox(self)
+        self._time_max = QDoubleSpinBox(self)
+        for w in (self._time_min, self._time_max):
+            w.setDecimals(1)
+            w.setRange(0.0, 0.0)
+            w.setSuffix(" ms")
+            w.setKeyboardTracking(False)
+            w.valueChanged.connect(self._on_time_values_changed)
+        self._time_min.setToolTip("Shallowest time shown on the canvas")
+        self._time_max.setToolTip("Deepest time shown on the canvas")
+
+        time_row = QWidget(self)
+        time_layout = QHBoxLayout(time_row)
+        time_layout.setContentsMargins(0, 0, 0, 0)
+        time_layout.addWidget(self._time_min)
+        time_layout.addWidget(QLabel("–", self))
+        time_layout.addWidget(self._time_max)
+        time_layout.addStretch(1)
+
         colormap_row = QWidget(self)
         colormap_layout = QHBoxLayout(colormap_row)
         colormap_layout.setContentsMargins(0, 0, 0, 0)
@@ -144,6 +166,8 @@ class AppearanceGroup(QGroupBox):
         layout.addWidget(gain_row, 2, 1)
         layout.addWidget(QLabel("Scale"), 3, 0)
         layout.addWidget(scale_row, 3, 1)
+        layout.addWidget(QLabel("Time"), 4, 0)
+        layout.addWidget(time_row, 4, 1)
         layout.setColumnStretch(2, 1)
 
     def _on_clip_changed(self, _value: float) -> None:
@@ -179,6 +203,9 @@ class AppearanceGroup(QGroupBox):
             hi = float(self._scale_max.value())
         if self._scale_fixed.isChecked():
             self.color_scale_changed.emit(True, lo, hi)
+
+    def _on_time_values_changed(self, _value: float) -> None:
+        self.time_window_changed.emit(float(self._time_min.value()), float(self._time_max.value()))
 
     def set_values(
         self,
@@ -217,4 +244,31 @@ class AppearanceGroup(QGroupBox):
                 self._scale_max.setValue(float(color_scale[1]))
         finally:
             for w in (self._scale_fixed, self._scale_min, self._scale_max):
+                w.blockSignals(False)
+
+    def set_time_window(
+        self,
+        window_ms: tuple[float, float] | None,
+        bounds_ms: tuple[float, float] | None,
+        step_ms: float = 1.0,
+    ) -> None:
+        """Rebind Time min / max and their allowed bounds without emitting."""
+        widgets = (self._time_min, self._time_max)
+        for w in widgets:
+            w.blockSignals(True)
+        try:
+            b_lo, b_hi = bounds_ms if bounds_ms is not None else (0.0, 0.0)
+            lo, hi = window_ms if window_ms is not None else (b_lo, b_hi)
+            for w in widgets:
+                w.setRange(float(b_lo), float(b_hi))
+                w.setSingleStep(max(float(step_ms), 1e-3))
+                w.setDecimals(1 if float(step_ms).is_integer() else 3)
+            self._time_min.setValue(float(lo))
+            self._time_max.setValue(float(hi))
+            # Each box stops one sample short of the other so they can't cross.
+            if window_ms is not None:
+                self._time_min.setMaximum(max(float(b_lo), float(hi) - float(step_ms)))
+                self._time_max.setMinimum(min(float(b_hi), float(lo) + float(step_ms)))
+        finally:
+            for w in widgets:
                 w.blockSignals(False)

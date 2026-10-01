@@ -708,6 +708,45 @@ class ToggleGroup(QObject):
         if changed:
             self.zoom_changed.emit()
 
+    def time_bounds_ms(self) -> tuple[float, float] | None:
+        """The time window a user may choose: 0 to the reference's record end.
+
+        ``None`` for an empty group. The upper bound is
+        ``n_samples * dt`` — the same extent the canvas fits to on open.
+        """
+        if not self._members:
+            return None
+        ds = self._members[self._reference_index].dataset
+        return 0.0, float(ds.n_samples) * float(ds.sample_interval_ms)
+
+    def set_time_window_ms(self, lo: float, hi: float) -> tuple[float, float] | None:
+        """Set the commanded time range from the toolbar's Time min / max.
+
+        The request is clamped into :meth:`time_bounds_ms` and kept at least
+        one sample wide. A change re-fetches every member and clears the
+        selection, like any other command-bar edit. Returns the range that
+        was applied (``None`` for an empty group).
+        """
+        bounds = self.time_bounds_ms()
+        if bounds is None:
+            return None
+        b_lo, b_hi = bounds
+        dt = float(self._members[self._reference_index].dataset.sample_interval_ms) or 1.0
+        lo, hi = sorted((float(lo), float(hi)))
+        lo = max(b_lo, min(b_hi, lo))
+        hi = max(b_lo, min(b_hi, hi))
+        if hi - lo < dt:
+            if lo + dt <= b_hi:
+                hi = lo + dt
+            else:
+                hi = b_hi
+                lo = max(b_lo, hi - dt)
+        window = (lo, hi)
+        if window != self.shared_state.commanded_time_range_ms:
+            self.set_selection(None)
+            self.update_shared_state(commanded_time_range_ms=window)
+        return window
+
     @staticmethod
     def _clamp_int_range(requested: tuple[int, int], bounds: tuple[int, int]) -> tuple[int, int]:
         lo, hi = sorted((int(requested[0]), int(requested[1])))
