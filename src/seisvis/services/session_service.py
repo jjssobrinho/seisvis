@@ -502,6 +502,9 @@ def restore_group_view(group: ToggleGroup, entry: GroupEntry) -> list[str]:
     elif not config.committed:
         # Natural order: the command-bar window is the commanded range.
         _restore_commanded_ranges(group, entry, ref)
+    # The time window (toolbar Time min / max) is independent of the sort:
+    # a committed sort rebuilds the trace range but keeps the time range.
+    _restore_time_window(group, entry, ref)
     if config != group.shared_state.sort_config:
         group.update_sort_config(config)
     group.update_zoomed_ranges(
@@ -517,13 +520,18 @@ def _restore_commanded_ranges(group: ToggleGroup, entry: GroupEntry, ref: Datase
         lo = max(0, min(int(ref.n_traces), int(trace_range[0])))
         hi = max(0, min(int(ref.n_traces), int(trace_range[1])))
         trace_range = (lo, hi) if hi > lo else None
+    group.update_shared_state(commanded_trace_range=trace_range)
+
+
+def _restore_time_window(group: ToggleGroup, entry: GroupEntry, ref: Dataset) -> None:
     time_range = entry.commanded_time_range_ms
-    if time_range is not None:
-        t_max = float(ref.n_samples) * float(ref.sample_interval_ms)
-        lo_t = max(0.0, min(t_max, float(time_range[0])))
-        hi_t = max(0.0, min(t_max, float(time_range[1])))
-        time_range = (lo_t, hi_t) if hi_t > lo_t else None
-    group.update_shared_state(commanded_trace_range=trace_range, commanded_time_range_ms=time_range)
+    if time_range is None:
+        return
+    t_max = float(ref.n_samples) * float(ref.sample_interval_ms)
+    lo_t = max(0.0, min(t_max, float(time_range[0])))
+    hi_t = max(0.0, min(t_max, float(time_range[1])))
+    if hi_t > lo_t:
+        group.update_shared_state(commanded_time_range_ms=(lo_t, hi_t))
 
 
 def apply_model_group_entry(group: ModelGroup, entry: ModelGroupEntry) -> None:

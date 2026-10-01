@@ -39,6 +39,7 @@ class ActiveGroupController(QObject):
         toolbar.appearance.gain_changed.connect(self._on_gain_changed)
         toolbar.appearance.color_scale_changed.connect(self._on_color_scale_changed)
         toolbar.appearance.color_scale_auto_requested.connect(self._on_color_scale_auto)
+        toolbar.appearance.time_window_changed.connect(self._on_time_window_changed)
         toolbar.processing.bandpass_changed.connect(self._on_bandpass_changed)
         toolbar.processing.agc_changed.connect(self._on_agc_changed)
         toolbar.edit_target.target_changed.connect(self._on_edit_target_changed)
@@ -77,6 +78,7 @@ class ActiveGroupController(QObject):
                     self._on_group_processing_chain_changed
                 )
                 self._group.color_scale_changed.disconnect(self._on_group_color_scale_changed)
+                self._group.shared_state_changed.disconnect(self._on_group_shared_state_changed)
             except (RuntimeError, TypeError):
                 pass
         self._group = group
@@ -84,6 +86,7 @@ class ActiveGroupController(QObject):
             self._toolbar.set_group_enabled(False)
             self._toolbar.edit_target.set_member_count(0)
             self._toolbar.appearance.set_color_scale(None)
+            self._toolbar.appearance.set_time_window(None, None)
             return
         group.member_added.connect(self._on_member_count_changed)
         group.member_removed.connect(self._on_member_count_changed)
@@ -92,6 +95,7 @@ class ActiveGroupController(QObject):
         group.display_state_changed.connect(self._on_group_display_state_changed)
         group.processing_chain_changed.connect(self._on_group_processing_chain_changed)
         group.color_scale_changed.connect(self._on_group_color_scale_changed)
+        group.shared_state_changed.connect(self._on_group_shared_state_changed)
         # Pick a sensible default link_all on first bind: link only when all
         # members compatible with the reference; otherwise isolate to target 0.
         desired_link_all = group.all_members_compatible()
@@ -149,6 +153,23 @@ class ActiveGroupController(QObject):
             return
         self._toolbar.appearance.set_color_scale(group.shared_state.color_scale)
 
+    def _on_group_shared_state_changed(self) -> None:
+        # The commanded time range is set by the canvas on first fit, by a
+        # session restore and by a reload; follow it wherever it comes from.
+        self._rebind_time_window()
+
+    def _rebind_time_window(self) -> None:
+        group = self._group
+        if group is None or group.is_empty:
+            self._toolbar.appearance.set_time_window(None, None)
+            return
+        ref = group.members[group.reference_index].dataset
+        self._toolbar.appearance.set_time_window(
+            group.time_window_ms(),
+            group.time_bounds_ms(),
+            step_ms=float(ref.sample_interval_ms) or 1.0,
+        )
+
     def _refresh_selector(self) -> None:
         group = self._group
         if group is None:
@@ -178,6 +199,7 @@ class ActiveGroupController(QObject):
             gain_db=chain.gain.db,
         )
         self._toolbar.appearance.set_color_scale(group.shared_state.color_scale)
+        self._rebind_time_window()
         self._toolbar.processing.set_values(
             bandpass_enabled=chain.bandpass.enabled,
             bandpass_low_hz=chain.bandpass.low_hz,
@@ -232,6 +254,14 @@ class ActiveGroupController(QObject):
         if group is None:
             return
         group.request_auto_color_scale()
+
+    def _on_time_window_changed(self, lo: float, hi: float) -> None:
+        group = self._group
+        if group is None:
+            return
+        group.set_time_window_ms(lo, hi)
+        # The model clamps (bounds, one-sample minimum); show what it kept.
+        self._rebind_time_window()
 
     def _on_gain_changed(self, db: float) -> None:
         # ConstantGain is part of the ProcessingChain, not DisplayState. The

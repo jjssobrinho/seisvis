@@ -320,3 +320,26 @@ def test_prune_can_leave_out_per_file_notes_but_keeps_consequences(data_dir: Pat
     _pruned, notes = prune(session, {"d0", "d2"}, report_files=False)
     assert not any("not loaded" in n for n in notes)
     assert any(n.startswith("Difference “a − b” was dropped") for n in notes)
+
+
+def test_restore_group_view_keeps_the_time_window_under_a_committed_sort(
+    segy_2d: Path,
+) -> None:
+    ds = load_segy(segy_2d)
+    ds.populate_surange()
+    group = ToggleGroup("g")
+    group.add_member(ds)
+    entry = GroupEntry(
+        name="g",
+        members=[MemberEntry("d0")],
+        sort_config=SortConfig(
+            primary=RowSelection.value_default("CROSSLINE_3D"), secondary=None, committed=True
+        ),
+        commanded_time_range_ms=(4.0, 999.0),  # clamped to the record length
+        zoomed_time_range_ms=(6.0, 20.0),
+    )
+    assert restore_group_view(group, entry) == []
+    ss = group.shared_state
+    assert ss.sort_config.committed
+    assert ss.commanded_time_range_ms == (4.0, ds.n_samples * ds.sample_interval_ms)
+    assert ss.zoomed_time_range_ms == (6.0, 20.0)

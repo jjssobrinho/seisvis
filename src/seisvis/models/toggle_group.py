@@ -708,6 +708,62 @@ class ToggleGroup(QObject):
         if changed:
             self.zoom_changed.emit()
 
+    def _reference_dt_ms(self) -> float:
+        ds = self._members[self._reference_index].dataset
+        return float(ds.sample_interval_ms) or 1.0
+
+    def time_bounds_ms(self) -> tuple[float, float] | None:
+        """The sample times a user may choose: 0 to the reference's last sample.
+
+        ``None`` for an empty group. The upper bound is ``(n_samples - 1) * dt``,
+        the time of the last sample in the reference member.
+        """
+        if not self._members:
+            return None
+        ds = self._members[self._reference_index].dataset
+        return 0.0, float(max(ds.n_samples - 1, 0)) * self._reference_dt_ms()
+
+    def time_window_ms(self) -> tuple[float, float] | None:
+        """The commanded time range as (first, last) sample times.
+
+        ``commanded_time_range_ms`` stores the drawn extent, which ends one
+        sample interval past the last sample; this reports the last sample.
+        """
+        window = self.shared_state.commanded_time_range_ms
+        if window is None or not self._members:
+            return None
+        return window[0], max(window[0], window[1] - self._reference_dt_ms())
+
+    def set_time_window_ms(self, first: float, last: float) -> tuple[float, float] | None:
+        """Set the commanded time range from the toolbar's Time min / max.
+
+        *first* and *last* are sample times, clamped into
+        :meth:`time_bounds_ms` and kept at least one sample apart. A change
+        re-fetches every member and clears the selection, like any other
+        command-bar edit. Returns the (first, last) applied (``None`` for an
+        empty group).
+        """
+        bounds = self.time_bounds_ms()
+        if bounds is None:
+            return None
+        b_lo, b_hi = bounds
+        dt = self._reference_dt_ms()
+        lo, hi = sorted((float(first), float(last)))
+        lo = max(b_lo, min(b_hi, lo))
+        hi = max(b_lo, min(b_hi, hi))
+        if hi - lo < dt:
+            if lo + dt <= b_hi:
+                hi = lo + dt
+            else:
+                hi = b_hi
+                lo = max(b_lo, hi - dt)
+        # Stored as the drawn extent: the last sample's cell ends at hi + dt.
+        extent = (lo, hi + dt)
+        if extent != self.shared_state.commanded_time_range_ms:
+            self.set_selection(None)
+            self.update_shared_state(commanded_time_range_ms=extent)
+        return lo, hi
+
     @staticmethod
     def _clamp_int_range(requested: tuple[int, int], bounds: tuple[int, int]) -> tuple[int, int]:
         lo, hi = sorted((int(requested[0]), int(requested[1])))

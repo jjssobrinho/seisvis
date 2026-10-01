@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QIcon, QImage, QPixmap
+from PySide6.QtGui import QIcon, QImage, QPixmap, QValidator
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -33,6 +33,39 @@ def _swatch(name: str) -> QIcon:
     return QIcon(QPixmap.fromImage(image.copy()))
 
 
+class ClampingDoubleSpinBox(QDoubleSpinBox):
+    """A spin box that takes an out-of-range number and snaps it to the limit.
+
+    A stock ``QDoubleSpinBox`` refuses the keystrokes, so typing 9999 into a
+    box capped at 1996 does nothing. Here it is accepted while typing and
+    becomes the maximum (or minimum) on Enter / focus-out — a quick way back
+    to the end of the record without knowing its exact time.
+    """
+
+    def _number(self, text: str) -> float | None:
+        body = text.removeprefix(self.prefix()).removesuffix(self.suffix()).strip()
+        value, ok = self.locale().toDouble(body)
+        return float(value) if ok else None
+
+    def validate(self, text: str, pos: int) -> object:
+        number = self._number(text)
+        if number is not None and not self.minimum() <= number <= self.maximum():
+            return QValidator.State.Intermediate, text, pos
+        return super().validate(text, pos)
+
+    def fixup(self, text: str) -> str:
+        number = self._number(text)
+        if number is None:
+            return super().fixup(text)
+        return self.textFromValue(min(self.maximum(), max(self.minimum(), number)))
+
+    def valueFromText(self, text: str) -> float:
+        number = self._number(text)
+        if number is None:
+            return super().valueFromText(text)
+        return min(self.maximum(), max(self.minimum(), number))
+
+
 class AppearanceGroup(QGroupBox):
     """Colormap / clip percentile / gain / group-wide color scale controls."""
 
@@ -41,6 +74,7 @@ class AppearanceGroup(QGroupBox):
     gain_changed = Signal(float)  # dB
     color_scale_changed = Signal(bool, float, float)  # enabled, vmin, vmax
     color_scale_auto_requested = Signal()
+    time_window_changed = Signal(float, float)  # t_min_ms, t_max_ms
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Appearance", parent)
@@ -130,21 +164,49 @@ class AppearanceGroup(QGroupBox):
         scale_layout.addWidget(self._scale_auto)
         scale_layout.addStretch(1)
 
+        # Time window: the commanded time range of the active group. Bounds
+        # are 0 .. record end of the reference member (set_time_window).
+        self._time_min = ClampingDoubleSpinBox(self)
+        self._time_max = ClampingDoubleSpinBox(self)
+        for w in (self._time_min, self._time_max):
+            w.setDecimals(1)
+            w.setRange(0.0, 0.0)
+            w.setSuffix(" ms")
+            w.setKeyboardTracking(False)
+            w.valueChanged.connect(self._on_time_values_changed)
+        self._time_min.setToolTip("Shallowest time shown on the canvas")
+        self._time_max.setToolTip("Deepest time shown on the canvas")
+
+        time_row = QWidget(self)
+        time_layout = QHBoxLayout(time_row)
+        time_layout.setContentsMargins(0, 0, 0, 0)
+        time_layout.addWidget(self._time_min)
+        time_layout.addWidget(QLabel("–", self))
+        time_layout.addWidget(self._time_max)
+        time_layout.addStretch(1)
+
         colormap_row = QWidget(self)
         colormap_layout = QHBoxLayout(colormap_row)
         colormap_layout.setContentsMargins(0, 0, 0, 0)
         colormap_layout.addWidget(self._colormap)
         colormap_layout.addStretch(1)
 
+        # Three rows, two label/control column pairs: the toolbar is pinned
+        # above the canvas, so width is cheap and height is not.
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(2)
         layout.addWidget(QLabel("Colormap"), 0, 0)
         layout.addWidget(colormap_row, 0, 1)
+        layout.addWidget(QLabel("Gain"), 0, 3)
+        layout.addWidget(gain_row, 0, 4)
         layout.addWidget(QLabel("Clip"), 1, 0)
         layout.addWidget(clip_row, 1, 1)
-        layout.addWidget(QLabel("Gain"), 2, 0)
-        layout.addWidget(gain_row, 2, 1)
-        layout.addWidget(QLabel("Scale"), 3, 0)
-        layout.addWidget(scale_row, 3, 1)
-        layout.setColumnStretch(2, 1)
+        layout.addWidget(QLabel("Time"), 1, 3)
+        layout.addWidget(time_row, 1, 4)
+        layout.addWidget(QLabel("Scale"), 2, 0)
+        layout.addWidget(scale_row, 2, 1, 1, 4)
+        layout.setColumnMinimumWidth(2, 16)  # gap between the two pairs
+        layout.setColumnStretch(5, 1)
 
     def _on_clip_changed(self, _value: float) -> None:
         low = float(self._clip_low.value())
@@ -179,6 +241,9 @@ class AppearanceGroup(QGroupBox):
             hi = float(self._scale_max.value())
         if self._scale_fixed.isChecked():
             self.color_scale_changed.emit(True, lo, hi)
+
+    def _on_time_values_changed(self, _value: float) -> None:
+        self.time_window_changed.emit(float(self._time_min.value()), float(self._time_max.value()))
 
     def set_values(
         self,
@@ -217,4 +282,31 @@ class AppearanceGroup(QGroupBox):
                 self._scale_max.setValue(float(color_scale[1]))
         finally:
             for w in (self._scale_fixed, self._scale_min, self._scale_max):
+                w.blockSignals(False)
+
+    def set_time_window(
+        self,
+        window_ms: tuple[float, float] | None,
+        bounds_ms: tuple[float, float] | None,
+        step_ms: float = 1.0,
+    ) -> None:
+        """Rebind Time min / max and their allowed bounds without emitting."""
+        widgets = (self._time_min, self._time_max)
+        for w in widgets:
+            w.blockSignals(True)
+        try:
+            b_lo, b_hi = bounds_ms if bounds_ms is not None else (0.0, 0.0)
+            lo, hi = window_ms if window_ms is not None else (b_lo, b_hi)
+            for w in widgets:
+                w.setRange(float(b_lo), float(b_hi))
+                w.setSingleStep(max(float(step_ms), 1e-3))
+                w.setDecimals(1 if float(step_ms).is_integer() else 3)
+            self._time_min.setValue(float(lo))
+            self._time_max.setValue(float(hi))
+            # Each box stops one sample short of the other so they can't cross.
+            if window_ms is not None:
+                self._time_min.setMaximum(max(float(b_lo), float(hi) - float(step_ms)))
+                self._time_max.setMinimum(min(float(b_hi), float(lo) + float(step_ms)))
+        finally:
+            for w in widgets:
                 w.blockSignals(False)
