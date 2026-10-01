@@ -37,6 +37,7 @@ from seisvis.io.header_cache import HeaderCache
 from seisvis.io.loader import SUPPORTED_SUFFIXES
 from seisvis.io.slice_cache import SliceCache
 from seisvis.models.dataset import Dataset
+from seisvis.models.derived_dataset import DerivedDataset
 from seisvis.models.project import Project
 from seisvis.models.session import (
     SESSION_SUFFIX,
@@ -90,6 +91,17 @@ def _configure_logging() -> None:
 
     root.addHandler(console)
     root.addHandler(rotating)
+
+
+def _index_owner(dataset: object) -> object | None:
+    """The dataset whose group index *dataset* reads, or None if gone.
+
+    A diff has no headers of its own: its index is parent A's, so a sort key
+    it needs has to be read from A — which need not be in any group.
+    """
+    if isinstance(dataset, DerivedDataset):
+        return None if dataset.parents_missing else dataset.parent_a
+    return dataset
 
 
 def _make_placeholder(text: str) -> QLabel:
@@ -400,6 +412,9 @@ class MainWindow(QMainWindow):
 
     def _on_reload_dataset(self, dataset: Dataset) -> None:
         """Re-open a changed file and rebuild everything derived from it."""
+        # Scans in flight read the old file through the handle the reload is
+        # about to close; their results would land on the new index.
+        self._cancel_scan(dataset.id)
         try:
             reload_dataset(dataset)
         except ReloadError as exc:
@@ -415,6 +430,11 @@ class MainWindow(QMainWindow):
         self._slice_cache.clear()
         self._file_watch.refresh(dataset)
         self._start_header_scan(dataset)
+        # The new index has none of the sort keys the old one had read.
+        for group in self.project.toggle_groups:
+            config = group.shared_state.sort_config
+            if config.committed:
+                self._ensure_sort_fields_scanned(group, config)
         self._alignment.dataset_reloaded(dataset.id)
         self.display_panel.reload_views_for(dataset.id)
         self.statusBar().showMessage(f"Reloaded {dataset.name} from disk", 4000)
@@ -813,6 +833,9 @@ class MainWindow(QMainWindow):
         if gi is None or not gi.has_pending_scan:
             return
         gi.mark_scanning()
+        previous = self._scan_cancel_flags.get(dataset.id)
+        if previous is not None:
+            previous["cancelled"] = True
         flag: dict[str, bool] = {"cancelled": False}
         self._scan_cancel_flags[dataset.id] = flag
         worker = HeaderScanWorker(dataset, is_cancelled=lambda f=flag: f["cancelled"])
@@ -825,11 +848,13 @@ class MainWindow(QMainWindow):
         from_cache: dict[str, bool] = {"hit": False}
         worker.signals.cache_hit.connect(lambda c=from_cache: c.update(hit=True))
         worker.signals.finished.connect(
-            lambda fr, il, xl, tn, ds=dataset, c=from_cache: self._on_scan_finished(
-                ds, fr, il, xl, tn, from_cache=c["hit"]
+            lambda fr, il, xl, tn, ds=dataset, c=from_cache, f=flag: self._on_scan_finished(
+                ds, fr, il, xl, tn, from_cache=c["hit"], flag=f
             )
         )
-        worker.signals.failed.connect(lambda msg, ds=dataset: self._on_scan_failed(ds, msg))
+        worker.signals.failed.connect(
+            lambda msg, ds=dataset, f=flag: self._on_scan_failed(ds, msg, flag=f)
+        )
         log.info("dispatching header scan for %s (%d traces)", dataset.name, dataset.n_traces)
         self._pool.start(worker)
 
@@ -842,9 +867,10 @@ class MainWindow(QMainWindow):
         tn,  # noqa: ANN001
         *,
         from_cache: bool = False,
+        flag: dict[str, bool] | None = None,
     ) -> None:
-        self._scan_cancel_flags.pop(dataset.id, None)
-        self._scan_workers.pop(dataset.id, None)
+        if not self._end_header_scan(dataset, flag):
+            return
         if dataset.is_closed or dataset.group_index is None:
             return
         dataset.group_index.update_from_scan(fr, il, xl, tn)
@@ -853,15 +879,31 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Indexed {dataset.name}{suffix}", 3000)
         self._update_status_group_info()
 
-    def _on_scan_failed(self, dataset: Dataset, message: str) -> None:
-        self._scan_cancel_flags.pop(dataset.id, None)
-        self._scan_workers.pop(dataset.id, None)
+    def _on_scan_failed(
+        self, dataset: Dataset, message: str, *, flag: dict[str, bool] | None = None
+    ) -> None:
+        if not self._end_header_scan(dataset, flag):
+            return
         if dataset.is_closed or dataset.group_index is None:
             return
         dataset.group_index.update_from_scan(None, None, None, None)
         dataset.group_index_ready.emit()
         self.statusBar().showMessage(f"Header scan failed for {dataset.name}: {message}", 5000)
         self._update_status_group_info()
+
+    def _end_header_scan(self, dataset: Dataset, flag: dict[str, bool] | None) -> bool:
+        """Retire a finished header scan; False if its result is to be dropped.
+
+        A cancelled scan (dataset removed or reloaded, or superseded by a
+        newer scan) may still report — a read through a handle closed under
+        it fails — and must not touch the index or the newer scan's state.
+        """
+        if flag is not None and flag["cancelled"]:
+            return False
+        if flag is None or self._scan_cancel_flags.get(dataset.id) is flag:
+            self._scan_cancel_flags.pop(dataset.id, None)
+            self._scan_workers.pop(dataset.id, None)
+        return True
 
     def _cancel_scan(self, dataset_id: str) -> None:
         flag = self._scan_cancel_flags.pop(dataset_id, None)
@@ -941,10 +983,11 @@ class MainWindow(QMainWindow):
             return
 
         for member in group.members:
-            ds = member.dataset
+            ds = _index_owner(member.dataset)
+            if ds is None:
+                continue
             gi = getattr(ds, "group_index", None)
-            # Only datasets that own a readable header handle can be scanned
-            # here; derived datasets proxy a parent's index and have none.
+            # Only datasets that own a readable header handle can be scanned.
             if gi is None or getattr(ds, "handle", None) is None or ds.is_closed:
                 continue
             missing = {
@@ -975,12 +1018,14 @@ class MainWindow(QMainWindow):
             )
         )
         worker.signals.finished.connect(
-            lambda ds_id, arrays, ds=dataset, g=group, w=worker: self._on_field_scan_finished(
-                ds, g, arrays, w
+            lambda ds_id, arrays, ds=dataset, g=group, w=worker, f=flag: (
+                self._on_field_scan_finished(ds, g, arrays, w, flag=f)
             )
         )
         worker.signals.failed.connect(
-            lambda ds_id, msg, ds=dataset, w=worker: self._on_field_scan_failed(ds, msg, w)
+            lambda ds_id, msg, ds=dataset, w=worker, f=flag: self._on_field_scan_failed(
+                ds, msg, w, flag=f
+            )
         )
         log.info(
             "dispatching field scan for %s: %s (%d traces)",
@@ -991,9 +1036,17 @@ class MainWindow(QMainWindow):
         self._pool.start(worker)
 
     def _on_field_scan_finished(
-        self, dataset: Dataset, group: ToggleGroup, arrays: dict, worker: FieldScanWorker
+        self,
+        dataset: Dataset,
+        group: ToggleGroup,
+        arrays: dict,
+        worker: FieldScanWorker,
+        *,
+        flag: dict[str, bool] | None = None,
     ) -> None:
         self._field_scan_workers.discard(worker)
+        if flag is not None and flag["cancelled"]:
+            return  # dataset removed or reloaded: these arrays are the old file's
         self._field_scan_inflight.pop(dataset.id, None)
         self._field_scan_cancel_flags.pop(dataset.id, None)
         gi = getattr(dataset, "group_index", None)
@@ -1016,9 +1069,16 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Indexed {dataset.name}", 3000)
 
     def _on_field_scan_failed(
-        self, dataset: Dataset, message: str, worker: FieldScanWorker
+        self,
+        dataset: Dataset,
+        message: str,
+        worker: FieldScanWorker,
+        *,
+        flag: dict[str, bool] | None = None,
     ) -> None:
         self._field_scan_workers.discard(worker)
+        if flag is not None and flag["cancelled"]:
+            return
         self._field_scan_inflight.pop(dataset.id, None)
         self._field_scan_cancel_flags.pop(dataset.id, None)
         gi = getattr(dataset, "group_index", None)
@@ -1052,8 +1112,6 @@ class MainWindow(QMainWindow):
         self.project.remove(dataset_id)
 
     def _mark_derived_parents_missing(self, removed_id: str) -> None:
-        from seisvis.models.derived_dataset import DerivedDataset
-
         for ds in self.project.datasets:
             if (
                 isinstance(ds, DerivedDataset)
