@@ -458,17 +458,38 @@ class ToggleGroup(QObject):
 
     def member_selection_indices(self, index: int, selection: Selection) -> np.ndarray | None:
         """The member's own traces under *selection*, or ``None`` when the
-        selection's trace span already addresses them (no remapping).
+        selection's trace span already addresses them.
+
+        The selection is in canvas columns. Those are file trace indices only
+        in natural order; under a committed sort the image is packed, column
+        ``x`` showing the ``x - x0``-th trace of the resolved layout, and a
+        remapped member reads its paired traces. Either way the columns are
+        looked up in what :meth:`resolve_member_trace_indices` drew. A member
+        drawing nothing (alignment pending) gets an empty array.
         """
         alignment = self.member_alignment(index)
-        if alignment is None or not alignment.is_mapped:
-            return None
-        assert alignment.member_for_ref is not None
-        n = alignment.member_for_ref.size
-        span = np.arange(max(0, selection.trace_start), min(n, selection.trace_end + 1))
-        mapped = alignment.map_indices(span)
-        assert isinstance(mapped, np.ndarray)
-        return mapped
+        if alignment is not None and alignment.is_pending:
+            return np.empty(0, dtype=np.int64)
+        if not self.shared_state.sort_config.committed:
+            # Natural order: columns are reference trace indices.
+            if alignment is None or not alignment.is_mapped:
+                return None
+            assert alignment.member_for_ref is not None
+            n = alignment.member_for_ref.size
+            span = np.arange(max(0, selection.trace_start), min(n, selection.trace_end + 1))
+            mapped = alignment.map_indices(span)
+            assert isinstance(mapped, np.ndarray)
+            return mapped
+        indices, (x0, _x1) = self.resolve_member_trace_indices(index)
+        if indices is None:
+            return np.empty(0, dtype=np.int64)
+        if isinstance(indices, slice):
+            indices = np.arange(indices.start, indices.stop, dtype=np.int64)
+        lo = max(0, selection.trace_start - x0)
+        hi = min(indices.size, selection.trace_end - x0 + 1)
+        if hi <= lo:
+            return np.empty(0, dtype=np.int64)
+        return np.asarray(indices[lo:hi], dtype=np.int64)
 
     def member_is_remapped(self, index: int) -> bool:
         alignment = self.member_alignment(index)

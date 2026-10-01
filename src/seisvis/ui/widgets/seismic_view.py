@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from seisvis.io.slice_cache import SliceCache, SliceKey
+from seisvis.io.slice_cache import SliceCache, SliceKey, indices_digest
 from seisvis.models.crosshair_format import format_crosshair
 from seisvis.models.group_index import GroupIndex, GroupingMode
 from seisvis.models.selection import Selection
@@ -1263,6 +1263,7 @@ class SeismicView(QWidget):
             trace_range=(t0, t1),
             time_range=(s0, s1),
             processing_hash=member.processing_chain.hash(),
+            indices_digest=indices_digest(trace_indices),
         )
         # Cancel any prior in-flight worker for this member before either
         # serving from cache or dispatching a new worker — otherwise a stale
@@ -1302,7 +1303,9 @@ class SeismicView(QWidget):
             processing_chain=member.processing_chain,
             display_trace_range=(t0, t1),
         )
-        worker.signals.finished.connect(self._on_slice_finished)
+        worker.signals.finished.connect(
+            lambda *args, k=key: self._on_slice_finished(*args, cache_key=k)
+        )
         worker.signals.failed.connect(self._on_slice_failed)
         self._active_workers.append(worker)
         self.loading_label.setVisible(True)
@@ -1326,6 +1329,8 @@ class SeismicView(QWidget):
         array: np.ndarray,
         trace_range: tuple[int, int],
         sample_range: tuple[int, int],
+        *,
+        cache_key: SliceKey | None = None,
     ) -> None:
         if group_id != self.group.id:
             return
@@ -1335,7 +1340,9 @@ class SeismicView(QWidget):
             member = self.group.members[member_index]
         except IndexError:
             return
-        key = SliceKey(
+        # The key the request was made under names the traces it read; one
+        # rebuilt here from the result could not tell their order.
+        key = cache_key or SliceKey(
             dataset_id=member.dataset.id,
             group_id=self.group.id,
             member_index=member_index,
