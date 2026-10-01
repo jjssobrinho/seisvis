@@ -403,8 +403,11 @@ fail validation.
 
 - Soft warning at 1,000 entries: status bar shows
   "displaying 1,000+ groups; performance may degrade".
-- No hard cap in v0.3.0. The widget tolerates any size; the
-  rendering pipeline reads however many group IDs it's given.
+- Hard cap: a list that expands to more than 1,000,000 ids
+  (`list_parser.MAX_LIST_ENTRIES`) is a parse error, shown inline like
+  any other; commit refuses. Ranges are expanded on every keystroke, so
+  without it `1-99999999` freezes the UI. Below the cap the rendering
+  pipeline reads however many group IDs it's given.
 
 ---
 

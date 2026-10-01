@@ -44,3 +44,37 @@ def test_load_2d_metadata(segy_2d: Path) -> None:
 def test_load_missing_path(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         load_segy(tmp_path / "does-not-exist.sgy")
+
+
+def _set_intervals(path: Path, *, binary: int, traces: int | None = None) -> None:
+    import segyio
+
+    with segyio.open(str(path), mode="r+", ignore_geometry=True) as f:
+        f.bin.update({segyio.BinField.Interval: binary})
+        if traces is not None:
+            for i in range(f.tracecount):
+                f.header[i].update({segyio.TraceField.TRACE_SAMPLE_INTERVAL: traces})
+
+
+def test_zero_binary_interval_falls_back_to_the_trace_header(segy_2d: Path) -> None:
+    """Regression: only the binary header was read, so files that leave it at
+    0 (common) loaded with dt = 0."""
+    _set_intervals(segy_2d, binary=0, traces=2500)
+    ds = load_segy(segy_2d)
+    try:
+        assert ds.sample_interval_ms == pytest.approx(2.5)
+    finally:
+        ds.close()
+
+
+def test_no_interval_anywhere_is_left_at_zero_and_warned(
+    segy_2d: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    _set_intervals(segy_2d, binary=0, traces=0)
+    with caplog.at_level("WARNING", logger="seisvis.io.segy_loader"):
+        ds = load_segy(segy_2d)
+    try:
+        assert ds.sample_interval_ms == 0.0
+        assert "no sample interval" in caplog.text
+    finally:
+        ds.close()
