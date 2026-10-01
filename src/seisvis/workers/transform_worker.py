@@ -1,8 +1,10 @@
 """Background worker that runs a spectral transform over a Selection.
 
 A worker is parameterised by a ``(dataset, member_index, selection,
-transform_type)`` tuple. It reads the slice, runs the matching pure
-function from :mod:`seisvis.processing.transforms`, and emits the result.
+transform_type)`` tuple. It reads the slice, runs the member's processing
+chain over it (so differently-processed members compare as displayed),
+runs the matching pure function from :mod:`seisvis.processing.transforms`,
+and emits the result.
 
 Cancellation is cooperative: callers flip ``is_cancelled`` and the worker
 checks it once between the slice read and the transform call. We do not
@@ -19,6 +21,7 @@ import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
 from seisvis.models.dataset import Dataset
+from seisvis.models.processing_chain import ProcessingChain
 from seisvis.models.selection import Selection
 from seisvis.processing.transforms import (
     FFT_NORMALIZE_MIN_HZ,
@@ -55,6 +58,8 @@ class TransformWorker(QRunnable):
         slice_data: np.ndarray | None = None,
         normalize: bool = False,
         smooth_hz: float = 0.0,
+        processing_chain: ProcessingChain | None = None,
+        pad: tuple[int, int] = (0, 0),
     ) -> None:
         super().__init__()
         self.dataset = dataset
@@ -70,6 +75,12 @@ class TransformWorker(QRunnable):
         self.normalize = normalize
         # FFT only: moving-average width in Hz (0 = off), applied first.
         self.smooth_hz = smooth_hz
+        # The member's chain, applied before the transform. The caller hands
+        # over a copy: the live one can be edited while this runs.
+        self.processing_chain = processing_chain
+        # Samples of ``slice_data`` above / below the selection, read for the
+        # chain's edge effects and cropped off after it ran.
+        self.pad = pad
         self.is_cancelled: bool = False
         self.signals = TransformWorkerSignals()
 
@@ -95,6 +106,11 @@ class TransformWorker(QRunnable):
                 return
 
             sample_interval_ms = float(self.dataset.sample_interval_ms or 1.0)
+            if self.processing_chain is not None:
+                data = self.processing_chain.apply(data, sample_interval_ms)
+            top, bottom = self.pad
+            if top or bottom:
+                data = data[:, top : data.shape[1] - bottom]
             if self.transform_type == "fft":
                 axes, magnitude = fft_per_trace_averaged(data, sample_interval_ms)
                 if self.smooth_hz > 0.0:

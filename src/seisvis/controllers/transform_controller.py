@@ -19,6 +19,7 @@ Key responsibilities:
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal
@@ -78,6 +79,9 @@ class TransformController(QObject):
         toggle_group.member_alignment_changed.connect(self._on_selection_changed)
         # Cached slices are keyed by member index, which a reorder reshuffles.
         toggle_group.members_reordered.connect(lambda: self._on_selection_changed(None))
+        # Spectra are of the processed traces: a processing edit recomputes.
+        # The raw read stays cached (the pad, if it changed, forces a re-read).
+        toggle_group.processing_chain_changed.connect(self._on_processing_changed)
 
     # --- public API --------------------------------------------------
 
@@ -150,6 +154,12 @@ class TransformController(QObject):
                 # have the latest list.
                 self._timers[ttype].start()
 
+    def _on_processing_changed(self, _member_index: int) -> None:
+        if self._group.selection is None:
+            return
+        for ttype in self._active_types:
+            self._timers[ttype].start()
+
     def _dispatch(self, transform_type: TransformType) -> None:
         selection = self._group.selection
         if selection is None or not selection.is_valid():
@@ -166,13 +176,16 @@ class TransformController(QObject):
         for m_index in members:
             if not 0 <= m_index < self._group.n_members:
                 continue
-            dataset = self._group.members[m_index].dataset
+            member = self._group.members[m_index]
+            dataset = member.dataset
+            chain = deepcopy(member.processing_chain)
             try:
-                slice_data = self._cache.get_or_load(
+                padded = self._cache.get_or_load_padded(
                     dataset,
                     m_index,
                     selection,
                     trace_indices=self._group.member_selection_indices(m_index, selection),
+                    pad_samples=chain.pad_samples,
                 )
             except Exception as exc:  # pragma: no cover - defensive
                 log.exception("Slice read failed for member %s: %s", m_index, exc)
@@ -184,9 +197,11 @@ class TransformController(QObject):
                 selection=selection,
                 transform_type=transform_type,
                 member_index=m_index,
-                slice_data=slice_data,
+                slice_data=padded.data,
                 normalize=transform_type == "fft" and self._fft_normalize,
                 smooth_hz=self._fft_smooth_hz if transform_type == "fft" else 0.0,
+                processing_chain=chain,
+                pad=(padded.top, padded.bottom),
             )
             worker.signals.finished.connect(self._on_worker_finished)
             worker.signals.failed.connect(self._on_worker_failed)
