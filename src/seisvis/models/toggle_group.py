@@ -258,6 +258,8 @@ class ToggleGroup(QObject):
         old_reference = self._reference_index
         old_active = self._active_index
         old_edit_target = self._edit_target_index
+        reference_member = self._members[old_reference]
+        active_member = self._members[old_active]
         self._members.pop(index)
 
         new_reference = self._adjust_cursor_for_removal(old_reference, index)
@@ -268,14 +270,18 @@ class ToggleGroup(QObject):
         self._edit_target_index = new_edit_target
 
         self.member_removed.emit(index)
-        # If the reference dataset actually changed, re-seed grouping state
-        # from the promoted member (spec: "Removing reference promotes
-        # index 0") and notify subscribers.
-        if self._members and new_reference != old_reference:
+        if not self._members:
+            return
+        # Compare members, not indices: removing the reference at index 0
+        # promotes another member to index 0, while removing a member before
+        # the reference only shifts its index. Only the first is a new
+        # reference — re-seed grouping state from it (spec: "Removing
+        # reference promotes index 0") and notify subscribers.
+        if self._members[new_reference] is not reference_member:
             self._initialize_grouping_from_reference(reset_group=True)
             self._invalidate_alignments()
             self.reference_index_changed.emit(new_reference)
-        if self._members and new_active != old_active:
+        if new_active != old_active or self._members[new_active] is not active_member:
             self.active_index_changed.emit(new_active)
 
     def _adjust_cursor_for_removal(self, cursor: int, removed_index: int) -> int:

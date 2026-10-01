@@ -261,3 +261,58 @@ def test_first_member_keeps_defaults(group: ToggleGroup, segy_3d: Path) -> None:
         assert group.members[0].processing_chain.agc.enabled is False
     finally:
         ds.close()
+
+
+def _committed_sort():
+    from seisvis.models.sort_config import RowSelection, SortConfig
+
+    row = RowSelection.value_default("INLINE_3D", first=0, count=2, skip=1)
+    return SortConfig(primary=row, secondary=None, committed=True)
+
+
+def test_removing_the_reference_at_index_0_is_a_reference_change(
+    group: ToggleGroup, segy_3d: Path
+) -> None:
+    """Regression: the old and new reference were compared by index, so
+    removing the reference at index 0 (the default) promoted member 1 into
+    slot 0 without resetting the sort or emitting the change."""
+    ds = load_segy(segy_3d)
+    try:
+        for _ in range(3):
+            group.add_member(ds)
+        group.update_sort_config(_committed_sort())
+        refs: list[int] = []
+        actives: list[int] = []
+        group.reference_index_changed.connect(refs.append)
+        group.active_index_changed.connect(actives.append)
+        group.remove_member(0)
+        assert refs == [0]
+        # The active member (also index 0) was removed: index 0 now shows
+        # a different member.
+        assert actives == [0]
+        assert not group.shared_state.sort_config.committed
+    finally:
+        ds.close()
+
+
+def test_removing_a_member_before_the_reference_keeps_the_sort(
+    group: ToggleGroup, segy_3d: Path
+) -> None:
+    """Regression: the reference's index shifting down read as a new
+    reference and threw the committed sort away."""
+    ds = load_segy(segy_3d)
+    try:
+        for _ in range(3):
+            group.add_member(ds)
+        group.set_reference(2)
+        group.update_sort_config(_committed_sort())
+        reference = group.members[2]
+        refs: list[int] = []
+        group.reference_index_changed.connect(refs.append)
+        group.remove_member(0)
+        assert group.reference_index == 1
+        assert group.members[1] is reference
+        assert refs == []
+        assert group.shared_state.sort_config == _committed_sort()
+    finally:
+        ds.close()

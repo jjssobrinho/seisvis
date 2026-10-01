@@ -529,6 +529,15 @@ class GroupCommandBar(QWidget):
             return None
         return gi.field_value_range(field)
 
+    @staticmethod
+    def _position_domain_on(ds, field: str) -> tuple[int, int] | None:  # noqa: ANN001
+        """``(0, n_groups - 1)`` for *field* on *ds*, or None if not indexed."""
+        gi = getattr(ds, "group_index", None) if ds is not None else None
+        if gi is None:
+            return None
+        n = len(gi.ordered_group_ids(field))
+        return (0, n - 1) if n else None
+
     def _validate_active_member(self) -> None:
         """Run :meth:`RowSelection.validate_against_domain` on the active
         member for each row of the *committed* sort config and surface any
@@ -547,7 +556,12 @@ class GroupCommandBar(QWidget):
         ):
             if row is None:
                 continue
-            domain = self._domain_on(ds, row.field)
+            if row is sc.primary and row.type == "value":
+                # A primary Value row counts positions among the key's
+                # groups, not key values: check it against those positions.
+                domain = self._position_domain_on(ds, row.field)
+            else:
+                domain = self._domain_on(ds, row.field)
             if domain is None:
                 continue
             warning = row.validate_against_domain(domain)
