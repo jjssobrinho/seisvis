@@ -937,6 +937,7 @@ class SeismicView(QWidget):
         self._apply_plot_ranges()
         self._refresh_info_track()
         self._refresh_scale_bar()
+        self._refresh_overlays()
         for i in range(len(self._image_items)):
             self._request_slice(i)
 
@@ -1257,6 +1258,17 @@ class SeismicView(QWidget):
             return
 
         ds = member.dataset
+        if getattr(ds, "unavailable_reason", None) is not None:
+            # A diff that cannot be read; the overlay says why. A read already
+            # in flight described the old parents.
+            for w in self._active_workers:
+                if w.member_index == member_index:
+                    w.is_cancelled = True
+            self._prune_finished_workers()
+            self._image_items[member_index].clear()
+            self._last_arrays[member_index] = None
+            self._last_rects[member_index] = None
+            return
         trace_indices, trace_range = self._resolve_trace_indices(member_index)
         if trace_indices is None:
             return
@@ -1837,18 +1849,20 @@ class SeismicView(QWidget):
     # --- Overlays / event filter ---
 
     def _refresh_overlays(self) -> None:
-        from seisvis.models.derived_dataset import DerivedDataset
-
         active = self.group.active_index
         active_ds = (
             self.group.members[active].dataset if 0 <= active < self.group.n_members else None
         )
 
-        # "Parent dataset missing" overlay — highest priority.
-        parents_missing = isinstance(active_ds, DerivedDataset) and active_ds.parents_missing
+        # A diff that cannot be drawn — parent missing, being re-paired after
+        # a reload, or parents no longer compatible — highest priority.
+        reason = getattr(active_ds, "unavailable_reason", None)
+        parents_missing = reason is not None
         self.parent_missing_label.setVisible(parents_missing)
         self.command_bar.setEnabled(not parents_missing)
         if parents_missing:
+            self.parent_missing_label.setText(reason)
+            self.parent_missing_label.adjustSize()
             self._reposition_parent_missing()
 
         # "Independent axes" badge (top-right).

@@ -12,7 +12,11 @@ if TYPE_CHECKING:
     from seisvis.models.group_index import GroupIndex, GroupingMode
 
 
-class ParentMissingError(RuntimeError):
+class DiffUnavailableError(RuntimeError):
+    """Raised when read_slice is called on a DerivedDataset that cannot be read."""
+
+
+class ParentMissingError(DiffUnavailableError):
     """Raised when read_slice is called on a DerivedDataset whose parents are gone."""
 
 
@@ -30,6 +34,9 @@ class DerivedDataset(QObject):
     # casing DerivedDataset.
     surange_ready = Signal()
     sv_changed = Signal()
+    # A parent was reloaded: the difference is off while B is re-paired with
+    # A, then back on or (parents no longer compatible) left off.
+    availability_changed = Signal()
 
     def __init__(
         self,
@@ -56,17 +63,15 @@ class DerivedDataset(QObject):
                     f"got shape {b_for_a.shape}"
                 )
         self.b_for_a: np.ndarray | None = b_for_a
+        # Set while the diff cannot be read for a reason other than a missing
+        # parent: being re-paired after a reload, or parents now incompatible.
+        self._unavailable: str | None = None
+        self._refresh_generation = 0
         self.direction: Literal["a_minus_b", "b_minus_a"] = direction
         self.id: str = id if id is not None else str(uuid.uuid4())
         self.name: str = name if name else f"{parent_a.name} \u2212 {parent_b.name}"
 
-        # Mirror metadata from parent A.
-        self.n_traces: int = parent_a.n_traces
-        self.n_samples: int = parent_a.n_samples
-        self.sample_interval_ms: float = parent_a.sample_interval_ms
-        self.byte_format: int = parent_a.byte_format
-        self.inline_range = parent_a.inline_range
-        self.xline_range = parent_a.xline_range
+        self._mirror_parent_a()
 
         # Synthetic source_path for tooltip provenance (not a real file).
         self.source_path: Path = Path(
@@ -120,6 +125,66 @@ class DerivedDataset(QObject):
         return self._parents_missing
 
     @property
+    def unavailable_reason(self) -> str | None:
+        """Why the difference cannot be drawn now, or None when it can."""
+        if self._parents_missing:
+            return "Parent dataset missing"
+        return self._unavailable
+
+    def _mirror_parent_a(self) -> None:
+        a = self.parent_a
+        self.n_traces: int = a.n_traces
+        self.n_samples: int = a.n_samples
+        self.sample_interval_ms: float = a.sample_interval_ms
+        self.byte_format: int = a.byte_format
+        self.inline_range = a.inline_range
+        self.xline_range = a.xline_range
+
+    def begin_refresh(self) -> int:
+        """A parent was reloaded: take A's new shape and stop reading.
+
+        The pairing of B with A described the old files, so it is dropped
+        and reads refuse until :meth:`finish_refresh`. Returns a token that
+        ties the matching ``finish_refresh`` to this refresh; a later reload
+        supersedes it.
+        """
+        self._refresh_generation += 1
+        self._mirror_parent_a()
+        self.b_for_a = None
+        self._unavailable = "Pairing traces with the reloaded parent…"
+        self.availability_changed.emit()
+        return self._refresh_generation
+
+    def finish_refresh(
+        self,
+        token: int,
+        *,
+        b_for_a: np.ndarray | None = None,
+        incompatible: str | None = None,
+    ) -> bool:
+        """End the refresh *token* started; False if a newer one superseded it.
+
+        ``incompatible`` leaves the difference off with that reason;
+        otherwise ``b_for_a`` (None = same trace order) pairs B with A.
+        """
+        if token != self._refresh_generation:
+            return False
+        if incompatible is not None:
+            self._unavailable = f"Parents no longer compatible: {incompatible}"
+        else:
+            if b_for_a is not None:
+                b_for_a = np.asarray(b_for_a, dtype=np.int64)
+                if b_for_a.shape != (self.parent_a.n_traces,):
+                    raise ValueError(
+                        f"b_for_a must have one entry per trace of A "
+                        f"({self.parent_a.n_traces}), got shape {b_for_a.shape}"
+                    )
+            self.b_for_a = b_for_a
+            self._unavailable = None
+        self.availability_changed.emit()
+        return True
+
+    @property
     def parents_missing(self) -> bool:
         return self._parents_missing
 
@@ -134,6 +199,8 @@ class DerivedDataset(QObject):
     ) -> np.ndarray:
         if self._parents_missing:
             raise ParentMissingError(f"Parent dataset missing for '{self.name}'")
+        if self._unavailable is not None:
+            raise DiffUnavailableError(f"{self.name}: {self._unavailable}")
         a = self.parent_a.read_slice(trace_indices, time_slice, pad_samples)
         b = self.parent_b.read_slice(self._b_indices(trace_indices), time_slice, pad_samples)
         if self.direction == "a_minus_b":
@@ -161,4 +228,4 @@ class DerivedDataset(QObject):
         pass  # parents own their handles
 
 
-__all__ = ["DerivedDataset", "ParentMissingError"]
+__all__ = ["DerivedDataset", "DiffUnavailableError", "ParentMissingError"]

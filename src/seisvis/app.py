@@ -437,7 +437,47 @@ class MainWindow(QMainWindow):
                 self._ensure_sort_fields_scanned(group, config)
         self._alignment.dataset_reloaded(dataset.id)
         self.display_panel.reload_views_for(dataset.id)
+        for derived in self.project.datasets:
+            if (
+                isinstance(derived, DerivedDataset)
+                and not derived.parents_missing
+                and dataset in (derived.parent_a, derived.parent_b)
+            ):
+                self._refresh_diff(derived)
         self.statusBar().showMessage(f"Reloaded {dataset.name} from disk", 4000)
+
+    def _refresh_diff(self, derived: DerivedDataset) -> None:
+        """Bring a diff back in line with a reloaded parent.
+
+        The diff takes A's new shape and stays off while B is re-paired
+        with A; if the reload made the parents incompatible it stays off,
+        saying why, rather than reading past the end of one of them.
+        """
+        from seisvis.models.compatibility import shape_compatible
+
+        a, b = derived.parent_a, derived.parent_b
+        token = derived.begin_refresh()
+        self.display_panel.reload_views_for(derived.id)
+        # Geometry only: the reloaded parent's header index is being rebuilt,
+        # so the index checks of are_toggle_compatible cannot answer yet.
+        compat = shape_compatible(a, b)
+        if not compat.ok:
+            derived.finish_refresh(token, incompatible=compat.reason)
+            self.display_panel.reload_views_for(derived.id)
+            self.statusBar().showMessage(
+                f"{derived.name} is off: its parents are no longer compatible ({compat.reason})",
+                8000,
+            )
+            return
+
+        def _on_aligned(alignment: TraceAlignment) -> None:
+            if derived.parents_missing or a.is_closed or b.is_closed:
+                return
+            mapped = alignment.member_for_ref if alignment.is_mapped else None
+            if derived.finish_refresh(token, b_for_a=mapped):
+                self.display_panel.reload_views_for(derived.id)
+
+        self._alignment.align_pair(a, b, _on_aligned)
 
     # --- Full display mode ---
 
