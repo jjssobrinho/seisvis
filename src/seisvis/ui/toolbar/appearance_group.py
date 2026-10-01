@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QIcon, QImage, QPixmap
+from PySide6.QtGui import QIcon, QImage, QPixmap, QValidator
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -31,6 +31,39 @@ def _swatch(name: str) -> QIcon:
     image = QImage(strip.data, _SWATCH_W, _SWATCH_H, 4 * _SWATCH_W, QImage.Format.Format_ARGB32)
     # copy() detaches the QImage from the numpy buffer before it is freed.
     return QIcon(QPixmap.fromImage(image.copy()))
+
+
+class ClampingDoubleSpinBox(QDoubleSpinBox):
+    """A spin box that takes an out-of-range number and snaps it to the limit.
+
+    A stock ``QDoubleSpinBox`` refuses the keystrokes, so typing 9999 into a
+    box capped at 1996 does nothing. Here it is accepted while typing and
+    becomes the maximum (or minimum) on Enter / focus-out — a quick way back
+    to the end of the record without knowing its exact time.
+    """
+
+    def _number(self, text: str) -> float | None:
+        body = text.removeprefix(self.prefix()).removesuffix(self.suffix()).strip()
+        value, ok = self.locale().toDouble(body)
+        return float(value) if ok else None
+
+    def validate(self, text: str, pos: int) -> object:
+        number = self._number(text)
+        if number is not None and not self.minimum() <= number <= self.maximum():
+            return QValidator.State.Intermediate, text, pos
+        return super().validate(text, pos)
+
+    def fixup(self, text: str) -> str:
+        number = self._number(text)
+        if number is None:
+            return super().fixup(text)
+        return self.textFromValue(min(self.maximum(), max(self.minimum(), number)))
+
+    def valueFromText(self, text: str) -> float:
+        number = self._number(text)
+        if number is None:
+            return super().valueFromText(text)
+        return min(self.maximum(), max(self.minimum(), number))
 
 
 class AppearanceGroup(QGroupBox):
@@ -133,8 +166,8 @@ class AppearanceGroup(QGroupBox):
 
         # Time window: the commanded time range of the active group. Bounds
         # are 0 .. record end of the reference member (set_time_window).
-        self._time_min = QDoubleSpinBox(self)
-        self._time_max = QDoubleSpinBox(self)
+        self._time_min = ClampingDoubleSpinBox(self)
+        self._time_max = ClampingDoubleSpinBox(self)
         for w in (self._time_min, self._time_max):
             w.setDecimals(1)
             w.setRange(0.0, 0.0)

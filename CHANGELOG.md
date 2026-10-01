@@ -7,8 +7,10 @@
 - **Time min / max boxes set the time range shown on the canvas.** They
   default to 0 and the time of the last sample of the group's reference
   member, and only values inside that span can be chosen; the boxes
-  stay at least one sample apart. A change re-reads the traces, refits the view
-  and clears the selection.
+  stay at least one sample apart. A number past a limit snaps to it on
+  Enter or focus-out, so typing 9999 in Time max goes back to the last
+  sample. A change re-reads the traces, refits the view and clears the
+  selection.
 - Sessions restore the time window under a committed sort too (it was
   only restored in natural file order).
 
