@@ -219,10 +219,6 @@ class ToggleGroup(QObject):
             self._reference_index += 1
         if insert_at <= self._edit_target_index and len(self._members) > 1:
             self._edit_target_index += 1
-        # Only seed shared grouping state on the very first member — later
-        # adds keep the reference's existing navigation intact.
-        if len(self._members) == 1:
-            self._initialize_grouping_from_reference()
         self.member_added.emit(insert_at)
         return insert_at
 
@@ -258,6 +254,8 @@ class ToggleGroup(QObject):
         old_reference = self._reference_index
         old_active = self._active_index
         old_edit_target = self._edit_target_index
+        reference_member = self._members[old_reference]
+        active_member = self._members[old_active]
         self._members.pop(index)
 
         new_reference = self._adjust_cursor_for_removal(old_reference, index)
@@ -268,14 +266,17 @@ class ToggleGroup(QObject):
         self._edit_target_index = new_edit_target
 
         self.member_removed.emit(index)
-        # If the reference dataset actually changed, re-seed grouping state
-        # from the promoted member (spec: "Removing reference promotes
-        # index 0") and notify subscribers.
-        if self._members and new_reference != old_reference:
-            self._initialize_grouping_from_reference(reset_group=True)
+        if not self._members:
+            return
+        # Compare members, not indices: removing the reference at index 0
+        # promotes another member to index 0, while removing a member before
+        # the reference only shifts its index. Only the first is a new
+        # reference (spec: "Removing reference promotes index 0"). The sort
+        # and view carry over to it, as with set_reference().
+        if self._members[new_reference] is not reference_member:
             self._invalidate_alignments()
             self.reference_index_changed.emit(new_reference)
-        if self._members and new_active != old_active:
+        if new_active != old_active or self._members[new_active] is not active_member:
             self.active_index_changed.emit(new_active)
 
     def _adjust_cursor_for_removal(self, cursor: int, removed_index: int) -> int:
@@ -303,7 +304,7 @@ class ToggleGroup(QObject):
         carries the move for views that keep per-index state; then
         ``members_reordered``; then the cursor signals whose index changed.
         The reference's index may change too, but its dataset does not, so
-        ``reference_index_changed`` (which re-seeds the sort) is not emitted.
+        ``reference_index_changed`` (which re-pairs members) is not emitted.
         """
         if not 0 <= from_index < len(self._members):
             raise IndexError(f"from_index {from_index} out of range")
@@ -354,7 +355,9 @@ class ToggleGroup(QObject):
         if index == self._reference_index:
             return
         self._reference_index = index
-        self._initialize_grouping_from_reference(reset_group=True)
+        # The sort, ranges, zoom and selection carry over: the user changed
+        # what the members are measured against, not what they look at. The
+        # canvas clamps any range the new reference cannot hold.
         self._invalidate_alignments()
         self.reference_index_changed.emit(index)
 
@@ -458,17 +461,38 @@ class ToggleGroup(QObject):
 
     def member_selection_indices(self, index: int, selection: Selection) -> np.ndarray | None:
         """The member's own traces under *selection*, or ``None`` when the
-        selection's trace span already addresses them (no remapping).
+        selection's trace span already addresses them.
+
+        The selection is in canvas columns. Those are file trace indices only
+        in natural order; under a committed sort the image is packed, column
+        ``x`` showing the ``x - x0``-th trace of the resolved layout, and a
+        remapped member reads its paired traces. Either way the columns are
+        looked up in what :meth:`resolve_member_trace_indices` drew. A member
+        drawing nothing (alignment pending) gets an empty array.
         """
         alignment = self.member_alignment(index)
-        if alignment is None or not alignment.is_mapped:
-            return None
-        assert alignment.member_for_ref is not None
-        n = alignment.member_for_ref.size
-        span = np.arange(max(0, selection.trace_start), min(n, selection.trace_end + 1))
-        mapped = alignment.map_indices(span)
-        assert isinstance(mapped, np.ndarray)
-        return mapped
+        if alignment is not None and alignment.is_pending:
+            return np.empty(0, dtype=np.int64)
+        if not self.shared_state.sort_config.committed:
+            # Natural order: columns are reference trace indices.
+            if alignment is None or not alignment.is_mapped:
+                return None
+            assert alignment.member_for_ref is not None
+            n = alignment.member_for_ref.size
+            span = np.arange(max(0, selection.trace_start), min(n, selection.trace_end + 1))
+            mapped = alignment.map_indices(span)
+            assert isinstance(mapped, np.ndarray)
+            return mapped
+        indices, (x0, _x1) = self.resolve_member_trace_indices(index)
+        if indices is None:
+            return np.empty(0, dtype=np.int64)
+        if isinstance(indices, slice):
+            indices = np.arange(indices.start, indices.stop, dtype=np.int64)
+        lo = max(0, selection.trace_start - x0)
+        hi = min(indices.size, selection.trace_end - x0 + 1)
+        if hi <= lo:
+            return np.empty(0, dtype=np.int64)
+        return np.asarray(indices[lo:hi], dtype=np.int64)
 
     def member_is_remapped(self, index: int) -> bool:
         alignment = self.member_alignment(index)
@@ -787,19 +811,3 @@ class ToggleGroup(QObject):
             hi = b_hi
             lo = max(b_lo, min(lo, hi))
         return lo, hi
-
-    def _initialize_grouping_from_reference(self, reset_group: bool = False) -> None:
-        """Seed shared_state.sort_config to the default for a new group.
-
-        v2.3 collapses the old per-mode grouping state to a single
-        :class:`SortConfig`. Every freshly-seeded toggle group starts with
-        the default (TRACE_RANGE asc, uncommitted) so natural file order
-        is shown until the user commits something else.
-        """
-        if not self._members:
-            return
-        ref_idx = self._reference_index
-        if not 0 <= ref_idx < len(self._members):
-            return
-        if reset_group:
-            self.shared_state.sort_config = default_sort_config()

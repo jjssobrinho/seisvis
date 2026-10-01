@@ -403,8 +403,11 @@ fail validation.
 
 - Soft warning at 1,000 entries: status bar shows
   "displaying 1,000+ groups; performance may degrade".
-- No hard cap in v0.3.0. The widget tolerates any size; the
-  rendering pipeline reads however many group IDs it's given.
+- Hard cap: a list that expands to more than 1,000,000 ids
+  (`list_parser.MAX_LIST_ENTRIES`) is a parse error, shown inline like
+  any other; commit refuses. Ranges are expanded on every keystroke, so
+  without it `1-99999999` freezes the UI. Below the cap the rendering
+  pipeline reads however many group IDs it's given.
 
 ---
 
@@ -485,7 +488,9 @@ session holds what the user was looking at.
   session file. Still missing → dialog: Locate (siblings found in the
   same folder) or Skip. Dependants are dropped (`services/
   session_service.prune`): diffs need both parents, empty groups go,
-  losing the reference resets sort and view, a sort on an unavailable
+  losing the reference resets sort and view (its saved ranges were in
+  the missing file's coordinates — unlike a live reference change, see
+  Toggle Groups → Reference change), a sort on an unavailable
   field falls back to natural order. Changed files load with a note.
   A summary lists everything not restored.
 - Schema versioned (`schema_version`, currently 1); newer is refused,
@@ -528,6 +533,18 @@ Member
 - Keyboard: `1`..`9` (canvas focus; `Qt.WidgetWithChildrenShortcut`).
 - Auto-flicker: `QTimer` cycles `active_index` (0.5–10 Hz).
 - **Switching never changes the active `QTabWidget` tab.**
+
+### Reference change
+
+- A new reference — `set_reference`, or removing the reference (index 0
+  is promoted) — **keeps** the sort, commanded / zoomed ranges, time
+  window, colour scale and selection. Only the member pairings are
+  redone (see Trace alignment).
+- The canvas refits only a range the new reference cannot hold (and
+  clears the selection then), re-derives a committed sort's trace range
+  from the new reference, and redraws every member.
+- "Changed" means a different **member**: removing or moving a member
+  that only shifts the reference's index is not a reference change.
 
 ### Trace alignment
 
@@ -897,6 +914,7 @@ contiguous range. Used by Range-type rows in either position.
 - A member never shows traces unpaired with the reference's when a
   pairing exists; while pending it shows nothing.
 - Member switching never changes the tab.
+- A reference change keeps the sort and view; it only re-pairs members.
 - Padding for filter edge effects is never removed.
 - Toolbar rebinds are silent (`blockSignals(True)`).
 - Derivatives with missing parents are kept and marked.

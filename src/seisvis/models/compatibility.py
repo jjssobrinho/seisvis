@@ -124,21 +124,12 @@ def _row_compat(
     return CompatResult(True, "")
 
 
-def are_toggle_compatible(
-    a: Dataset,
-    b: Dataset,
-    sort_config: SortConfig | None = None,
-) -> CompatResult:
-    """Decide whether ``a`` and ``b`` share axes in a toggle group.
-
-    Identical datasets short-circuit to ``ok=True``. The checks are ordered
-    so the reason string always reports the first mismatch. When
-    ``sort_config`` is given, additional field-availability and secondary-
-    range coverage checks run after the shape checks.
+def shape_compatible(a: Dataset, b: Dataset) -> CompatResult:
+    """The geometry part of :func:`are_toggle_compatible`: domain, trace and
+    sample counts, sample interval and 3D line ranges — what reading one
+    dataset's traces against the other's needs, without the header-index
+    checks (which cannot answer while an index is being rebuilt).
     """
-    if a is b:
-        return CompatResult(True, "same dataset")
-
     # Depth-domain data never enters a toggle group: the Display Canvas is
     # milliseconds, time-down, and a velocity model is metres. It is routed
     # to the Model Window instead. Checked before the shape comparisons so
@@ -163,6 +154,28 @@ def are_toggle_compatible(
         return CompatResult(False, f"inline_range differ ({a.inline_range} vs {b.inline_range})")
     if a.xline_range != b.xline_range:
         return CompatResult(False, f"xline_range differ ({a.xline_range} vs {b.xline_range})")
+
+    return CompatResult(True, "")
+
+
+def are_toggle_compatible(
+    a: Dataset,
+    b: Dataset,
+    sort_config: SortConfig | None = None,
+) -> CompatResult:
+    """Decide whether ``a`` and ``b`` share axes in a toggle group.
+
+    Identical datasets short-circuit to ``ok=True``. The checks are ordered
+    so the reason string always reports the first mismatch. When
+    ``sort_config`` is given, additional field-availability and secondary-
+    range coverage checks run after the shape checks.
+    """
+    if a is b:
+        return CompatResult(True, "same dataset")
+
+    shape = shape_compatible(a, b)
+    if not shape.ok:
+        return shape
 
     a_gi, b_gi = a.group_index, b.group_index
     if a_gi is None or b_gi is None:
@@ -196,4 +209,4 @@ def are_toggle_compatible(
     return CompatResult(True, "")
 
 
-__all__ = ["CompatResult", "are_toggle_compatible"]
+__all__ = ["CompatResult", "are_toggle_compatible", "shape_compatible"]

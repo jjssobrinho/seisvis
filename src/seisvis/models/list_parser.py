@@ -9,7 +9,9 @@ Grammar (informal):
 Whitespace is allowed anywhere except inside an integer literal. Reversed
 ranges (``5-3``) are accepted and normalized to ``[3, 4, 5]``. Single-
 element ranges (``7-7``) are valid. Trailing commas are allowed. Empty
-input parses to the empty list with no error.
+input parses to the empty list with no error. A list that would expand to
+more than :data:`MAX_LIST_ENTRIES` ids is a parse error: ranges are expanded
+entry by entry, on every keystroke, so ``1-99999999`` would freeze the UI.
 
 The parser is purely string -> :class:`ParseResult`; it has no domain
 knowledge. Out-of-domain group ids (legal integers but not present in
@@ -20,6 +22,9 @@ blank columns for ids it cannot resolve.
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+# Hard ceiling on the ids a list may expand to (CLAUDE.md, List size cap).
+MAX_LIST_ENTRIES = 1_000_000
 
 
 @dataclass(frozen=True)
@@ -66,6 +71,7 @@ def parse_list(text: str) -> ParseResult:
             return ParseResult([], f"expected integer at position {i + 1}", i + 1)
 
         # Read the first integer of this entry.
+        entry_pos = i + 1
         lo, i_after_lo = _read_int(text, i, n)
         i = i_after_lo
 
@@ -88,10 +94,14 @@ def parse_list(text: str) -> ParseResult:
             hi, i_after_hi = _read_int(text, j, n)
             if hi < lo:
                 lo, hi = hi, lo
+            if len(out) + (hi - lo + 1) > MAX_LIST_ENTRIES:
+                return _too_many(entry_pos)
             out.update(range(lo, hi + 1))
             i = i_after_hi
         else:
             out.add(lo)
+            if len(out) > MAX_LIST_ENTRIES:
+                return _too_many(entry_pos)
 
         # After the entry: optional whitespace, then ',' or end.
         i = _skip_ws(text, i, n)
@@ -106,6 +116,14 @@ def parse_list(text: str) -> ParseResult:
         i += 1  # consume comma; next iteration parses the next entry or ends.
 
     return ParseResult(sorted(out), None, None)
+
+
+def _too_many(position: int) -> ParseResult:
+    return ParseResult(
+        [],
+        f"list expands to more than {MAX_LIST_ENTRIES:,} entries at position {position}",
+        position,
+    )
 
 
 def _skip_ws(text: str, i: int, n: int) -> int:
@@ -124,4 +142,4 @@ def _read_int(text: str, i: int, n: int) -> tuple[int, int]:
     return int(text[start:i]), i
 
 
-__all__ = ["ParseResult", "parse_list"]
+__all__ = ["MAX_LIST_ENTRIES", "ParseResult", "parse_list"]

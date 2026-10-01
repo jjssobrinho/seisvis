@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from seisvis.io.slice_cache import SliceCache, SliceKey
+from seisvis.io.slice_cache import SliceCache, SliceKey, indices_digest
 from seisvis.models.crosshair_format import format_crosshair
 from seisvis.models.group_index import GroupIndex, GroupingMode
 from seisvis.models.selection import Selection
@@ -740,9 +740,16 @@ class SeismicView(QWidget):
         # longer need one; previously-compat now-incompat need to rebuild).
         for m in self.group.members:
             m.display_state.view_hint = None
-        self._apply_plot_ranges()
-        self._refresh_info_track()
-        self._refresh_overlays()
+        if self.group.is_empty:
+            return
+        # The sort and view carry over to the new reference; only ranges it
+        # cannot hold are refitted (taking the selection with them). Then
+        # redraw: a committed sort's range is re-derived from the new
+        # reference's index and every member is refetched.
+        if self._drop_ranges_past_reference():
+            self.group.set_selection(None)
+        self._fit_to_member(self.group.reference_index)
+        self._on_shared_state_changed()
 
     def _on_member_alignment_changed(self, index: int) -> None:
         """Re-read a member whose pairing with the reference changed.
@@ -923,29 +930,37 @@ class SeismicView(QWidget):
         positions that need not mean the same thing any more.
         """
         self.group.set_selection(None)
-        state = self.group.shared_state
-        ref = self.group.reference_index
-        try:
-            ds = self.group.members[ref].dataset
-        except IndexError:
+        if self.group.is_empty:
             return
+        self._drop_ranges_past_reference()
+        self._fit_to_member(self.group.reference_index)
+        self._apply_plot_ranges()
+        self._refresh_info_track()
+        self._refresh_scale_bar()
+        self._refresh_overlays()
+        for i in range(len(self._image_items)):
+            self._request_slice(i)
 
+    def _drop_ranges_past_reference(self) -> bool:
+        """Drop commanded / zoomed ranges the reference cannot hold.
+
+        ``_fit_to_member`` then refits them. Returns whether any was dropped.
+        """
+        state = self.group.shared_state
+        ds = self.group.members[self.group.reference_index].dataset
+        dropped = False
         trace_range = state.commanded_trace_range
         if trace_range is not None and trace_range[1] > ds.n_traces:
             state.commanded_trace_range = None
             state.zoomed_trace_range = None
+            dropped = True
         t_max_ms = ds.n_samples * ds.sample_interval_ms
         time_range = state.commanded_time_range_ms
         if time_range is not None and time_range[1] > t_max_ms:
             state.commanded_time_range_ms = None
             state.zoomed_time_range_ms = None
-
-        self._fit_to_member(ref)
-        self._apply_plot_ranges()
-        self._refresh_info_track()
-        self._refresh_scale_bar()
-        for i in range(len(self._image_items)):
-            self._request_slice(i)
+            dropped = True
+        return dropped
 
     def _trace_range_from_group_or_cap(self, ds) -> tuple[int, int]:  # noqa: ANN001
         state = self.group.shared_state
@@ -1243,6 +1258,17 @@ class SeismicView(QWidget):
             return
 
         ds = member.dataset
+        if getattr(ds, "unavailable_reason", None) is not None:
+            # A diff that cannot be read; the overlay says why. A read already
+            # in flight described the old parents.
+            for w in self._active_workers:
+                if w.member_index == member_index:
+                    w.is_cancelled = True
+            self._prune_finished_workers()
+            self._image_items[member_index].clear()
+            self._last_arrays[member_index] = None
+            self._last_rects[member_index] = None
+            return
         trace_indices, trace_range = self._resolve_trace_indices(member_index)
         if trace_indices is None:
             return
@@ -1263,6 +1289,7 @@ class SeismicView(QWidget):
             trace_range=(t0, t1),
             time_range=(s0, s1),
             processing_hash=member.processing_chain.hash(),
+            indices_digest=indices_digest(trace_indices),
         )
         # Cancel any prior in-flight worker for this member before either
         # serving from cache or dispatching a new worker — otherwise a stale
@@ -1302,7 +1329,9 @@ class SeismicView(QWidget):
             processing_chain=member.processing_chain,
             display_trace_range=(t0, t1),
         )
-        worker.signals.finished.connect(self._on_slice_finished)
+        worker.signals.finished.connect(
+            lambda *args, k=key: self._on_slice_finished(*args, cache_key=k)
+        )
         worker.signals.failed.connect(self._on_slice_failed)
         self._active_workers.append(worker)
         self.loading_label.setVisible(True)
@@ -1326,6 +1355,8 @@ class SeismicView(QWidget):
         array: np.ndarray,
         trace_range: tuple[int, int],
         sample_range: tuple[int, int],
+        *,
+        cache_key: SliceKey | None = None,
     ) -> None:
         if group_id != self.group.id:
             return
@@ -1335,7 +1366,9 @@ class SeismicView(QWidget):
             member = self.group.members[member_index]
         except IndexError:
             return
-        key = SliceKey(
+        # The key the request was made under names the traces it read; one
+        # rebuilt here from the result could not tell their order.
+        key = cache_key or SliceKey(
             dataset_id=member.dataset.id,
             group_id=self.group.id,
             member_index=member_index,
@@ -1816,18 +1849,20 @@ class SeismicView(QWidget):
     # --- Overlays / event filter ---
 
     def _refresh_overlays(self) -> None:
-        from seisvis.models.derived_dataset import DerivedDataset
-
         active = self.group.active_index
         active_ds = (
             self.group.members[active].dataset if 0 <= active < self.group.n_members else None
         )
 
-        # "Parent dataset missing" overlay — highest priority.
-        parents_missing = isinstance(active_ds, DerivedDataset) and active_ds.parents_missing
+        # A diff that cannot be drawn — parent missing, being re-paired after
+        # a reload, or parents no longer compatible — highest priority.
+        reason = getattr(active_ds, "unavailable_reason", None)
+        parents_missing = reason is not None
         self.parent_missing_label.setVisible(parents_missing)
         self.command_bar.setEnabled(not parents_missing)
         if parents_missing:
+            self.parent_missing_label.setText(reason)
+            self.parent_missing_label.adjustSize()
             self._reposition_parent_missing()
 
         # "Independent axes" badge (top-right).

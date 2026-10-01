@@ -338,3 +338,53 @@ def test_align_pair_reports_through_the_callback(window, gui_app, pair) -> None:
     assert len(got) == 1
     assert got[0].status is AlignmentStatus.MAPPED
     assert got[0].reference_id == a.id
+
+
+def _channel_sort(direction: str) -> SortConfig:
+    """Channels 1 and 2 of every shot, packed side by side."""
+    row = RowSelection(
+        field="TraceNumber",
+        direction=direction,  # type: ignore[arg-type]
+        type="value",
+        value=ValueParams(first=0, count=2, skip=1),
+    )
+    return SortConfig(primary=row, secondary=None, committed=True)
+
+
+def test_selection_under_a_sort_reads_the_drawn_columns(pair) -> None:
+    """Regression: the selection's columns were read as file trace numbers,
+    so under a sort FFT / f-k analysed traces other than those inside the
+    rectangle."""
+    a, b = pair
+    g = ToggleGroup("g")
+    g.add_member(a)
+    g.add_member(b)
+    g.set_member_alignment(1, _mapped(a, b))
+    g.update_sort_config(_channel_sort("desc"))
+    indices, (x0, _) = g.resolve_member_trace_indices(0)
+    drawn = a.read_slice(indices, slice(0, NS))
+    sel = Selection(trace_start=x0 + 2, trace_end=x0 + 5, sample_start=0, sample_end=NS - 1)
+    for i, ds in enumerate((a, b)):
+        idx = g.member_selection_indices(i, sel)
+        assert idx is not None
+        np.testing.assert_array_equal(ds.read_slice(idx, slice(0, NS)), drawn[2:6])
+
+
+def test_selection_under_a_sort_is_clipped_to_the_drawn_columns(pair) -> None:
+    a, _ = pair
+    g = ToggleGroup("g")
+    g.add_member(a)
+    g.update_sort_config(_channel_sort("asc"))
+    indices, (x0, _) = g.resolve_member_trace_indices(0)
+    sel = Selection(trace_start=x0 - 3, trace_end=x0 + 100, sample_start=0, sample_end=0)
+    np.testing.assert_array_equal(g.member_selection_indices(0, sel), indices)
+
+
+def test_selection_on_a_pending_member_reads_nothing(pair) -> None:
+    a, b = pair
+    g = ToggleGroup("g")
+    g.add_member(a)
+    g.add_member(b)
+    g.set_member_alignment(1, TraceAlignment.pending())
+    sel = Selection(trace_start=0, trace_end=3, sample_start=0, sample_end=0)
+    assert g.member_selection_indices(1, sel).size == 0

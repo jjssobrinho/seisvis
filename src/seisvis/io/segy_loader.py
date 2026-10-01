@@ -13,6 +13,26 @@ from seisvis.models.group_index import GroupIndex
 log = logging.getLogger(__name__)
 
 
+def _sample_interval_us(handle: segyio.SegyFile, path: Path) -> int:
+    """Sample interval in µs: the binary header's, else trace 0's.
+
+    Many writers leave the binary header's interval at 0 and fill in only the
+    trace headers; reading it alone made dt 0. One extra header read keeps
+    the load O(1). With no interval anywhere, 0 is returned (and warned
+    about) rather than an invented value.
+    """
+    interval_us = int(handle.bin[segyio.BinField.Interval])
+    if interval_us > 0:
+        return interval_us
+    if handle.tracecount > 0:
+        interval_us = int(handle.header[0][segyio.TraceField.TRACE_SAMPLE_INTERVAL])
+        if interval_us > 0:
+            log.info("%s: binary header has no sample interval; using trace 0's", path.name)
+            return interval_us
+    log.warning("%s: no sample interval in the binary or first trace header", path.name)
+    return 0
+
+
 def load_segy(path: Path) -> Dataset:
     """Open a SEG-Y file and read only the metadata needed to build a Dataset.
 
@@ -39,7 +59,7 @@ def load_segy(path: Path) -> Dataset:
         unstructured = True
 
     bin_header = handle.bin
-    interval_us = int(bin_header[segyio.BinField.Interval])
+    interval_us = _sample_interval_us(handle, path)
     sample_interval_ms = interval_us / 1000.0
 
     n_samples = int(bin_header[segyio.BinField.Samples])

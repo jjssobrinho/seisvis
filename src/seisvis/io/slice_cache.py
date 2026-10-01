@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -17,6 +18,17 @@ class SliceKey:
     trace_range: tuple[int, int]
     time_range: tuple[int, int]
     processing_hash: str
+    # Which traces, in which order: ``trace_range`` alone is (min, max + 1)
+    # of the indices, which a direction flip or a re-filtered sort keeps.
+    indices_digest: str = ""
+
+
+def indices_digest(trace_indices: slice | np.ndarray) -> str:
+    """Identity of a trace selection *and its order*, for :class:`SliceKey`."""
+    if isinstance(trace_indices, slice):
+        return f"s:{trace_indices.start}:{trace_indices.stop}:{trace_indices.step}"
+    arr = np.ascontiguousarray(trace_indices, dtype=np.int64)
+    return f"a:{arr.size}:{hashlib.blake2b(arr.tobytes(), digest_size=16).hexdigest()}"
 
 
 class SliceCache:

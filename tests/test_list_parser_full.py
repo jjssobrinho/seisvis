@@ -191,3 +191,37 @@ def test_parseresult_is_dataclass_with_three_fields() -> None:
     assert hasattr(r, "error")
     assert hasattr(r, "error_position")
     assert r.ids == [1, 2, 3]
+
+
+# --- size ceiling ---
+
+
+def test_huge_range_is_an_error_not_a_freeze() -> None:
+    """Regression: ranges were expanded into a set on every keystroke, so
+    typing ``1-99999999`` built a hundred million ints and froze the UI."""
+    import time
+
+    from seisvis.models.list_parser import MAX_LIST_ENTRIES
+
+    t0 = time.perf_counter()
+    result = parse_list("5, 1-99999999")
+    assert time.perf_counter() - t0 < 0.5
+    assert result.ids == []
+    assert result.error is not None and "more than" in result.error
+    assert result.error_position == 4
+    assert f"{MAX_LIST_ENTRIES:,}" in result.error
+
+
+def test_list_at_the_ceiling_parses() -> None:
+    from seisvis.models.list_parser import MAX_LIST_ENTRIES
+
+    result = parse_list(f"1-{MAX_LIST_ENTRIES}")
+    assert result.error is None
+    assert len(result.ids) == MAX_LIST_ENTRIES
+
+
+def test_ceiling_counts_across_entries() -> None:
+    from seisvis.models.list_parser import MAX_LIST_ENTRIES
+
+    result = parse_list(f"0-{MAX_LIST_ENTRIES - 1}, {MAX_LIST_ENTRIES + 5}")
+    assert result.error is not None
