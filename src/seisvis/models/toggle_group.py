@@ -219,10 +219,6 @@ class ToggleGroup(QObject):
             self._reference_index += 1
         if insert_at <= self._edit_target_index and len(self._members) > 1:
             self._edit_target_index += 1
-        # Only seed shared grouping state on the very first member — later
-        # adds keep the reference's existing navigation intact.
-        if len(self._members) == 1:
-            self._initialize_grouping_from_reference()
         self.member_added.emit(insert_at)
         return insert_at
 
@@ -275,10 +271,9 @@ class ToggleGroup(QObject):
         # Compare members, not indices: removing the reference at index 0
         # promotes another member to index 0, while removing a member before
         # the reference only shifts its index. Only the first is a new
-        # reference — re-seed grouping state from it (spec: "Removing
-        # reference promotes index 0") and notify subscribers.
+        # reference (spec: "Removing reference promotes index 0"). The sort
+        # and view carry over to it, as with set_reference().
         if self._members[new_reference] is not reference_member:
-            self._initialize_grouping_from_reference(reset_group=True)
             self._invalidate_alignments()
             self.reference_index_changed.emit(new_reference)
         if new_active != old_active or self._members[new_active] is not active_member:
@@ -309,7 +304,7 @@ class ToggleGroup(QObject):
         carries the move for views that keep per-index state; then
         ``members_reordered``; then the cursor signals whose index changed.
         The reference's index may change too, but its dataset does not, so
-        ``reference_index_changed`` (which re-seeds the sort) is not emitted.
+        ``reference_index_changed`` (which re-pairs members) is not emitted.
         """
         if not 0 <= from_index < len(self._members):
             raise IndexError(f"from_index {from_index} out of range")
@@ -360,7 +355,9 @@ class ToggleGroup(QObject):
         if index == self._reference_index:
             return
         self._reference_index = index
-        self._initialize_grouping_from_reference(reset_group=True)
+        # The sort, ranges, zoom and selection carry over: the user changed
+        # what the members are measured against, not what they look at. The
+        # canvas clamps any range the new reference cannot hold.
         self._invalidate_alignments()
         self.reference_index_changed.emit(index)
 
@@ -814,19 +811,3 @@ class ToggleGroup(QObject):
             hi = b_hi
             lo = max(b_lo, min(lo, hi))
         return lo, hi
-
-    def _initialize_grouping_from_reference(self, reset_group: bool = False) -> None:
-        """Seed shared_state.sort_config to the default for a new group.
-
-        v2.3 collapses the old per-mode grouping state to a single
-        :class:`SortConfig`. Every freshly-seeded toggle group starts with
-        the default (TRACE_RANGE asc, uncommitted) so natural file order
-        is shown until the user commits something else.
-        """
-        if not self._members:
-            return
-        ref_idx = self._reference_index
-        if not 0 <= ref_idx < len(self._members):
-            return
-        if reset_group:
-            self.shared_state.sort_config = default_sort_config()

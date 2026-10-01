@@ -275,7 +275,7 @@ def test_removing_the_reference_at_index_0_is_a_reference_change(
 ) -> None:
     """Regression: the old and new reference were compared by index, so
     removing the reference at index 0 (the default) promoted member 1 into
-    slot 0 without resetting the sort or emitting the change."""
+    slot 0 without emitting the change."""
     ds = load_segy(segy_3d)
     try:
         for _ in range(3):
@@ -290,7 +290,8 @@ def test_removing_the_reference_at_index_0_is_a_reference_change(
         # The active member (also index 0) was removed: index 0 now shows
         # a different member.
         assert actives == [0]
-        assert not group.shared_state.sort_config.committed
+        # The sort carries over to the new reference.
+        assert group.shared_state.sort_config == _committed_sort()
     finally:
         ds.close()
 
@@ -314,5 +315,29 @@ def test_removing_a_member_before_the_reference_keeps_the_sort(
         assert group.members[1] is reference
         assert refs == []
         assert group.shared_state.sort_config == _committed_sort()
+    finally:
+        ds.close()
+
+
+def test_new_reference_keeps_the_sort_and_view(group: ToggleGroup, segy_3d: Path) -> None:
+    from seisvis.models.selection import Selection
+
+    ds = load_segy(segy_3d)
+    try:
+        for _ in range(2):
+            group.add_member(ds)
+        group.update_sort_config(_committed_sort())
+        group.update_shared_state(commanded_time_range_ms=(8.0, 64.0))
+        group.update_zoomed_ranges(zoomed_time_range_ms=(16.0, 32.0))
+        group.set_color_scale((-1.0, 1.0))
+        sel = Selection(0, 3, 2, 5)
+        group.set_selection(sel)
+        group.set_reference(1)
+        ss = group.shared_state
+        assert ss.sort_config == _committed_sort()
+        assert ss.commanded_time_range_ms == (8.0, 64.0)
+        assert ss.zoomed_time_range_ms == (16.0, 32.0)
+        assert ss.color_scale == (-1.0, 1.0)
+        assert group.selection == sel
     finally:
         ds.close()

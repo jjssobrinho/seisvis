@@ -740,9 +740,16 @@ class SeismicView(QWidget):
         # longer need one; previously-compat now-incompat need to rebuild).
         for m in self.group.members:
             m.display_state.view_hint = None
-        self._apply_plot_ranges()
-        self._refresh_info_track()
-        self._refresh_overlays()
+        if self.group.is_empty:
+            return
+        # The sort and view carry over to the new reference; only ranges it
+        # cannot hold are refitted (taking the selection with them). Then
+        # redraw: a committed sort's range is re-derived from the new
+        # reference's index and every member is refetched.
+        if self._drop_ranges_past_reference():
+            self.group.set_selection(None)
+        self._fit_to_member(self.group.reference_index)
+        self._on_shared_state_changed()
 
     def _on_member_alignment_changed(self, index: int) -> None:
         """Re-read a member whose pairing with the reference changed.
@@ -923,29 +930,36 @@ class SeismicView(QWidget):
         positions that need not mean the same thing any more.
         """
         self.group.set_selection(None)
-        state = self.group.shared_state
-        ref = self.group.reference_index
-        try:
-            ds = self.group.members[ref].dataset
-        except IndexError:
+        if self.group.is_empty:
             return
-
-        trace_range = state.commanded_trace_range
-        if trace_range is not None and trace_range[1] > ds.n_traces:
-            state.commanded_trace_range = None
-            state.zoomed_trace_range = None
-        t_max_ms = ds.n_samples * ds.sample_interval_ms
-        time_range = state.commanded_time_range_ms
-        if time_range is not None and time_range[1] > t_max_ms:
-            state.commanded_time_range_ms = None
-            state.zoomed_time_range_ms = None
-
-        self._fit_to_member(ref)
+        self._drop_ranges_past_reference()
+        self._fit_to_member(self.group.reference_index)
         self._apply_plot_ranges()
         self._refresh_info_track()
         self._refresh_scale_bar()
         for i in range(len(self._image_items)):
             self._request_slice(i)
+
+    def _drop_ranges_past_reference(self) -> bool:
+        """Drop commanded / zoomed ranges the reference cannot hold.
+
+        ``_fit_to_member`` then refits them. Returns whether any was dropped.
+        """
+        state = self.group.shared_state
+        ds = self.group.members[self.group.reference_index].dataset
+        dropped = False
+        trace_range = state.commanded_trace_range
+        if trace_range is not None and trace_range[1] > ds.n_traces:
+            state.commanded_trace_range = None
+            state.zoomed_trace_range = None
+            dropped = True
+        t_max_ms = ds.n_samples * ds.sample_interval_ms
+        time_range = state.commanded_time_range_ms
+        if time_range is not None and time_range[1] > t_max_ms:
+            state.commanded_time_range_ms = None
+            state.zoomed_time_range_ms = None
+            dropped = True
+        return dropped
 
     def _trace_range_from_group_or_cap(self, ds) -> tuple[int, int]:  # noqa: ANN001
         state = self.group.shared_state
