@@ -193,15 +193,17 @@ def test_duplicate_shares_datasets_and_copies_settings(group: ToggleGroup, segy_
         b.close()
 
 
-def test_time_window_defaults_to_the_reference_record_length(
-    group: ToggleGroup, segy_2d: Path
-) -> None:
+def test_time_window_bounds_end_at_the_last_sample(group: ToggleGroup, segy_2d: Path) -> None:
     assert group.time_bounds_ms() is None
+    assert group.time_window_ms() is None
     assert group.set_time_window_ms(0.0, 10.0) is None
-    ds = load_segy(segy_2d)
+    ds = load_segy(segy_2d)  # 24 samples at 2 ms -> last sample at 46 ms
     try:
         group.add_member(ds)
-        assert group.time_bounds_ms() == (0.0, ds.n_samples * ds.sample_interval_ms)
+        assert group.time_bounds_ms() == (0.0, 46.0)
+        # The canvas fit stores the drawn extent; the boxes see the last sample.
+        group.update_shared_state(commanded_time_range_ms=(0.0, 48.0))
+        assert group.time_window_ms() == (0.0, 46.0)
     finally:
         ds.close()
 
@@ -209,16 +211,18 @@ def test_time_window_defaults_to_the_reference_record_length(
 def test_time_window_is_clamped_to_the_data_and_resets_zoom(
     group: ToggleGroup, segy_2d: Path
 ) -> None:
-    ds = load_segy(segy_2d)  # 24 samples at 2 ms -> 0..48 ms
+    ds = load_segy(segy_2d)
     try:
         group.add_member(ds)
         group.update_shared_state(commanded_time_range_ms=(0.0, 48.0))
         group.update_zoomed_ranges(zoomed_time_range_ms=(10.0, 20.0))
-        assert group.set_time_window_ms(-5.0, 500.0) == (0.0, 48.0)
+        assert group.set_time_window_ms(-5.0, 500.0) == (0.0, 46.0)
+        assert group.shared_state.commanded_time_range_ms == (0.0, 48.0)
         assert group.set_time_window_ms(30.0, 8.0) == (8.0, 30.0)
         ss = group.shared_state
-        assert ss.commanded_time_range_ms == (8.0, 30.0)
-        assert ss.zoomed_time_range_ms == (8.0, 30.0)
+        assert ss.commanded_time_range_ms == (8.0, 32.0)
+        assert ss.zoomed_time_range_ms == (8.0, 32.0)
+        assert group.time_window_ms() == (8.0, 30.0)
     finally:
         ds.close()
 
@@ -228,7 +232,7 @@ def test_time_window_is_at_least_one_sample_wide(group: ToggleGroup, segy_2d: Pa
     try:
         group.add_member(ds)
         assert group.set_time_window_ms(10.0, 10.0) == (10.0, 12.0)
-        assert group.set_time_window_ms(48.0, 48.0) == (46.0, 48.0)
+        assert group.set_time_window_ms(46.0, 46.0) == (44.0, 46.0)
     finally:
         ds.close()
 
@@ -239,7 +243,7 @@ def test_time_window_change_clears_the_selection(group: ToggleGroup, segy_2d: Pa
         group.add_member(ds)
         group.update_shared_state(commanded_time_range_ms=(0.0, 48.0))
         group.set_selection(Selection(0, 2, 0, 4))
-        group.set_time_window_ms(0.0, 48.0)  # unchanged: selection kept
+        group.set_time_window_ms(0.0, 46.0)  # unchanged: selection kept
         assert group.selection is not None
         group.set_time_window_ms(4.0, 40.0)
         assert group.selection is None

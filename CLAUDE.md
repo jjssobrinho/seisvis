@@ -783,7 +783,8 @@ computed. Users with regular trace spacing can convert mentally.
   visual dividers:
   - **Appearance**: colormap, clip %, gain, colour scale, time
     window (Time min / max → the group's `commanded_time_range_ms`,
-    bounded to 0 … reference `n_samples * dt`, ≥ 1 sample wide;
+    boxes show sample times 0 … reference `(n_samples − 1) * dt`,
+    stored as the drawn extent `last + dt`, ≥ 1 sample apart;
     a change refetches and clears the selection).
   - **Analysis**: rectangle-selection button, FFT button, f-k button.
   - **Processing**: bandpass, AGC.

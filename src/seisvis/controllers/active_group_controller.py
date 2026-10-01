@@ -165,7 +165,7 @@ class ActiveGroupController(QObject):
             return
         ref = group.members[group.reference_index].dataset
         self._toolbar.appearance.set_time_window(
-            group.shared_state.commanded_time_range_ms,
+            group.time_window_ms(),
             group.time_bounds_ms(),
             step_ms=float(ref.sample_interval_ms) or 1.0,
         )
