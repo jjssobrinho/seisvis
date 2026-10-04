@@ -35,6 +35,7 @@ class ActiveGroupController(QObject):
         self._group: ToggleGroup | None = None
 
         toolbar.appearance.colormap_changed.connect(self._on_colormap_changed)
+        toolbar.appearance.smooth_changed.connect(self._on_smooth_changed)
         toolbar.appearance.clip_changed.connect(self._on_clip_changed)
         toolbar.appearance.gain_changed.connect(self._on_gain_changed)
         toolbar.appearance.color_scale_changed.connect(self._on_color_scale_changed)
@@ -197,6 +198,7 @@ class ActiveGroupController(QObject):
             clip_low_pct=ds.clip_low_pct,
             clip_high_pct=ds.clip_high_pct,
             gain_db=chain.gain.db,
+            smooth=ds.smooth,
         )
         self._toolbar.appearance.set_color_scale(group.shared_state.color_scale)
         self._rebind_time_window()
@@ -232,6 +234,13 @@ class ActiveGroupController(QObject):
             return
         for idx in self._target_indices():
             group.update_member_display_state(idx, colormap=str(name))
+
+    def _on_smooth_changed(self, smooth: bool) -> None:
+        group = self._group
+        if group is None:
+            return
+        for idx in self._target_indices():
+            group.update_member_display_state(idx, smooth=bool(smooth))
 
     def _on_clip_changed(self, low: float, high: float) -> None:
         group = self._group

@@ -523,7 +523,7 @@ ToggleGroup
 
 Member
   dataset                     Dataset | DerivedDataset
-  display_state               per-member: colormap, clip, gain
+  display_state               per-member: colormap, clip, gain, smooth
   processing_chain            per-member: Bandpass, AGC, ConstantGain
 ```
 
@@ -798,7 +798,10 @@ computed. Users with regular trace spacing can convert mentally.
 
 - **Top toolbar** (global, pinned), three sections separated by
   visual dividers:
-  - **Appearance**: colormap, clip %, gain, colour scale, time
+  - **Appearance**: colormap with Blocky / Smooth buttons
+    (per-member `DisplayState.smooth`, bilinear filtering at paint
+    time only — data is never interpolated), clip %, gain, colour
+    scale, time
     window (Time min / max → the group's `commanded_time_range_ms`,
     boxes show sample times 0 … reference `(n_samples − 1) * dt`,
     stored as the drawn extent `last + dt`, ≥ 1 sample apart;
@@ -950,7 +953,7 @@ window lifecycle.
 
 ## UX Defaults
 
-Clip percentile 1–99. Default colormap "gray". Bandpass off
+Clip percentile 1–99. Default colormap "gray". Smooth display on. Bandpass off
 (5–80 Hz order 4 when on). AGC off (500 ms when on). Auto-flicker
 2 Hz. Scroll-bar drag throttle 150 ms. Scroll-bar markers blue.
 `groups_per_view=1`, `group_skip=1`. Fit-to-window on open, capped

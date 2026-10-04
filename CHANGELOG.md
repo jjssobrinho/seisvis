@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Smooth trace display
+
+- **Traces are drawn smoothed by default.** The canvas image is
+  interpolated between traces and samples instead of showing each sample
+  as a flat block. **Blocky** / **Smooth** buttons beside the colormap
+  switch between the two; like the colormap they follow the edit target
+  (or All), are inherited by new members and are saved in sessions
+  (older sessions open smoothed). Smoothing is paint-time only: the
+  crosshair amplitude, FFT and f-k still read the original samples.
+
 ### Fixed: Sorted views and the spectra drawn from them
 
 - **Flipping a sort's direction redraws in the new order.** The canvas

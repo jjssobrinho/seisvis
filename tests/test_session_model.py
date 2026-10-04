@@ -105,6 +105,13 @@ def test_display_state_round_trips_without_view_hint() -> None:
     assert back.view_hint is None
 
 
+def test_display_state_smooth_defaults_on_and_round_trips() -> None:
+    assert DisplayState().smooth is True
+    assert DisplayState.from_dict(DisplayState(smooth=False).to_dict()).smooth is False
+    # Sessions written before the toggle existed open smoothed.
+    assert DisplayState.from_dict({"colormap": "gray"}).smooth is True
+
+
 def _full_session() -> SessionFile:
     chain = ProcessingChain()
     chain.agc.enabled = True

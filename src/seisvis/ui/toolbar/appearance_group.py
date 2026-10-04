@@ -4,6 +4,7 @@ import numpy as np
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QIcon, QImage, QPixmap, QValidator
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -70,6 +71,7 @@ class AppearanceGroup(QGroupBox):
     """Colormap / clip percentile / gain / group-wide color scale controls."""
 
     colormap_changed = Signal(str)
+    smooth_changed = Signal(bool)  # True = smooth, False = blocky
     clip_changed = Signal(float, float)  # low_pct, high_pct
     gain_changed = Signal(float)  # dB
     color_scale_changed = Signal(bool, float, float)  # enabled, vmin, vmax
@@ -189,6 +191,21 @@ class AppearanceGroup(QGroupBox):
         colormap_layout = QHBoxLayout(colormap_row)
         colormap_layout.setContentsMargins(0, 0, 0, 0)
         colormap_layout.addWidget(self._colormap)
+
+        # Blocky / Smooth: how samples are drawn between traces. Sits in the
+        # colormap row so the group keeps its three rows.
+        self._blocky = QPushButton("Blocky", self)
+        self._blocky.setToolTip("Draw each sample as a flat block")
+        self._smooth = QPushButton("Smooth", self)
+        self._smooth.setToolTip("Interpolate the image between traces and samples")
+        self._render_buttons = QButtonGroup(self)
+        self._render_buttons.setExclusive(True)
+        for b in (self._blocky, self._smooth):
+            b.setCheckable(True)
+            self._render_buttons.addButton(b)
+            colormap_layout.addWidget(b)
+        self._smooth.setChecked(True)
+        self._smooth.toggled.connect(self.smooth_changed.emit)
         colormap_layout.addStretch(1)
 
         # Three rows, two label/control column pairs: the toolbar is pinned
@@ -252,9 +269,18 @@ class AppearanceGroup(QGroupBox):
         clip_low_pct: float,
         clip_high_pct: float,
         gain_db: float,
+        smooth: bool | None = None,
     ) -> None:
         """Rebind widget values without emitting signals."""
-        for w in (self._colormap, self._clip_low, self._clip_high, self._gain):
+        widgets = (
+            self._colormap,
+            self._clip_low,
+            self._clip_high,
+            self._gain,
+            self._blocky,
+            self._smooth,
+        )
+        for w in widgets:
             w.blockSignals(True)
         try:
             idx = self._colormap.findText(colormap)
@@ -264,8 +290,10 @@ class AppearanceGroup(QGroupBox):
             self._clip_high.setValue(float(clip_high_pct))
             self._gain.setValue(int(round(gain_db)))
             self._gain_label.setText(f"{int(round(gain_db))} dB")
+            if smooth is not None:
+                (self._smooth if smooth else self._blocky).setChecked(True)
         finally:
-            for w in (self._colormap, self._clip_low, self._clip_high, self._gain):
+            for w in widgets:
                 w.blockSignals(False)
 
     def set_color_scale(self, color_scale: tuple[float, float] | None) -> None:

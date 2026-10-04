@@ -18,6 +18,10 @@ class DisplayState:
     clip_low_pct: float = 1.0
     clip_high_pct: float = 99.0
     gain_db: float = 0.0
+    # Smooth draws the image with bilinear filtering between samples and
+    # traces; off draws each sample as a flat block. Paint-time only — the
+    # data (crosshair amplitudes, transforms) is never interpolated.
+    smooth: bool = True
     view_hint: dict[str, tuple[float, float]] | None = field(default=None)
 
     def to_dict(self) -> dict[str, object]:
@@ -27,6 +31,7 @@ class DisplayState:
             "clip_low_pct": self.clip_low_pct,
             "clip_high_pct": self.clip_high_pct,
             "gain_db": self.gain_db,
+            "smooth": self.smooth,
         }
 
     @classmethod
@@ -37,6 +42,8 @@ class DisplayState:
             return state
         if isinstance(raw.get("colormap"), str):
             state.colormap = raw["colormap"]
+        if isinstance(raw.get("smooth"), bool):
+            state.smooth = raw["smooth"]
         for key in ("clip_low_pct", "clip_high_pct", "gain_db"):
             if key in raw:
                 try:

@@ -227,7 +227,7 @@ class ToggleGroup(QObject):
 
         A member added to a populated group is almost always there to be
         toggled against what is already displayed, so it starts from the
-        neighbour's colormap, clip percentiles and processing chain (gain,
+        neighbour's colormap, clip percentiles, smoothing and processing chain (gain,
         AGC, bandpass) instead of the app defaults. The group-wide fixed
         color scale is already shared through ``SharedState`` and needs no
         copying.
@@ -245,6 +245,7 @@ class ToggleGroup(QObject):
             clip_low_pct=src.clip_low_pct,
             clip_high_pct=src.clip_high_pct,
             gain_db=src.gain_db,
+            smooth=src.smooth,
         )
         member.processing_chain = deepcopy(template.processing_chain)
 
