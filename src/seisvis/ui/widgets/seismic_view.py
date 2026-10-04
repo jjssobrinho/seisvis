@@ -457,11 +457,16 @@ class SeismicView(QWidget):
             (QKeySequence("Shift+g"), lambda: self._bump_gain(-3.0)),
             (QKeySequence(Qt.Key.Key_Delete), self._clear_selection_via_key),
             (QKeySequence(Qt.Key.Key_Backspace), self._clear_selection_via_key),
-            (QKeySequence(Qt.Key.Key_Escape), self._clear_picked_trace),
         ):
             sc = QShortcut(seq, self)
             sc.setContext(ctx)
             sc.activated.connect(handler)
+        # Kept apart so full display mode can switch it off: the main
+        # window binds Esc there too, and two live Esc shortcuts are
+        # ambiguous to Qt, which then fires neither.
+        self._escape_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        self._escape_shortcut.setContext(ctx)
+        self._escape_shortcut.activated.connect(self.clear_picked_trace)
         # Number keys 1..9 select members 1..9 when the canvas (or any of
         # its non-spinbox children) has focus. Tab-switching on the parent
         # QTabWidget is not bound to number keys, so this cannot switch
@@ -1023,7 +1028,7 @@ class SeismicView(QWidget):
         # so this is mostly a no-op other than dt/bounds refresh.)
         self._refresh_overlay_geometry()
         if self._picked_x is not None and self._picked_layout != self._layout_key():
-            self._clear_picked_trace()
+            self.clear_picked_trace()
         for i in range(len(self._image_items)):
             self._request_slice(i)
 
@@ -1570,12 +1575,18 @@ class SeismicView(QWidget):
         self._picked_layout = self._layout_key()
         self._apply_picked_trace()
 
-    def _clear_picked_trace(self) -> None:
+    def set_escape_shortcut_enabled(self, enabled: bool) -> None:
+        """Off while the main window owns Esc (full display mode)."""
+        self._escape_shortcut.setEnabled(enabled)
+
+    def clear_picked_trace(self) -> bool:
+        """Remove the red trace; False when there was none."""
         if self._picked_x is None:
-            return
+            return False
         self._picked_x = None
         self._picked_layout = None
         self._apply_picked_trace()
+        return True
 
     def _apply_picked_trace(self) -> None:
         """Point every member's red trace at the picked column (or hide it)."""

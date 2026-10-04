@@ -818,7 +818,9 @@ buttons (`ui/widgets/render_mode_buttons.py`, icons painted in code).
 - **Picked trace** (smooth / blocky only): double-click draws that
   trace as a red wiggle over the image (`TraceImageItem.
   set_highlight_column`), at least 15 px swing at the clip level so it
-  reads at any zoom; another double-click moves it, `Esc` removes it.
+  reads at any zoom; another double-click moves it, `Esc` removes it
+  (in full display, F11, the window's Esc clears it first, a second
+  `Esc` exits — the canvas Esc shortcut is off there to avoid ambiguity).
   Canvas: one column for all members, dropped when the commanded trace
   range or sort changes (other traces under it). Model Window: the
   seismic layer only in an overlay; the luminance composite borrows

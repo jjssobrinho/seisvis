@@ -60,6 +60,7 @@ from seisvis.ui.panels.viewport_manager_panel import ViewportManagerPanel
 from seisvis.ui.toolbar.global_toolbar import GlobalToolbar
 from seisvis.ui.widgets.crosshair_readout import CrosshairReadout
 from seisvis.ui.widgets.model_view import ModelView
+from seisvis.ui.widgets.seismic_view import SeismicView
 from seisvis.ui.windows.model_window import ModelWindow
 from seisvis.utils import qsettings
 from seisvis.workers.field_scan_worker import FieldScanWorker
@@ -520,9 +521,17 @@ class MainWindow(QMainWindow):
             view.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _on_exit_full_display(self) -> None:
-        """Esc leaves full display mode; elsewhere it does nothing."""
-        if self._full_display:
-            self.display_panel.full_display_button.setChecked(False)
+        """Esc in full display mode: drop the canvas's red trace, else leave.
+
+        The canvas's own Esc shortcut is off here (two would be ambiguous),
+        so this one clears the picked trace first.
+        """
+        if not self._full_display:
+            return
+        view = self.display_panel.currentWidget()
+        if isinstance(view, SeismicView) and view.clear_picked_trace():
+            return
+        self.display_panel.full_display_button.setChecked(False)
 
     def _on_toggle_selection_mode(self) -> None:
         button = self.toolbar.analysis.selection_button

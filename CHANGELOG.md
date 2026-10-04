@@ -23,7 +23,7 @@
 - **Double-click a trace to see its wiggle** over a Smooth or Blocky
   image: the trace is drawn in red, swinging at least 15 px so its
   wavelet reads at any zoom. Another double-click moves it; Esc removes
-  it. On the canvas it marks the same column on every member and goes
+  it (in full display mode the first Esc removes it, the next one exits). On the canvas it marks the same column on every member and goes
   away when the trace range or sort changes; in a Model Window overlay
   it follows the seismic layer.
 

@@ -89,6 +89,7 @@ class DisplayPanel(QTabWidget):
         self.full_display_button.setToolTip("Full display mode")
         self.full_display_button.setAutoRaise(True)
         self.full_display_button.toggled.connect(self.full_display_toggled)
+        self.full_display_button.toggled.connect(self._sync_escape_shortcuts)
         self.setCornerWidget(self.full_display_button, Qt.Corner.TopRightCorner)
 
         project.toggle_group_added.connect(self._on_group_added)
@@ -104,6 +105,7 @@ class DisplayPanel(QTabWidget):
         view.cursor_readout.connect(self.cursor_readout)
         view.datasets_dropped.connect(lambda ids, g=group: self.datasets_dropped.emit(g.id, ids))
         view.set_selection_mode_active(self._selection_mode_active)
+        view.set_escape_shortcut_enabled(not self.full_display_button.isChecked())
         group.name_changed.connect(lambda name, g=group: self._on_group_renamed(g, name))
         self._views[group.id] = view
         idx = self.addTab(view, group.name)
@@ -184,6 +186,11 @@ class DisplayPanel(QTabWidget):
         for view in self._views.values():
             if any(m.dataset.id == dataset_id for m in view.group.members):
                 view.reload_after_dataset_change()
+
+    def _sync_escape_shortcuts(self, full_display: bool) -> None:
+        # In full display the main window's Esc handles the canvas too.
+        for view in self._views.values():
+            view.set_escape_shortcut_enabled(not full_display)
 
     def toggle_full_display(self) -> None:
         """Flip full display mode (used by the F11 shortcut)."""

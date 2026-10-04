@@ -90,7 +90,8 @@ def test_double_click_picks_the_trace_on_every_member_and_escape_clears(gui_app,
     _double_click_trace(view, x0 + 5.9)  # another pick replaces it
     assert [it.highlight.column for it in view._image_items] == [5, 5]
 
-    view._clear_picked_trace()
+    assert view.clear_picked_trace()
+    assert not view.clear_picked_trace()
     assert [it.highlight.column for it in view._image_items] == [None, None]
     assert not view._image_items[0].highlight.isVisible()
 
