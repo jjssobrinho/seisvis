@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from seisvis.models.render_mode import DEFAULT_RENDER_MODE, RenderMode, parse_render_mode
+
 
 @dataclass
 class DisplayState:
@@ -18,10 +20,10 @@ class DisplayState:
     clip_low_pct: float = 1.0
     clip_high_pct: float = 99.0
     gain_db: float = 0.0
-    # Smooth draws the image with bilinear filtering between samples and
-    # traces; off draws each sample as a flat block. Paint-time only — the
-    # data (crosshair amplitudes, transforms) is never interpolated.
-    smooth: bool = True
+    # smooth: bilinear filtering between samples and traces; blocky: each
+    # sample a flat block; wavelet: black trace curves on white. Paint-time
+    # only — the data (crosshair amplitudes, transforms) is never altered.
+    render_mode: RenderMode = DEFAULT_RENDER_MODE
     view_hint: dict[str, tuple[float, float]] | None = field(default=None)
 
     def to_dict(self) -> dict[str, object]:
@@ -31,7 +33,7 @@ class DisplayState:
             "clip_low_pct": self.clip_low_pct,
             "clip_high_pct": self.clip_high_pct,
             "gain_db": self.gain_db,
-            "smooth": self.smooth,
+            "render_mode": self.render_mode,
         }
 
     @classmethod
@@ -42,8 +44,9 @@ class DisplayState:
             return state
         if isinstance(raw.get("colormap"), str):
             state.colormap = raw["colormap"]
-        if isinstance(raw.get("smooth"), bool):
-            state.smooth = raw["smooth"]
+        state.render_mode = parse_render_mode(
+            raw.get("render_mode"), legacy_smooth=raw.get("smooth")
+        )
         for key in ("clip_low_pct", "clip_high_pct", "gain_db"):
             if key in raw:
                 try:

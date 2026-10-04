@@ -44,17 +44,19 @@ def test_members_append_in_order(qapp, su_depth_model: Path, tmp_path: Path) -> 
         b.close()
 
 
-def test_smooth_defaults_on_and_signals_only_on_change(qapp, su_depth_model: Path) -> None:
+def test_render_mode_defaults_smooth_and_signals_only_on_change(qapp, su_depth_model: Path) -> None:
     ds = load_su(su_depth_model)
     try:
         g = ModelGroup(ds)
-        assert g.smooth is True
-        fired: list[bool] = []
-        g.smooth_changed.connect(lambda: fired.append(g.smooth))
-        g.set_smooth(False)
-        g.set_smooth(False)
-        g.set_smooth(True)
-        assert fired == [False, True]
+        assert g.render_mode == "smooth"
+        fired: list[str] = []
+        g.render_mode_changed.connect(lambda: fired.append(g.render_mode))
+        g.set_render_mode("wavelet")
+        g.set_render_mode("wavelet")
+        g.set_render_mode("blocky")
+        assert fired == ["wavelet", "blocky"]
+        with pytest.raises(ValueError):
+            g.set_render_mode("bogus")  # type: ignore[arg-type]
     finally:
         ds.close()
 

@@ -245,7 +245,7 @@ class ToggleGroup(QObject):
             clip_low_pct=src.clip_low_pct,
             clip_high_pct=src.clip_high_pct,
             gain_db=src.gain_db,
-            smooth=src.smooth,
+            render_mode=src.render_mode,
         )
         member.processing_chain = deepcopy(template.processing_chain)
 

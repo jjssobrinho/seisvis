@@ -105,11 +105,15 @@ def test_display_state_round_trips_without_view_hint() -> None:
     assert back.view_hint is None
 
 
-def test_display_state_smooth_defaults_on_and_round_trips() -> None:
-    assert DisplayState().smooth is True
-    assert DisplayState.from_dict(DisplayState(smooth=False).to_dict()).smooth is False
-    # Sessions written before the toggle existed open smoothed.
-    assert DisplayState.from_dict({"colormap": "gray"}).smooth is True
+def test_display_state_render_mode_defaults_smooth_and_round_trips() -> None:
+    assert DisplayState().render_mode == "smooth"
+    back = DisplayState.from_dict(DisplayState(render_mode="wavelet").to_dict())
+    assert back.render_mode == "wavelet"
+    # Sessions written before the toggle existed open smoothed; the
+    # interim boolean ``smooth`` key still maps False to blocky.
+    assert DisplayState.from_dict({"colormap": "gray"}).render_mode == "smooth"
+    assert DisplayState.from_dict({"smooth": False}).render_mode == "blocky"
+    assert DisplayState.from_dict({"render_mode": "bogus"}).render_mode == "smooth"
 
 
 def _full_session() -> SessionFile:
@@ -157,7 +161,7 @@ def _full_session() -> SessionFile:
                 overlay_mode="alpha",
                 overlay_alpha=0.3,
                 flicker_hz=1.0,
-                smooth=False,
+                render_mode="wavelet",
             )
         ],
         active_model_group=0,
@@ -173,14 +177,16 @@ def test_session_round_trips_through_json(tmp_path: Path) -> None:
     assert back.groups[0].members[0].processing_chain.agc.enabled is True
     assert back.groups[0].zoomed_time_range_ms == (100.0, 900.0)
     assert back.model_groups[0].styles["model"].levels == (1500.0, 4500.0)
-    assert back.model_groups[0].smooth is False
+    assert back.model_groups[0].render_mode == "wavelet"
     assert not (tmp_path / "work.svsession.tmp").exists()
 
 
-def test_model_group_entry_without_smooth_opens_smoothed() -> None:
+def test_model_group_entry_without_render_mode_opens_smoothed() -> None:
     raw = _full_session().to_dict()
-    del raw["model_groups"][0]["smooth"]  # type: ignore[index]
-    assert SessionFile.from_dict(raw).model_groups[0].smooth is True
+    del raw["model_groups"][0]["render_mode"]  # type: ignore[index]
+    assert SessionFile.from_dict(raw).model_groups[0].render_mode == "smooth"
+    raw["model_groups"][0]["smooth"] = False  # type: ignore[index]
+    assert SessionFile.from_dict(raw).model_groups[0].render_mode == "blocky"
 
 
 def test_unknown_keys_are_ignored() -> None:

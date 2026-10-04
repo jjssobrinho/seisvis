@@ -30,6 +30,7 @@ from PySide6.QtCore import QObject, Signal
 
 from seisvis.models.dataset import Dataset
 from seisvis.models.layer_kind import LayerKind, LayerStyle, classify_layer
+from seisvis.models.render_mode import DEFAULT_RENDER_MODE, RENDER_MODES, RenderMode
 from seisvis.processing.overlay import DEFAULT_WEIGHT
 
 log = logging.getLogger(__name__)
@@ -89,7 +90,7 @@ class ModelGroup(QObject):
     colormap_changed = Signal()
     clip_pct_changed = Signal()
     overlay_changed = Signal()
-    smooth_changed = Signal()
+    render_mode_changed = Signal()
     name_changed = Signal(str)
 
     def __init__(
@@ -122,8 +123,8 @@ class ModelGroup(QObject):
         self._overlay_alpha = 0.5
         self._overlay_weight = DEFAULT_WEIGHT
         self.flicker_hz: float = 2.0
-        # Smooth (bilinear) or blocky drawing, for every layer of the tab.
-        self._smooth = True
+        # Smooth / blocky / wavelet drawing, for every layer of the tab.
+        self._render_mode: RenderMode = DEFAULT_RENDER_MODE
 
     # --- identity --------------------------------------------------------
 
@@ -370,15 +371,16 @@ class ModelGroup(QObject):
     # --- drawing ---------------------------------------------------------
 
     @property
-    def smooth(self) -> bool:
-        return self._smooth
+    def render_mode(self) -> RenderMode:
+        return self._render_mode
 
-    def set_smooth(self, smooth: bool) -> None:
-        smooth = bool(smooth)
-        if smooth == self._smooth:
+    def set_render_mode(self, mode: RenderMode) -> None:
+        if mode not in RENDER_MODES:
+            raise ValueError(f"unknown render mode {mode!r}")
+        if mode == self._render_mode:
             return
-        self._smooth = smooth
-        self.smooth_changed.emit()
+        self._render_mode = mode
+        self.render_mode_changed.emit()
 
     # --- overlay ---------------------------------------------------------
 

@@ -189,7 +189,7 @@ def test_new_member_inherits_previous_members_appearance(group: ToggleGroup, seg
             clip_low_pct=5.0,
             clip_high_pct=95.0,
             gain_db=6.0,
-            smooth=False,
+            render_mode="wavelet",
         )
         group.update_member_processing_chain(
             0,
@@ -204,7 +204,7 @@ def test_new_member_inherits_previous_members_appearance(group: ToggleGroup, seg
         assert new.display_state.clip_low_pct == 5.0
         assert new.display_state.clip_high_pct == 95.0
         assert new.display_state.gain_db == 6.0
-        assert new.display_state.smooth is False
+        assert new.display_state.render_mode == "wavelet"
         assert new.processing_chain.gain.db == 6.0
         assert new.processing_chain.agc.enabled is True
         assert new.processing_chain.agc.window_ms == 250.0

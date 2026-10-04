@@ -2,18 +2,24 @@
 
 ## [Unreleased]
 
-### Smooth trace display
+### Display modes: Smooth, Blocky, Wavelet
 
 - **Traces are drawn smoothed by default.** The canvas image is
   interpolated between traces and samples instead of showing each sample
-  as a flat block. **Blocky** / **Smooth** buttons beside the colormap
-  switch between the two; like the colormap they follow the edit target
-  (or All), are inherited by new members and are saved in sessions
-  (older sessions open smoothed). Smoothing is paint-time only: the
-  crosshair amplitude, FFT and f-k still read the original samples.
-- **The Model Window draws smoothed too.** The same Blocky / Smooth
-  buttons sit beside its colormap and apply to every layer of the tab,
-  overlay included. The choice is per tab and saved in sessions.
+  as a flat block.
+- **Wavelet mode** draws every trace as a black curve on white, so the
+  wavelet shapes show when zoomed in. Zoomed out, traces are thinned to
+  one per 4 px so it stays readable and fast. The swing follows the clip
+  percentile (or the fixed colour scale): a sample at the clip level
+  swings half a trace spacing, capped at one spacing.
+- **Three icon buttons beside the colormap** (smooth stripes, pixelated
+  stripes, a vertical wavelet) pick the mode. Like the colormap it follows
+  the edit target (or All), is inherited by new members and is saved in
+  sessions (older sessions open smoothed). All modes are paint-time only:
+  the crosshair amplitude, FFT and f-k read the original samples.
+- **The Model Window has the same buttons**, per tab, for every layer.
+  In Wavelet mode with Overlay on, the velocity model stays in colour and
+  the seismic is drawn as black wiggles over it.
 
 ### Fixed: Sorted views and the spectra drawn from them
 

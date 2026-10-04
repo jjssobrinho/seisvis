@@ -32,8 +32,8 @@ from seisvis.ui.widgets.info_track import GroupXPositions, InfoTrack, default_di
 from seisvis.ui.widgets.plot_export import axes_hidden, camera_button, make_exporter
 from seisvis.ui.widgets.scale_bar import ScaleBar
 from seisvis.ui.widgets.selection_overlay import SelectionOverlay, selection_from_points
-from seisvis.ui.widgets.smooth_image_item import SmoothableImageItem
 from seisvis.ui.widgets.toggle_bar import ToggleBar
+from seisvis.ui.widgets.trace_image_item import TraceImageItem
 from seisvis.utils import qsettings
 from seisvis.utils.colormaps import get_colormap
 from seisvis.utils.member_colors import member_color
@@ -218,7 +218,7 @@ class SeismicView(QWidget):
         self.group = group
         self._pool = pool
         self._cache = cache
-        self._image_items: list[SmoothableImageItem] = []
+        self._image_items: list[TraceImageItem] = []
         # Header values for the traces the active member draws, one per
         # column starting at display x ``_header_x0``. Read on the fly like
         # the traces themselves — nothing outside the view is touched.
@@ -616,10 +616,10 @@ class SeismicView(QWidget):
     # --- Member management ---
 
     def _on_member_added(self, index: int) -> None:
-        item = SmoothableImageItem(axisOrder="col-major")
+        item = TraceImageItem(axisOrder="col-major")
         item.setZValue(-1)
         try:
-            item.set_smooth(self.group.members[index].display_state.smooth)
+            item.set_render_mode(self.group.members[index].display_state.render_mode)
         except IndexError:
             pass
         self.plot_item.addItem(item)
@@ -1432,7 +1432,7 @@ class SeismicView(QWidget):
         # side-by-side without blank physical-gap space between shots.
         rect = QRectF(trace_range[0], t0, array.shape[0], t_extent)
         item = self._image_items[member_index]
-        item.set_smooth(member.display_state.smooth)
+        item.set_render_mode(member.display_state.render_mode)
         if array.size:
             item.setImage(array, autoLevels=False, levels=self._levels_for_member(member, array))
             item.setLookupTable(get_colormap(member.display_state.colormap))
@@ -1474,7 +1474,7 @@ class SeismicView(QWidget):
         except IndexError:
             return
         item = self._image_items[member_index]
-        item.set_smooth(member.display_state.smooth)
+        item.set_render_mode(member.display_state.render_mode)
         arr = self._last_arrays[member_index]
         if arr is None or arr.size == 0:
             return

@@ -475,7 +475,7 @@ session holds what the user was looking at.
   chain, `SortConfig`, commanded and zoomed ranges (incl. the time window, restored
   under any sort), colour scale,
   crosshair fields, flicker rate and excluded members), Model Window
-  tabs (members, per-kind style, overlay, flicker, smooth), active tabs.
+  tabs (members, per-kind style, overlay, flicker, render mode), active tabs.
 - **Not saved**: `.sv` content (it loads with its file), header scans
   (cached per file, see Scan cache), group indices, trace alignments, selection, transform windows,
   crosshair position.
@@ -523,7 +523,7 @@ ToggleGroup
 
 Member
   dataset                     Dataset | DerivedDataset
-  display_state               per-member: colormap, clip, gain, smooth
+  display_state               per-member: colormap, clip, gain, render_mode
   processing_chain            per-member: Bandpass, AGC, ConstantGain
 ```
 
@@ -794,15 +794,36 @@ computed. Users with regular trace spacing can convert mentally.
 
 ---
 
+## Display Modes
+
+How the trace image is drawn: `RenderMode` = `smooth` | `blocky` |
+`wavelet` (`models/render_mode.py`), chosen with three icon-only
+buttons (`ui/widgets/render_mode_buttons.py`, icons painted in code).
+
+- Canvas: per member (`DisplayState.render_mode`), follows the edit
+  target like the colormap. Model Window: per tab
+  (`ModelGroup.render_mode`), all layers.
+- **Paint-time only** (`ui/widgets/trace_image_item.TraceImageItem`):
+  smooth / blocky toggle Qt's bilinear filtering of the rendered
+  QImage; wavelet hides the image and a child `WiggleItem` draws black
+  trace lines on a white panel. The array is never altered —
+  crosshair, transforms and exports-of-data read original samples.
+- Wiggles are built only for the traces / samples in view, thinned to
+  one trace per 4 px and ~one sample per pixel. Deflection follows the
+  member's levels: a scale spanning 0 swings about 0, a one-sided one
+  (velocity) about its middle; the clip level = ½ spacing, capped at 1.
+- Model Window, wavelet + Overlay (either mode): model in colour
+  (smooth), seismic as wiggles on top without the white panel. The
+  luminance composite is never drawn as wiggles.
+
+---
+
 ## Layout
 
 - **Top toolbar** (global, pinned), three sections separated by
   visual dividers:
-  - **Appearance**: colormap with Blocky / Smooth buttons
-    (per-member `DisplayState.smooth`, bilinear filtering at paint
-    time only — data is never interpolated; the Model Window has the
-    same pair, per tab, `ModelGroup.smooth`), clip %, gain, colour
-    scale, time
+  - **Appearance**: colormap with Smooth / Blocky / Wavelet icon
+    buttons (see Display Modes), clip %, gain, colour scale, time
     window (Time min / max → the group's `commanded_time_range_ms`,
     boxes show sample times 0 … reference `(n_samples − 1) * dt`,
     stored as the drawn extent `last + dt`, ≥ 1 sample apart;
@@ -939,7 +960,7 @@ contiguous range. Used by Range-type rows in either position.
 
 ## Out of Scope
 
-Wiggle / variable-area rendering; 3D volume slicing views; horizon/
+Variable-area (filled) wiggle rendering; 3D volume slicing views; horizon/
 event picking; CSV export of trace data; non-SEG-Y formats; view
 presets (deferred to a later version); auto-
 resampling; whole-trace AGC; diff scale factors; diffs between
@@ -954,7 +975,7 @@ window lifecycle.
 
 ## UX Defaults
 
-Clip percentile 1–99. Default colormap "gray". Smooth display on. Bandpass off
+Clip percentile 1–99. Default colormap "gray". Display mode Smooth. Bandpass off
 (5–80 Hz order 4 when on). AGC off (500 ms when on). Auto-flicker
 2 Hz. Scroll-bar drag throttle 150 ms. Scroll-bar markers blue.
 `groups_per_view=1`, `group_skip=1`. Fit-to-window on open, capped

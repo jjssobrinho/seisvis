@@ -33,7 +33,7 @@ from seisvis.models.model_group import ModelGroup
 from seisvis.models.processing_chain import ProcessingChain
 from seisvis.models.vertical_domain import DepthGeometry
 from seisvis.processing.overlay import compose_luminance
-from seisvis.ui.widgets.smooth_image_item import SmoothableImageItem
+from seisvis.ui.widgets.trace_image_item import TraceImageItem
 from seisvis.utils.colormaps import get_colormap
 
 log = logging.getLogger(__name__)
@@ -146,12 +146,12 @@ class ModelView(QWidget):
     def __init__(self, group: ModelGroup, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.group = group
-        self._image_items: list[SmoothableImageItem] = []
+        self._image_items: list[TraceImageItem] = []
         self._arrays: list[np.ndarray | None] = []
         # Holds the numpy-composited RGB picture in luminance mode. A
         # separate item because it replaces both layers rather than
         # sitting over them.
-        self._composite_item: SmoothableImageItem | None = None
+        self._composite_item: TraceImageItem | None = None
 
         self._build_ui()
         for i in range(len(group)):
@@ -164,7 +164,7 @@ class ModelView(QWidget):
         group.colormap_changed.connect(self._apply_colormap)
         group.overlay_changed.connect(self._apply_visibility)
         group.clip_pct_changed.connect(self._reseed_image_levels)
-        group.smooth_changed.connect(self._apply_smooth)
+        group.render_mode_changed.connect(self._apply_visibility)
 
     # --- construction ---------------------------------------------------
 
@@ -186,7 +186,8 @@ class ModelView(QWidget):
         self.readout_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         layout.addWidget(self.readout_label)
 
-        self._composite_item = SmoothableImageItem(axisOrder="col-major", smooth=self.group.smooth)
+        # The composite is an RGB picture: smooth or blocky, never wiggles.
+        self._composite_item = TraceImageItem(axisOrder="col-major")
         self._composite_item.setVisible(False)
         self._composite_item.setZValue(2)
         self.plot_item.addItem(self._composite_item)
@@ -195,7 +196,7 @@ class ModelView(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     def _add_image_item(self, index: int) -> None:
-        item = SmoothableImageItem(axisOrder="col-major", smooth=self.group.smooth)
+        item = TraceImageItem(axisOrder="col-major", render_mode=self.group.render_mode)
         item.setVisible(index == self.group.active_index)
         self.plot_item.addItem(item)
         self._image_items.insert(index, item)
@@ -281,7 +282,28 @@ class ModelView(QWidget):
 
     def _apply_visibility(self) -> None:
         """Show the active member, or both layers of an overlay."""
+        mode = self.group.render_mode
         pair = self.group.overlay_pair() if self.group.overlay_enabled else None
+        if self._composite_item is not None:
+            self._composite_item.set_render_mode("blocky" if mode == "blocky" else "smooth")
+
+        if pair is not None and mode == "wavelet":
+            # Wiggles over velocity: the model in colour, the seismic as
+            # bare black traces on top. Either overlay mode reads this way.
+            self._hide_composite()
+            base, top = pair
+            for i, item in enumerate(self._image_items):
+                item.setVisible(i in (base, top))
+                item.setZValue(1 if i == base else 0)
+                item.setOpacity(1.0)
+                item.set_render_mode("wavelet" if i == base else "smooth")
+                item.set_wiggle_background(False)
+            return
+
+        for item in self._image_items:
+            item.set_render_mode(mode)
+            item.set_wiggle_background(True)
+
         if pair is not None and self.group.overlay_mode == "luminance":
             if self._render_composite(*pair):
                 return
@@ -358,13 +380,6 @@ class ModelView(QWidget):
             item.setLevels(self.group.levels_for_member(i))
         # The composite bakes the scales in, so it has to be rebuilt.
         self._apply_visibility()
-
-    def _apply_smooth(self) -> None:
-        smooth = self.group.smooth
-        for item in self._image_items:
-            item.set_smooth(smooth)
-        if self._composite_item is not None:
-            self._composite_item.set_smooth(smooth)
 
     def _apply_colormap(self) -> None:
         for i, item in enumerate(self._image_items):

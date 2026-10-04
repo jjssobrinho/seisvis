@@ -26,6 +26,7 @@ from pathlib import Path
 
 from seisvis.models.display_state import DisplayState
 from seisvis.models.processing_chain import ProcessingChain
+from seisvis.models.render_mode import DEFAULT_RENDER_MODE, RenderMode, parse_render_mode
 from seisvis.models.sort_config import (
     SortConfig,
     default_sort_config,
@@ -120,7 +121,7 @@ class ModelGroupEntry:
     overlay_alpha: float | None = None
     overlay_weight: float | None = None
     flicker_hz: float | None = None
-    smooth: bool = True
+    render_mode: RenderMode = DEFAULT_RENDER_MODE
 
 
 @dataclass
@@ -362,7 +363,7 @@ def _model_group_to_dict(g: ModelGroupEntry) -> dict[str, object]:
         "overlay_alpha": g.overlay_alpha,
         "overlay_weight": g.overlay_weight,
         "flicker_hz": g.flicker_hz,
-        "smooth": g.smooth,
+        "render_mode": g.render_mode,
     }
 
 
@@ -387,7 +388,7 @@ def _model_group_from_dict(raw: dict) -> ModelGroupEntry:
         overlay_alpha=_opt_float(raw.get("overlay_alpha")),
         overlay_weight=_opt_float(raw.get("overlay_weight")),
         flicker_hz=_opt_float(raw.get("flicker_hz")),
-        smooth=bool(raw.get("smooth", True)),
+        render_mode=parse_render_mode(raw.get("render_mode"), legacy_smooth=raw.get("smooth")),
     )
 
 
