@@ -89,6 +89,7 @@ class ModelGroup(QObject):
     colormap_changed = Signal()
     clip_pct_changed = Signal()
     overlay_changed = Signal()
+    smooth_changed = Signal()
     name_changed = Signal(str)
 
     def __init__(
@@ -121,6 +122,8 @@ class ModelGroup(QObject):
         self._overlay_alpha = 0.5
         self._overlay_weight = DEFAULT_WEIGHT
         self.flicker_hz: float = 2.0
+        # Smooth (bilinear) or blocky drawing, for every layer of the tab.
+        self._smooth = True
 
     # --- identity --------------------------------------------------------
 
@@ -363,6 +366,19 @@ class ModelGroup(QObject):
             return
         style.colormap = name
         self.colormap_changed.emit()
+
+    # --- drawing ---------------------------------------------------------
+
+    @property
+    def smooth(self) -> bool:
+        return self._smooth
+
+    def set_smooth(self, smooth: bool) -> None:
+        smooth = bool(smooth)
+        if smooth == self._smooth:
+            return
+        self._smooth = smooth
+        self.smooth_changed.emit()
 
     # --- overlay ---------------------------------------------------------
 

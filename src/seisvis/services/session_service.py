@@ -208,6 +208,7 @@ def _capture_model_group(mg: ModelGroup, keys: Mapping[str, str]) -> ModelGroupE
         overlay_alpha=mg.overlay_alpha,
         overlay_weight=mg.overlay_weight,
         flicker_hz=float(mg.flicker_hz),
+        smooth=mg.smooth,
     )
 
 
@@ -553,6 +554,7 @@ def apply_model_group_entry(group: ModelGroup, entry: ModelGroupEntry) -> None:
         group.set_overlay_mode(entry.overlay_mode)  # type: ignore[arg-type]
     if entry.flicker_hz is not None:
         group.flicker_hz = entry.flicker_hz
+    group.set_smooth(entry.smooth)
     group.set_active_index(entry.active_index)
 
 

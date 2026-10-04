@@ -120,6 +120,7 @@ class ModelGroupEntry:
     overlay_alpha: float | None = None
     overlay_weight: float | None = None
     flicker_hz: float | None = None
+    smooth: bool = True
 
 
 @dataclass
@@ -361,6 +362,7 @@ def _model_group_to_dict(g: ModelGroupEntry) -> dict[str, object]:
         "overlay_alpha": g.overlay_alpha,
         "overlay_weight": g.overlay_weight,
         "flicker_hz": g.flicker_hz,
+        "smooth": g.smooth,
     }
 
 
@@ -385,6 +387,7 @@ def _model_group_from_dict(raw: dict) -> ModelGroupEntry:
         overlay_alpha=_opt_float(raw.get("overlay_alpha")),
         overlay_weight=_opt_float(raw.get("overlay_weight")),
         flicker_hz=_opt_float(raw.get("flicker_hz")),
+        smooth=bool(raw.get("smooth", True)),
     )
 
 

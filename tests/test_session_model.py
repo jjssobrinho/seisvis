@@ -157,6 +157,7 @@ def _full_session() -> SessionFile:
                 overlay_mode="alpha",
                 overlay_alpha=0.3,
                 flicker_hz=1.0,
+                smooth=False,
             )
         ],
         active_model_group=0,
@@ -172,7 +173,14 @@ def test_session_round_trips_through_json(tmp_path: Path) -> None:
     assert back.groups[0].members[0].processing_chain.agc.enabled is True
     assert back.groups[0].zoomed_time_range_ms == (100.0, 900.0)
     assert back.model_groups[0].styles["model"].levels == (1500.0, 4500.0)
+    assert back.model_groups[0].smooth is False
     assert not (tmp_path / "work.svsession.tmp").exists()
+
+
+def test_model_group_entry_without_smooth_opens_smoothed() -> None:
+    raw = _full_session().to_dict()
+    del raw["model_groups"][0]["smooth"]  # type: ignore[index]
+    assert SessionFile.from_dict(raw).model_groups[0].smooth is True
 
 
 def test_unknown_keys_are_ignored() -> None:

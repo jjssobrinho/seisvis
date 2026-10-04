@@ -475,7 +475,7 @@ session holds what the user was looking at.
   chain, `SortConfig`, commanded and zoomed ranges (incl. the time window, restored
   under any sort), colour scale,
   crosshair fields, flicker rate and excluded members), Model Window
-  tabs (members, per-kind style, overlay, flicker), active tabs.
+  tabs (members, per-kind style, overlay, flicker, smooth), active tabs.
 - **Not saved**: `.sv` content (it loads with its file), header scans
   (cached per file, see Scan cache), group indices, trace alignments, selection, transform windows,
   crosshair position.
@@ -800,7 +800,8 @@ computed. Users with regular trace spacing can convert mentally.
   visual dividers:
   - **Appearance**: colormap with Blocky / Smooth buttons
     (per-member `DisplayState.smooth`, bilinear filtering at paint
-    time only — data is never interpolated), clip %, gain, colour
+    time only — data is never interpolated; the Model Window has the
+    same pair, per tab, `ModelGroup.smooth`), clip %, gain, colour
     scale, time
     window (Time min / max → the group's `commanded_time_range_ms`,
     boxes show sample times 0 … reference `(n_samples − 1) * dt`,

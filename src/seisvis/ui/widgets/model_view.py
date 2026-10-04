@@ -33,6 +33,7 @@ from seisvis.models.model_group import ModelGroup
 from seisvis.models.processing_chain import ProcessingChain
 from seisvis.models.vertical_domain import DepthGeometry
 from seisvis.processing.overlay import compose_luminance
+from seisvis.ui.widgets.smooth_image_item import SmoothableImageItem
 from seisvis.utils.colormaps import get_colormap
 
 log = logging.getLogger(__name__)
@@ -145,12 +146,12 @@ class ModelView(QWidget):
     def __init__(self, group: ModelGroup, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.group = group
-        self._image_items: list[pg.ImageItem] = []
+        self._image_items: list[SmoothableImageItem] = []
         self._arrays: list[np.ndarray | None] = []
         # Holds the numpy-composited RGB picture in luminance mode. A
         # separate item because it replaces both layers rather than
         # sitting over them.
-        self._composite_item: pg.ImageItem | None = None
+        self._composite_item: SmoothableImageItem | None = None
 
         self._build_ui()
         for i in range(len(group)):
@@ -163,6 +164,7 @@ class ModelView(QWidget):
         group.colormap_changed.connect(self._apply_colormap)
         group.overlay_changed.connect(self._apply_visibility)
         group.clip_pct_changed.connect(self._reseed_image_levels)
+        group.smooth_changed.connect(self._apply_smooth)
 
     # --- construction ---------------------------------------------------
 
@@ -184,7 +186,7 @@ class ModelView(QWidget):
         self.readout_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         layout.addWidget(self.readout_label)
 
-        self._composite_item = pg.ImageItem(axisOrder="col-major")
+        self._composite_item = SmoothableImageItem(axisOrder="col-major", smooth=self.group.smooth)
         self._composite_item.setVisible(False)
         self._composite_item.setZValue(2)
         self.plot_item.addItem(self._composite_item)
@@ -193,7 +195,7 @@ class ModelView(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     def _add_image_item(self, index: int) -> None:
-        item = pg.ImageItem(axisOrder="col-major")
+        item = SmoothableImageItem(axisOrder="col-major", smooth=self.group.smooth)
         item.setVisible(index == self.group.active_index)
         self.plot_item.addItem(item)
         self._image_items.insert(index, item)
@@ -356,6 +358,13 @@ class ModelView(QWidget):
             item.setLevels(self.group.levels_for_member(i))
         # The composite bakes the scales in, so it has to be rebuilt.
         self._apply_visibility()
+
+    def _apply_smooth(self) -> None:
+        smooth = self.group.smooth
+        for item in self._image_items:
+            item.set_smooth(smooth)
+        if self._composite_item is not None:
+            self._composite_item.set_smooth(smooth)
 
     def _apply_colormap(self) -> None:
         for i, item in enumerate(self._image_items):

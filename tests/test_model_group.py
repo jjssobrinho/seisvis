@@ -44,6 +44,21 @@ def test_members_append_in_order(qapp, su_depth_model: Path, tmp_path: Path) -> 
         b.close()
 
 
+def test_smooth_defaults_on_and_signals_only_on_change(qapp, su_depth_model: Path) -> None:
+    ds = load_su(su_depth_model)
+    try:
+        g = ModelGroup(ds)
+        assert g.smooth is True
+        fired: list[bool] = []
+        g.smooth_changed.connect(lambda: fired.append(g.smooth))
+        g.set_smooth(False)
+        g.set_smooth(False)
+        g.set_smooth(True)
+        assert fired == [False, True]
+    finally:
+        ds.close()
+
+
 def test_re_adding_raises_the_existing_index(qapp, su_depth_model: Path) -> None:
     ds = load_su(su_depth_model)
     try:

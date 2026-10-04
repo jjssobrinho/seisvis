@@ -11,6 +11,9 @@
   (or All), are inherited by new members and are saved in sessions
   (older sessions open smoothed). Smoothing is paint-time only: the
   crosshair amplitude, FFT and f-k still read the original samples.
+- **The Model Window draws smoothed too.** The same Blocky / Smooth
+  buttons sit beside its colormap and apply to every layer of the tab,
+  overlay included. The choice is per tab and saved in sessions.
 
 ### Fixed: Sorted views and the spectra drawn from them
 

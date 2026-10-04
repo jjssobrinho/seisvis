@@ -20,6 +20,7 @@ import logging
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -99,6 +100,20 @@ class ModelWindow(QMainWindow):
         self._colormap_combo.setCurrentText(DEFAULT_MODEL_COLORMAP)
         self._colormap_combo.currentTextChanged.connect(self._on_colormap_changed)
         bar.addWidget(self._colormap_combo)
+
+        # Blocky / Smooth: how samples are drawn, for every layer of the tab.
+        self._blocky_button = QPushButton("Blocky")
+        self._blocky_button.setToolTip("Draw each sample as a flat block")
+        self._smooth_button = QPushButton("Smooth")
+        self._smooth_button.setToolTip("Interpolate the image between samples")
+        self._render_buttons = QButtonGroup(self)
+        self._render_buttons.setExclusive(True)
+        for b in (self._blocky_button, self._smooth_button):
+            b.setCheckable(True)
+            self._render_buttons.addButton(b)
+            bar.addWidget(b)
+        self._smooth_button.setChecked(True)
+        self._smooth_button.toggled.connect(self._on_smooth_toggled)
 
         bar.addSeparator()
 
@@ -323,6 +338,8 @@ class ModelWindow(QMainWindow):
     def _set_controls_enabled(self, enabled: bool) -> None:
         for w in (
             self._colormap_combo,
+            self._blocky_button,
+            self._smooth_button,
             self._min_spin,
             self._max_spin,
             self._fit_button,
@@ -372,6 +389,11 @@ class ModelWindow(QMainWindow):
         self._colormap_combo.blockSignals(True)
         self._colormap_combo.setCurrentText(tab.group.colormap)
         self._colormap_combo.blockSignals(False)
+        for b in (self._blocky_button, self._smooth_button):
+            b.blockSignals(True)
+        (self._smooth_button if tab.group.smooth else self._blocky_button).setChecked(True)
+        for b in (self._blocky_button, self._smooth_button):
+            b.blockSignals(False)
         geometry = tab.group.active_dataset.depth_geometry
         unit = geometry.value_unit if geometry else None
         self._unit_label.setText(f" {unit}" if unit else "")
@@ -418,6 +440,11 @@ class ModelWindow(QMainWindow):
         tab = self._current_tab()
         if tab is not None:
             tab.group.set_colormap(name)
+
+    def _on_smooth_toggled(self, smooth: bool) -> None:
+        tab = self._current_tab()
+        if tab is not None:
+            tab.group.set_smooth(smooth)
 
     def _on_levels_changed(self, _value: float) -> None:
         tab = self._current_tab()
