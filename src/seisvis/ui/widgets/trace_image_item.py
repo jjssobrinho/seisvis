@@ -11,7 +11,7 @@ import math
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 
 from seisvis.models.render_mode import DEFAULT_RENDER_MODE, RenderMode
@@ -25,6 +25,12 @@ _MAX_NORMALISED = 2.0
 _MIN_PX_PER_TRACE = 4.0
 # Antialiasing is worth it until the path gets large.
 _ANTIALIAS_MAX_POINTS = 200_000
+# The picked trace drawn over a smooth / blocky image.
+_HIGHLIGHT_COLOR = QColor(220, 0, 0)
+_HIGHLIGHT_WIDTH = 1.5
+# A lone picked trace may swing wider than its neighbours' spacing: at
+# least this many pixels at the clip level, so its wavelet reads at any zoom.
+_HIGHLIGHT_PX_AT_CLIP = 15.0
 
 
 def wiggle_scale(levels: tuple[float, float]) -> tuple[float, float]:
@@ -46,14 +52,17 @@ def wiggle_points(
     levels: tuple[float, float],
     cols: range,
     rows: range,
+    deflection: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """``(x, y, connect)`` for the traces in *cols*, samples in *rows*.
 
     Coordinates are image pixels (trace ``i`` spans ``[i, i + 1]``, its
     baseline at ``i + 0.5``). ``connect`` breaks the line between traces.
-    Deflection scales with the column stride so thinned traces keep their
-    spacing.
+    *deflection* is the swing at the clip level; by default half the column
+    stride, so thinned traces keep their spacing.
     """
+    if deflection is None:
+        deflection = _DEFLECTION_AT_CLIP * cols.step
     centre, half = wiggle_scale(levels)
     col_idx = np.arange(cols.start, cols.stop, cols.step)
     row_idx = np.arange(rows.start, rows.stop, rows.step)
@@ -63,7 +72,7 @@ def wiggle_points(
     block = np.asarray(array[np.ix_(col_idx, row_idx)], dtype=np.float64)
     norm = np.nan_to_num((block - centre) / half, nan=0.0, posinf=0.0, neginf=0.0)
     np.clip(norm, -_MAX_NORMALISED, _MAX_NORMALISED, out=norm)
-    x = (col_idx[:, None] + 0.5) + norm * (_DEFLECTION_AT_CLIP * cols.step)
+    x = (col_idx[:, None] + 0.5) + norm * deflection
     y = np.broadcast_to(row_idx[None, :] + 0.5, x.shape)
     connect = np.ones(x.shape, dtype=bool)
     connect[:, -1] = False
@@ -85,20 +94,36 @@ class WiggleItem(pg.GraphicsObject):
     A child of the image item, so it shares its placement transform (image
     pixel coordinates), visibility, z-order and removal. Only the traces and
     samples in view are turned into a path, rebuilt when the view moves.
+
+    With ``column`` set it draws just that one trace, unthinned — the picked
+    trace over a smooth / blocky image. ``source`` substitutes another
+    ``(array, levels)`` for the owner's, for an RGB composite that carries
+    no amplitudes of its own.
     """
 
-    def __init__(self, parent: TraceImageItem) -> None:
+    def __init__(
+        self,
+        parent: TraceImageItem,
+        *,
+        color: QColor | None = None,
+        width: float = 1.0,
+        background: bool = True,
+    ) -> None:
         super().__init__(parent)
         self._owner = parent
-        self.background = True
+        self.background = background
+        self.column: int | None = None
+        self.source: tuple[np.ndarray, tuple[float, float]] | None = None
         self._path: QPainterPath | None = None
         self._path_key: tuple | None = None
         self._n_points = 0
-        self._pen = QPen(QColor(0, 0, 0))
+        self._pen = QPen(color if color is not None else QColor(0, 0, 0))
         self._pen.setCosmetic(True)
-        self._pen.setWidthF(1.0)
+        self._pen.setWidthF(width)
 
     def _data(self) -> tuple[np.ndarray | None, tuple[float, float] | None]:
+        if self.source is not None:
+            return self.source
         levels = self._owner.getLevels()
         if levels is None:
             return self._owner.image, None
@@ -115,7 +140,14 @@ class WiggleItem(pg.GraphicsObject):
         if image is None:
             return QRectF()
         # Edge traces may swing a spacing past the image.
-        return QRectF(-1.0, 0.0, image.shape[0] + 2.0, image.shape[1])
+        rect = QRectF(-1.0, 0.0, image.shape[0] + 2.0, image.shape[1])
+        if self.column is not None:
+            # The picked trace's swing is fixed in pixels, so its width in
+            # image units follows the zoom: cover the whole view instead.
+            view = self.viewRect()
+            if view is not None:
+                rect = rect.united(view)
+        return rect
 
     def _rebuild_if_needed(self) -> None:
         image, levels = self._data()
@@ -130,13 +162,20 @@ class WiggleItem(pg.GraphicsObject):
         px_h = self.pixelHeight() or 1.0
         row_stride = max(1, int(math.floor(px_h)))
         top, bottom = sorted((view.top(), view.bottom()))
-        col_stride = max(1, int(math.ceil(px_w * _MIN_PX_PER_TRACE)))
-        cols = _visible_span(view.left(), view.right(), n_cols, col_stride)
+        deflection: float | None = None
+        if self.column is not None:
+            c = self.column
+            cols = range(c, c + 1) if 0 <= c < n_cols else range(0)
+            deflection = max(_DEFLECTION_AT_CLIP, _HIGHLIGHT_PX_AT_CLIP * px_w)
+        else:
+            col_stride = max(1, int(math.ceil(px_w * _MIN_PX_PER_TRACE)))
+            cols = _visible_span(view.left(), view.right(), n_cols, col_stride)
         rows = _visible_span(top, bottom, n_rows, row_stride)
-        key = (id(image), image.shape, levels, cols, rows)
+        lv = levels
+        key = (id(image), image.shape, lv, cols, rows, deflection)
         if key == self._path_key and self._path is not None:
             return
-        x, y, connect = wiggle_points(image, levels, cols, rows)
+        x, y, connect = wiggle_points(image, lv, cols, rows, deflection)
         self._path = pg.arrayToQPath(x, y, connect=connect) if x.size else QPainterPath()
         self._n_points = int(x.size)
         self._path_key = key
@@ -163,15 +202,21 @@ class TraceImageItem(pg.ImageItem):
 
     Smooth and blocky differ only in Qt's filtering when the rendered QImage
     is scaled onto the view. Wavelet hides the image and lets the child
-    :class:`WiggleItem` draw the traces instead.
+    :class:`WiggleItem` draw the traces instead. In smooth / blocky a second
+    child draws one picked trace (``set_highlight_column``) in red.
     """
 
     def __init__(self, *args, render_mode: RenderMode = DEFAULT_RENDER_MODE, **kwargs) -> None:  # noqa: ANN002, ANN003 - pg passthrough
         self._render_mode: RenderMode = render_mode
         self._wiggle: WiggleItem | None = None
+        self._highlight: WiggleItem | None = None
         super().__init__(*args, **kwargs)
         self._wiggle = WiggleItem(self)
         self._wiggle.setVisible(render_mode == "wavelet")
+        self._highlight = WiggleItem(
+            self, color=_HIGHLIGHT_COLOR, width=_HIGHLIGHT_WIDTH, background=False
+        )
+        self._highlight.setVisible(False)
 
     @property
     def render_mode(self) -> RenderMode:
@@ -182,13 +227,44 @@ class TraceImageItem(pg.ImageItem):
         assert self._wiggle is not None
         return self._wiggle
 
+    @property
+    def highlight(self) -> WiggleItem:
+        assert self._highlight is not None
+        return self._highlight
+
     def set_render_mode(self, mode: RenderMode) -> None:
         if mode == self._render_mode:
             return
         self._render_mode = mode
         self.wiggle.setVisible(mode == "wavelet")
         self.wiggle.invalidate()
+        self._sync_highlight_visibility()
         self.update()
+
+    def column_at(self, parent_pos: QPointF) -> int | None:
+        """The image column under *parent_pos* (view coordinates), if any."""
+        image = self.image
+        if image is None:
+            return None
+        col = int(math.floor(self.mapFromParent(parent_pos).x()))
+        return col if 0 <= col < image.shape[0] else None
+
+    def set_highlight_column(self, column: int | None) -> None:
+        """Draw image column *column* as a red trace (None hides it)."""
+        if column != self.highlight.column:
+            self.highlight.column = column
+            self.highlight.invalidate()
+        self._sync_highlight_visibility()
+
+    def set_highlight_source(self, source: tuple[np.ndarray, tuple[float, float]] | None) -> None:
+        """Take the picked trace's samples from *source* instead of this image."""
+        self.highlight.source = source
+        self.highlight.invalidate()
+
+    def _sync_highlight_visibility(self) -> None:
+        self.highlight.setVisible(
+            self._render_mode != "wavelet" and self.highlight.column is not None
+        )
 
     def set_wiggle_background(self, enabled: bool) -> None:
         """White panel behind the wiggles; off when drawn over another layer."""
@@ -210,8 +286,9 @@ class TraceImageItem(pg.ImageItem):
         self._invalidate_children()
 
     def _invalidate_children(self) -> None:
-        if self._wiggle is not None:
-            self._wiggle.invalidate()
+        for child in (self._wiggle, self._highlight):
+            if child is not None:
+                child.invalidate()
 
     def paint(self, painter: QPainter, *args) -> None:  # noqa: ANN002 - Qt passthrough
         if self._render_mode == "wavelet":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -238,6 +239,11 @@ class SeismicView(QWidget):
         self._active_workers: list[SliceWorker] = []
         self._last_arrays: list[np.ndarray | None] = []
         self._last_rects: list[QRectF | None] = []
+        # Double-clicked trace drawn in red over smooth / blocky images, as a
+        # view x (column centre) plus the layout it was picked in: a new
+        # trace range or sort puts other traces under that column.
+        self._picked_x: float | None = None
+        self._picked_layout: tuple | None = None
         # Per member, what its current frame was read as (see _read_mode),
         # so an alignment update that changes nothing skips the re-read.
         self._read_modes: list[object] = []
@@ -329,6 +335,7 @@ class SeismicView(QWidget):
         self.plot_item.addItem(self._v_line, ignoreBounds=True)
         self.plot_item.addItem(self._h_line, ignoreBounds=True)
         self.plot_widget.scene().sigMouseMoved.connect(self._on_mouse_moved)
+        self.plot_widget.scene().sigMouseClicked.connect(self._on_scene_clicked)
 
         # Selection overlay: addItem parents it under the ViewBox's
         # childGroup, which is the only place data items live in data
@@ -450,6 +457,7 @@ class SeismicView(QWidget):
             (QKeySequence("Shift+g"), lambda: self._bump_gain(-3.0)),
             (QKeySequence(Qt.Key.Key_Delete), self._clear_selection_via_key),
             (QKeySequence(Qt.Key.Key_Backspace), self._clear_selection_via_key),
+            (QKeySequence(Qt.Key.Key_Escape), self._clear_picked_trace),
         ):
             sc = QShortcut(seq, self)
             sc.setContext(ctx)
@@ -1014,6 +1022,8 @@ class SeismicView(QWidget):
         # itself nukes the selection via ToggleGroup.update_sort_config,
         # so this is mostly a no-op other than dt/bounds refresh.)
         self._refresh_overlay_geometry()
+        if self._picked_x is not None and self._picked_layout != self._layout_key():
+            self._clear_picked_trace()
         for i in range(len(self._image_items)):
             self._request_slice(i)
 
@@ -1439,6 +1449,8 @@ class SeismicView(QWidget):
         else:
             item.clear()
         item.setRect(rect)
+        if self._picked_x is not None:
+            item.set_highlight_column(item.column_at(QPointF(self._picked_x, 0.0)))
         self._last_arrays[member_index] = array
         self._last_rects[member_index] = rect
         if member_index == self.group.active_index:
@@ -1533,6 +1545,43 @@ class SeismicView(QWidget):
         """Drop cached slices for the member and re-request a fresh one."""
         self._cache.invalidate_member(self.group.id, member_index)
         self._request_slice(member_index)
+
+    # --- Picked trace (double-click) ---
+
+    def _layout_key(self) -> tuple:
+        state = self.group.shared_state
+        return (state.commanded_trace_range, state.sort_config)
+
+    def _on_scene_clicked(self, ev) -> None:  # noqa: ANN001 - pyqtgraph MouseClickEvent
+        if not ev.double() or ev.button() != Qt.MouseButton.LeftButton:
+            return
+        if not self.plot_item.getViewBox().sceneBoundingRect().contains(ev.scenePos()):
+            return
+        active = self.group.active_index
+        if not 0 <= active < len(self._image_items):
+            return
+        if self.group.members[active].display_state.render_mode == "wavelet":
+            return  # every trace is already a wiggle
+        view_pt = self.plot_item.getViewBox().mapSceneToView(ev.scenePos())
+        if self._image_items[active].column_at(view_pt) is None:
+            return
+        ev.accept()
+        self._picked_x = math.floor(view_pt.x()) + 0.5
+        self._picked_layout = self._layout_key()
+        self._apply_picked_trace()
+
+    def _clear_picked_trace(self) -> None:
+        if self._picked_x is None:
+            return
+        self._picked_x = None
+        self._picked_layout = None
+        self._apply_picked_trace()
+
+    def _apply_picked_trace(self) -> None:
+        """Point every member's red trace at the picked column (or hide it)."""
+        for item in self._image_items:
+            col = None if self._picked_x is None else item.column_at(QPointF(self._picked_x, 0.0))
+            item.set_highlight_column(col)
 
     # --- Crosshair + cursor readout ---
 

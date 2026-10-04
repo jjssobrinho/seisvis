@@ -24,7 +24,7 @@ import logging
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from seisvis.models.dataset import Dataset
@@ -152,6 +152,9 @@ class ModelView(QWidget):
         # separate item because it replaces both layers rather than
         # sitting over them.
         self._composite_item: TraceImageItem | None = None
+        # Double-clicked trace (view x in metres, column centre) drawn in red
+        # over smooth / blocky layers; Esc clears it.
+        self._picked_x: float | None = None
 
         self._build_ui()
         for i in range(len(group)):
@@ -193,6 +196,7 @@ class ModelView(QWidget):
         self.plot_item.addItem(self._composite_item)
 
         self.plot_widget.scene().sigMouseMoved.connect(self._on_mouse_moved)
+        self.plot_widget.scene().sigMouseClicked.connect(self._on_scene_clicked)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     def _add_image_item(self, index: int) -> None:
@@ -282,6 +286,10 @@ class ModelView(QWidget):
 
     def _apply_visibility(self) -> None:
         """Show the active member, or both layers of an overlay."""
+        self._apply_layers()
+        self._apply_picked_trace()
+
+    def _apply_layers(self) -> None:
         mode = self.group.render_mode
         pair = self.group.overlay_pair() if self.group.overlay_enabled else None
         if self._composite_item is not None:
@@ -472,12 +480,79 @@ class ModelView(QWidget):
             return None
         return float(array[trace, sample])
 
+    # --- picked trace ---------------------------------------------------
+
+    @property
+    def picked_x(self) -> float | None:
+        return self._picked_x
+
+    def _on_scene_clicked(self, ev) -> None:  # noqa: ANN001 - pyqtgraph MouseClickEvent
+        if not ev.double() or ev.button() != Qt.MouseButton.LeftButton:
+            return
+        vb = self.plot_item.getViewBox()
+        if not vb.sceneBoundingRect().contains(ev.scenePos()):
+            return
+        self.pick_trace_at(vb.mapSceneToView(ev.scenePos()).x())
+        ev.accept()
+
+    def pick_trace_at(self, x_m: float) -> bool:
+        """Draw the active member's trace under *x_m* in red; False if none.
+
+        Snaps to the trace centre so every layer on the same grid picks the
+        same column. Ignored in wavelet mode, where every trace is a wiggle.
+        """
+        if self.group.render_mode == "wavelet":
+            return False
+        active = self.group.active_index
+        if not 0 <= active < len(self._image_items):
+            return False
+        item = self._image_items[active]
+        col = item.column_at(QPointF(x_m, 0.0))
+        if col is None:
+            return False
+        # Column centre back in view coordinates.
+        self._picked_x = item.mapToParent(QPointF(col + 0.5, 0.0)).x()
+        self._apply_picked_trace()
+        return True
+
+    def clear_picked_trace(self) -> None:
+        self._picked_x = None
+        self._apply_picked_trace()
+
+    def _apply_picked_trace(self) -> None:
+        """Point each layer's red trace at the pick.
+
+        In an overlay only the seismic layer carries it (a velocity wiggle
+        says nothing); the luminance composite has no amplitudes, so it
+        borrows the seismic layer's samples and scale.
+        """
+        x = self._picked_x
+        pair = self.group.overlay_pair() if self.group.overlay_enabled else None
+        for i, item in enumerate(self._image_items):
+            col = None if x is None else item.column_at(QPointF(x, 0.0))
+            if pair is not None and i == pair[1]:
+                col = None
+            item.set_highlight_column(col)
+        comp = self._composite_item
+        if comp is None:
+            return
+        base_arr = self._arrays[pair[0]] if pair is not None else None
+        if x is None or not comp.isVisible() or base_arr is None:
+            comp.set_highlight_column(None)
+            return
+        comp.set_highlight_source((base_arr, self.group.levels_for_member(pair[0])))
+        comp.set_highlight_column(comp.column_at(QPointF(x, 0.0)))
+
     # --- input ----------------------------------------------------------
 
     def keyPressEvent(self, event) -> None:  # noqa: ANN001 - Qt override
         key = event.key()
         if key == Qt.Key.Key_F:
             self.fit_to_data()
+            event.accept()
+            return
+        if key == Qt.Key.Key_Escape and self._picked_x is not None:
+            self.clear_picked_trace()
             event.accept()
             return
         if Qt.Key.Key_1 <= key <= Qt.Key.Key_9:

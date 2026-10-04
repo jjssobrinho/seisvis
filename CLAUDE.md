@@ -815,6 +815,14 @@ buttons (`ui/widgets/render_mode_buttons.py`, icons painted in code).
 - Model Window, wavelet + Overlay (either mode): model in colour
   (smooth), seismic as wiggles on top without the white panel. The
   luminance composite is never drawn as wiggles.
+- **Picked trace** (smooth / blocky only): double-click draws that
+  trace as a red wiggle over the image (`TraceImageItem.
+  set_highlight_column`), at least 15 px swing at the clip level so it
+  reads at any zoom; another double-click moves it, `Esc` removes it.
+  Canvas: one column for all members, dropped when the commanded trace
+  range or sort changes (other traces under it). Model Window: the
+  seismic layer only in an overlay; the luminance composite borrows
+  the seismic's samples. Hidden in wavelet mode. Not saved in sessions.
 
 ---
 

@@ -47,3 +47,9 @@ def test_thinned_traces_swing_with_the_stride() -> None:
 def test_empty_span_gives_no_points() -> None:
     x, y, c = wiggle_points(np.zeros((2, 2)), (-1.0, 1.0), range(0, 0), range(0, 2))
     assert x.size == y.size == c.size == 0
+
+
+def test_explicit_deflection_overrides_the_spacing() -> None:
+    arr = np.ones((1, 2), dtype=np.float32)
+    x, _y, _c = wiggle_points(arr, (-1.0, 1.0), range(0, 1), range(0, 2), deflection=4.0)
+    np.testing.assert_allclose(x, [4.5, 4.5])
