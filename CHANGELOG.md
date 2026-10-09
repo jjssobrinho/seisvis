@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### Attribute plots
+
+- **Plot header fields against each other.** Right-click a dataset in the
+  catalog → **Open attribute plot**. The new tab draws one point per trace
+  the command bar selects — by default receiver X/Y (GroupX, GroupY)
+  coloured by shot — so you can see, shot by shot, where the spread was
+  laid out. Any header field can go on X, Y or the colour: GroupX against
+  FieldRecord gives a stacking chart, TraceNumber against offset checks
+  that channel → offset is the same for every shot.
+- **The command bar works as on the seismic canvas**: commit a Shot sort
+  and step through shots, Count / Skip, Range and List all choose which
+  traces are plotted. Members toggle and flicker as usual.
+- **Attributes toolbar tab**, after Processing: pick a layer (`[1] [2]`,
+  `+` adds sources as stars, `−` removes), its X / Y / Colour fields,
+  colormap, symbol and size. Several layers share the axes; layers coloured
+  by the same field share one colour bar.
+- **Coordinates are scaled** by the SEG-Y scalars (byte 71 for X/Y, 69
+  for elevations) and labelled in the file's units.
+- **Hover** a point to read its X, Y, colour value, shot and channel in the
+  status bar. `F` fits the selection; `Shift+F` also fits the background.
+- **Background**: every trace of the file in grey behind the selection, so
+  you see where the chosen shots sit on the line. Read once, then from the
+  header cache.
+- **Stats**: a side panel checks the selected layer against a regular 2D
+  line — the nominal station spacing within each shot and between shots,
+  points off that grid, missing and duplicate stations, and how far points
+  stray from a straight line. Flagged points get orange rings; the
+  tolerance (default 10 % of the spacing) is set in the panel.
+- Attribute plots, their layers and settings are saved in sessions.
+
 ### Full dataset paths on member buttons
 
 - **The selected member's button shows its full file path** in the

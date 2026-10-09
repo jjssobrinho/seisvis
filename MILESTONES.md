@@ -1,76 +1,91 @@
-Milestone v6.4 — Header Index Cache
-Prerequisite: v63-done.
+Milestone v6.5 — Attribute Plot
+Prerequisite: v64-done.
 
-Full header-scan arrays are cached on disk and reused while the source
-file is unchanged, so reopening a file or a session does not re-read
-every trace header. Removes "`.svh` header-array sidecar cache" from
-Out of Scope — the cache lives in the user cache directory, not next to
-the data, which may be shared or read-only.
+A second kind of canvas tab that plots header field against header field —
+one point per trace the group's command bar selects — instead of trace
+images. Built to check whether the shots and receivers of a 2D survey sit
+on a regular geometry, but generic: receiver X/Y coloured by shot, a
+stacking chart (GroupX vs FieldRecord), channel vs offset, …
 
 ---
 
-Layout
+Entry point
+
+Catalog right-click → "Open attribute plot" (one dataset, or a
+multi-selection as members). Depth datasets are not offered it. Opens a
+new toggle group "Attributes N" with `view_kind = "attribute"`.
+
+---
+
+Model
 
 ```
-~/.cache/seisvis/headers/<sha1(abs_path)>/     ($SEISVIS_CACHE_DIR, $XDG_CACHE_HOME)
-  key.json          schema_version, abs_path, size, mtime_ns,
-                    sha1_prefix, n_traces
-  FieldRecord.npy   int32 per trace
-  INLINE_3D.npy
-  CDP.npy           added when a sort first needs it
+ToggleGroup.view_kind          "seismic" | "attribute", fixed at creation
+ToggleGroup.attribute_config   AttributePlotConfig | None (attribute only)
+  layers                       tuple[AttributeLayer, ...]  (≥ 1)
+  edit_layer                   layer the toolbar edits
+  show_background / show_stats / equal_aspect
+  stats_tolerance              fraction of nominal spacing (default 0.10)
+AttributeLayer                 x_field, y_field, color_field | None,
+                               colormap, symbol, size, visible
 ```
 
-One `.npy` per field so adding a field does not rewrite the others (the
-four default fields of a 17.4 M-trace file are 266 MB).
+Frozen; saved in sessions (`view_kind`, `attribute`); older sessions read
+as seismic. Members, sort, flicker, alignment are the group's as usual.
 
 ---
 
 Layers
 
 ```
-io/header_cache.py      HeaderCacheKey.for_file / try_for_file
-                        HeaderCache.load / store / prune / clear / size_bytes
-io/header_reader.py     read_fields_cached → CachedRead(arrays, from_cache)
-io/segy_loader, su_loader   Dataset.file_key fingerprinted at open
-workers/*               header scan, field scan, alignment use read_fields_cached
-                        HeaderScanWorker.signals.cache_hit
-app.py                  "Indexed X (from cache)"; File → Clear Header Cache…
+models/attribute_plot.py         AttributeLayer / AttributePlotConfig + (de)serialisation
+processing/attribute_plot.py     SEG-Y scalars, LayerPoints, colours, background_points
+processing/attribute_stats.py    line fit, grid residuals, regularity()
+services/attribute_plot_service  fields to read, shared colour scales, layer_regularity
+workers/attribute_background_worker   whole-file X/Y via read_fields_cached → distinct positions
+controllers/attribute_controller      toolbar Attributes section ↔ group config
+ui/toolbar/attributes_group.py   Layer [1][2][+][−] · X · Y · Colour · cmap · symbol · size ·
+                                 Show | Background · Stats · Equal aspect
+ui/widgets/attribute_plot_view.py     the tab: toggle bar, scatter plot, stats panel, command bar
+ui/widgets/attribute_stats_panel.py   regularity report + tolerance
 ```
 
-- The key is taken when the file is opened and checked again when a
-  scan ends; a file that changed in between is scanned but not cached.
-  Reload re-fingerprints, so a changed file misses naturally.
-- Loads use `allow_pickle=False`; a bad `key.json` or array is a miss.
-  Temp + rename writes, `key.json` last, so a half-written entry is
-  never trusted. Write failures are logged only.
-- LRU by `key.json` mtime (touched on each hit), pruned to 2 GB after
-  every write; the entry just written is kept.
-
----
-
-Measured
-
-108 GB SEG-Y, 17.4 M traces, page cache dropped, opening the session to
-fully restored: 55 s on first open (scan + write), 2.5 s afterwards.
+- Selection: `resolve_member_trace_indices` per member (sort, natural order,
+  pairing with the reference); natural order capped at 20,000 traces.
+  `TraceHeaderWorker` reads only the fields the visible layers need, plus
+  scalars, FieldRecord / TraceNumber (hover) and CoordinateUnits.
+- Scalars: Source/Group/CDP X/Y × SourceGroupScalar, elevations ×
+  ElevationScalar, ShotPoint × ShotPointScalar (s>0 ×, s<0 ÷|s|, 0 → 1).
+  Unset scalar → raw values.
+- Colour: layers colouring by the same field and colormap share one bar
+  and range, across members too.
+- Equal aspect only when every visible axis is a coordinate.
+- Background: every trace's X/Y per visible layer in grey, distinct
+  positions only, thinned past 200,000 with a fixed seed; follows the
+  active member; cached per file and field pair in the view and in the
+  header cache on disk. Shift+F fits it with the selection.
+- Stats: for the edited layer, groups = its colour values. Straight-line
+  fit (principal axis) → inline / crossline. Within groups: nominal =
+  median gap, points snapped to that grid → off grid / missing /
+  duplicates; between groups: same on group centres. Off line =
+  |crossline| > tolerance × nominal. Flagged points get orange rings.
+- Toolbar: Attributes tab after Processing. An attribute tab enables only
+  it (and switches to it); a seismic tab disables it.
 
 ---
 
 Tests
 
-- `test_header_cache.py` — env / XDG / home root; round trip; miss and
-  entry dropped on changed size, mtime, content or trace count; field
-  merge leaves existing arrays untouched; new version replaces old
-  fields; corrupt, wrong-shape, float and pickled arrays ignored; bad or
-  missing key.json; leftover temp files; failed write leaves no trusted
-  entry; unwritable root; LRU prune; entry just written survives; clear.
-- `test_header_scan_worker.py` — second scan comes from the cache with
-  no disk reads and `cache_hit`; touched file rescanned; file changed
-  during the scan not cached.
-- `test_field_scan.py` — only uncached fields are read.
-- `test_session_restore.py` — reopening a saved session reads no full
-  header pass and restores the same workspace.
+`test_attribute_plot.py` (config, scalars, points, background),
+`test_attribute_plot_service.py`, `test_attribute_stats.py`,
+`test_attribute_plot_group.py` (group kind, sessions, catalog),
+`test_attribute_plot_view.py` (reads, drawing, readout, members,
+background, stats), `test_attribute_background_worker.py`,
+`test_attribute_toolbar.py`.
 
-Out of scope for v6.4
+Out of scope for v6.5
 
-Caching the surange probe; sharing a cache between users or machines;
-a size preference in the UI; compressing the arrays.
+Measuring along a crooked line's own path; per-layer statistics for more
+than the edited layer; exporting the plot or the report; a decimated
+"all shots" selection mode; reading selected-trace headers with the
+vectorised block reader (selection reads are per trace).
