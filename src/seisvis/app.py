@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from seisvis.controllers.active_group_controller import ActiveGroupController
 from seisvis.controllers.alignment_controller import AlignmentController
+from seisvis.controllers.attribute_controller import AttributeController
 from seisvis.controllers.session_controller import SessionRestorer
 from seisvis.controllers.transforms_coordinator import TransformsCoordinator
 from seisvis.io.header_cache import HeaderCache
@@ -297,6 +298,9 @@ class MainWindow(QMainWindow):
         self.toolbar = GlobalToolbar(self)
         self.active_group_controller = ActiveGroupController(
             self.project, self.toolbar, parent=self
+        )
+        self.attribute_controller = AttributeController(
+            self.project, self.toolbar.attributes, parent=self
         )
         root_layout.addWidget(self.toolbar)
 
