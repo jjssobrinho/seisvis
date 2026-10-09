@@ -105,18 +105,20 @@ def test_grid_image_places_each_bin() -> None:
     grid = grid_image(il, xl, v)
     assert grid is not None
     assert grid.values.shape == (3, 2)
-    assert (grid.x0, grid.y0, grid.dx, grid.dy) == (10.0, 100.0, 1.0, 1.0)
+    g = grid.geometry
+    assert (g.x0, g.y0, g.dx, g.dy) == (10.0, 100.0, 1.0, 1.0)
     expected = np.array([[1.0, 2.0], [3.0, np.nan], [np.nan, 4.0]])
     np.testing.assert_array_equal(grid.values, expected.astype(np.float32))
     assert grid.n_filled == 4
-    assert grid.cell_at(12.2, 100.9) == (2, 1)
-    assert grid.cell_at(13.0, 100.0) is None
+    assert g.cell_at(12.2, 100.9) == 2 * 2 + 1
+    assert g.cell_at(13.0, 100.0) is None
+    np.testing.assert_array_equal(g.row_per_cell(), [0, 1, 2, -1, -1, 3])
 
 
 def test_grid_image_uses_the_numbering_step() -> None:
     grid = grid_image(np.array([1000, 1002, 1006]), np.array([1, 1, 1]), np.ones(3))
     assert grid is not None
-    assert grid.dx == 2.0 and grid.values.shape == (4, 1)
+    assert grid.geometry.dx == 2.0 and grid.values.shape == (4, 1)
 
 
 def test_grid_image_averages_shared_cells() -> None:
@@ -154,3 +156,22 @@ def test_amplitude_colour_scale_is_symmetric_per_time() -> None:
     assert scales[0].is_amplitude and scales[0].time_ms == 100.0
     lo, hi = scales[0].levels
     assert lo == -hi and 0.39 < hi <= 0.4
+
+
+def test_grid_geometry_bins_new_values_without_recomputing() -> None:
+    from seisvis.processing.attribute_plot import grid_geometry
+
+    il = np.array([1.0, 1.0, 2.0, np.nan])
+    xl = np.array([1.0, 2.0, 1.0, 1.0])
+    g = grid_geometry(il, xl)
+    assert g is not None
+    np.testing.assert_array_equal(g.cell, [0, 1, 2, -1])
+    np.testing.assert_array_equal(g.bin(np.array([1.0, 2.0, 3.0, 9.0])), [[1, 2], [3, np.nan]])
+    second = g.bin(np.array([5.0, np.nan, 7.0, 9.0]))
+    np.testing.assert_array_equal(second, [[5, np.nan], [7, np.nan]])
+
+
+def test_symmetric_levels_subsample_large_inputs() -> None:
+    v = np.tile(np.array([-2.0, 1.0, 0.5, -0.5], dtype=np.float32), 600_000)
+    lo, hi = symmetric_levels(v)  # type: ignore[misc]
+    assert lo == -hi and hi == pytest.approx(2.0)

@@ -13,19 +13,23 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from seisvis.models.attribute_plot import AttributePlotConfig
+from seisvis.models.attribute_plot import AttributeLayer, AttributePlotConfig
 from seisvis.processing.attribute_plot import (
     BackgroundPoints,
+    GridGeometry,
     GridImage,
     LayerPoints,
     color_levels,
     coordinate_unit,
     fields_to_read,
+    grid_geometry,
     grid_image,
     is_coordinate,
     is_grid_layer,
     layer_points,
     lut_indices,
+    sample_for_time,
+    scaled_values,
     symmetric_levels,
 )
 from seisvis.processing.attribute_stats import RegularityReport, regularity
@@ -134,6 +138,25 @@ def layer_regularity(points: LayerPoints | None, tolerance: float) -> Regularity
     return regularity(points.x, points.y, points.color, tolerance)
 
 
+def layer_xy(layer: AttributeLayer, raw: Mapping[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """Scaled X and Y of every row of *raw* (NaN kept), for grid placement."""
+    return scaled_values(layer.x_field, raw), scaled_values(layer.y_field, raw)
+
+
+def layer_colors(layer: AttributeLayer, raw: Mapping[str, np.ndarray]) -> np.ndarray | None:
+    """Colour values of every row, or None if solid or not read yet."""
+    key = layer.color_key
+    if key is None or key not in raw:
+        return None
+    return scaled_values(key, raw)
+
+
+def layer_grid(layer: AttributeLayer, raw: Mapping[str, np.ndarray]) -> GridGeometry | None:
+    """Grid placement of *layer*'s rows; None when it is drawn as dots."""
+    x, y = layer_xy(layer, raw)
+    return grid_geometry(x, y)
+
+
 def units_label(raw: Mapping[str, np.ndarray]) -> str | None:
     """Coordinate unit from the first set CoordinateUnits value, if any."""
     units = raw.get(UNITS_FIELD)
@@ -147,7 +170,12 @@ def units_label(raw: Mapping[str, np.ndarray]) -> str | None:
 
 __all__ = [
     "BackgroundPoints",
+    "GridGeometry",
     "GridImage",
+    "layer_colors",
+    "layer_grid",
+    "layer_xy",
+    "sample_for_time",
     "grid_image",
     "is_grid_layer",
     "IDENTITY_FIELDS",

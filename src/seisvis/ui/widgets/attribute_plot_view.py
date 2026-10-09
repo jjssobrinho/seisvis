@@ -11,32 +11,50 @@ trace list comes from :meth:`ToggleGroup.resolve_member_trace_indices`
 :class:`TraceHeaderWorker` reads the fields the visible layers need for
 exactly those traces. Every member is read, so toggling is a
 ``setVisible`` swap like on the seismic canvas.
+
+With ``trace_scope == "all"`` the command bar is set aside and every trace
+is read (headers through the header cache). A layer coloured by amplitude
+reads one sample per trace through ``read_slice`` (``TimeSliceWorker``);
+on an INLINE_3D × CROSSLINE_3D (or other grid-number) layer the values are
+binned into an image — a time slice — instead of drawn as dots.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
-from dataclasses import dataclass, replace
+from collections import OrderedDict
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QEvent, QPointF, Qt, QThreadPool, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QThreadPool, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
-from seisvis.models.attribute_plot import AttributeLayer, AttributePlotConfig
+from seisvis.models.attribute_plot import (
+    AMPLITUDE,
+    AttributeLayer,
+    AttributePlotConfig,
+    amplitude_key,
+)
 from seisvis.models.toggle_group import ToggleGroup
 from seisvis.services.attribute_plot_service import (
     IDENTITY_FIELDS,
     BackgroundPoints,
     ColorScale,
+    GridGeometry,
     LayerPoints,
     color_scales,
     fields_for,
     is_coordinate,
+    is_grid_layer,
+    layer_colors,
+    layer_grid,
     layer_regularity,
     lut_indices,
     points_for,
+    sample_for_time,
     units_label,
 )
 from seisvis.ui.widgets.attribute_stats_panel import OUTLIER_COLOR, AttributeStatsPanel
@@ -46,6 +64,9 @@ from seisvis.utils.colormaps import get_colormap
 from seisvis.utils.member_colors import member_color
 from seisvis.utils.mime import DATASET_MIME_TYPE, decode_dataset_ids
 from seisvis.workers.attribute_background_worker import AttributeBackgroundWorker
+from seisvis.workers.compute_worker import ComputeWorker
+from seisvis.workers.field_scan_worker import FieldScanWorker
+from seisvis.workers.time_slice_worker import TimeSliceWorker
 from seisvis.workers.trace_header_worker import MISSING, TraceHeaderWorker
 
 log = logging.getLogger(__name__)
@@ -58,6 +79,14 @@ _OUTLINE_PEN = pg.mkPen((30, 30, 30, 200), width=0.5)
 
 # How close (screen pixels) the cursor must be to a point to read it out.
 _HOVER_RADIUS_PX = 10.0
+
+# Time slices kept in memory (per dataset, sample and trace list), so
+# stepping back to a time already read is instant.
+_SLICE_CACHE_ENTRIES = 6
+
+# Regularity stats run on the GUI thread; past this many points they would
+# stall it, so the panel asks for a smaller selection instead.
+_STATS_MAX_POINTS = 200_000
 
 
 def missing_to_nan(arrays: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
@@ -104,6 +133,12 @@ class _MemberData:
     trace_indices: np.ndarray  # member's own trace index per row
     raw: dict[str, np.ndarray]  # float64, NaN where unreadable
     points: list[LayerPoints | None]  # per layer; None = fields missing
+    # Identifies the trace list for the slice cache: ("all", n) or a digest.
+    trace_key: tuple = ()
+    # (x_field, y_field) → grid placement; None = not a grid (draw dots).
+    grids: dict[tuple[str, str], GridGeometry | None] = field(default_factory=dict)
+    # (x_field, y_field) → a row in each grid cell, for hover.
+    cell_rows: dict[tuple[str, str], np.ndarray] = field(default_factory=dict)
 
 
 class AttributePlotView(QWidget):
@@ -132,7 +167,16 @@ class AttributePlotView(QWidget):
         self._pool = pool
         self._data: list[_MemberData | None] = []
         self._items: list[list[pg.ScatterPlotItem]] = []  # [member][layer]
-        self._workers: dict[int, TraceHeaderWorker] = {}
+        self._images: list[list[pg.ImageItem]] = []  # [member][layer], grid layers
+        self._workers: dict[int, TraceHeaderWorker | FieldScanWorker] = {}
+        self._header_progress: dict[int, float] = {}
+        # (member, colour key) → read of that time slice in flight.
+        self._slice_workers: dict[tuple[int, str], TimeSliceWorker] = {}
+        self._slice_progress: dict[tuple[int, str], float] = {}
+        self._slice_cache: OrderedDict[tuple, np.ndarray] = OrderedDict()
+        # (member, x_field, y_field) → grid placement being worked out.
+        self._grid_workers: dict[tuple[int, str, str], ComputeWorker] = {}
+        self._last_scope: str = group.attribute_config.trace_scope if group.attribute_config else ""
         self._generation: list[int] = []
         self._fit_pending = True
         self._color_bars: list[pg.ColorBarItem] = []
@@ -216,6 +260,12 @@ class AttributePlotView(QWidget):
         )
         self.drop_hint_label.setVisible(False)
 
+        # Shown instead of the command bar's effect when every trace is plotted.
+        self.scope_label = QLabel("", self)
+        self.scope_label.setStyleSheet("color: gray; font-style: italic; padding: 2px 6px;")
+        self.scope_label.setVisible(False)
+        root.addWidget(self.scope_label)
+
         self.command_bar = GroupCommandBar(self.group, parent=self)
         root.addWidget(self.command_bar)
 
@@ -287,12 +337,33 @@ class AttributePlotView(QWidget):
 
     def fit_all(self) -> None:
         """Fit the selection and the whole-file background together."""
-        items = [i for i in (*self._active_items(), *self._background_items) if i.isVisible()]
-        self.view_box.autoRange(items=items or None)
+        self._fit_items([i for i in (*self._active_items(), *self._background_items) if _drawn(i)])
 
     def fit(self) -> None:
-        """Fit the view to every visible point of the active member."""
-        self.view_box.autoRange(items=[i for i in self._active_items() if i.isVisible()] or None)
+        """Fit the view to everything the active member draws."""
+        self._fit_items([i for i in self._active_items() if _drawn(i)])
+
+    def _fit_items(self, items: list[pg.GraphicsObject]) -> None:
+        """Fit *items*; a flat extent (a straight E-W line) gets a sensible height.
+
+        pyqtgraph pads a zero-height range by a fixed amount, which under
+        equal aspect would zoom far out along the line.
+        """
+        bounds = [b for b in (_item_bounds(i) for i in items) if b is not None]
+        if not bounds:
+            return
+        x0 = min(b[0] for b in bounds)
+        x1 = max(b[1] for b in bounds)
+        y0 = min(b[2] for b in bounds)
+        y1 = max(b[3] for b in bounds)
+        w, h = x1 - x0, y1 - y0
+        if h <= 0:
+            pad = max(w * 0.05, 1.0)
+            y0, y1 = y0 - pad, y1 + pad
+        if w <= 0:
+            pad = max(h * 0.05, 1.0)
+            x0, x1 = x0 - pad, x1 + pad
+        self.view_box.setRange(xRange=(x0, x1), yRange=(y0, y1), padding=0.05)
 
     # --- members ------------------------------------------------------------
 
@@ -301,15 +372,23 @@ class AttributePlotView(QWidget):
         for worker in self._workers.values():
             worker.is_cancelled = True
         self._workers.clear()
-        for row in self._items:
+        self._header_progress.clear()
+        for key in list(self._slice_workers):
+            self._cancel_slice(key)
+        for worker in self._grid_workers.values():
+            worker.is_cancelled = True
+        self._grid_workers.clear()
+        for row in (*self._items, *self._images):
             for item in row:
                 self.plot_item.removeItem(item)
         n = self.group.n_members
         self._items = [[] for _ in range(n)]
+        self._images = [[] for _ in range(n)]
         self._data = [None] * n
         self._generation = [0] * n
         self._connect_sv_signals()
         self._seed_trace_range()
+        self._sync_scope_ui()
         self._fit_pending = True
         self._refetch_all()
         self._refresh_background()
@@ -344,6 +423,8 @@ class AttributePlotView(QWidget):
             )
 
     def _on_shared_state_changed(self) -> None:
+        if self._config().trace_scope == "all":
+            return  # every trace is plotted; the command bar does not apply
         self._fit_pending = True
         self._refetch_all()
 
@@ -380,6 +461,11 @@ class AttributePlotView(QWidget):
         old = self._workers.pop(index, None)
         if old is not None:
             old.is_cancelled = True
+        self._header_progress.pop(index, None)
+        for key in [k for k in self._slice_workers if k[0] == index]:
+            self._cancel_slice(key)
+        for key in [k for k in self._grid_workers if k[0] == index]:
+            self._grid_workers.pop(key).is_cancelled = True
         self._data[index] = None
         self._sync_loading()
 
@@ -387,21 +473,31 @@ class AttributePlotView(QWidget):
         if getattr(ds, "unavailable_reason", None) is not None:
             self._redraw()
             return
-        indices, _x_range = self.group.resolve_member_trace_indices(index)
-        if indices is None:
-            self._redraw()
-            return
-        if isinstance(indices, slice):
-            indices = np.arange(indices.start or 0, indices.stop, indices.step or 1)
-        indices = np.asarray(indices, dtype=np.int64)
         # A diff has no headers of its own; its traces sit in A's order.
         header_ds = getattr(ds, "parent_a", ds)
         if getattr(header_ds, "handle", None) is None or header_ds.is_closed:
             self._redraw()
             return
-
         generation = self._generation[index]
-        worker = TraceHeaderWorker(header_ds, indices, list(self._fields_wanted()))
+        fields = list(self._fields_wanted())
+
+        if self._config().trace_scope == "all":
+            # Every trace: one pass over the file, through the header cache.
+            indices = np.arange(int(header_ds.n_traces), dtype=np.int64)
+            worker: TraceHeaderWorker | FieldScanWorker = FieldScanWorker(header_ds, fields)
+            worker.signals.progress.connect(
+                lambda pct, i=index, g=generation: self._on_header_progress(i, g, pct)
+            )
+        else:
+            resolved, _x_range = self.group.resolve_member_trace_indices(index)
+            if resolved is None:
+                self._redraw()
+                return
+            if isinstance(resolved, slice):
+                resolved = np.arange(resolved.start or 0, resolved.stop, resolved.step or 1)
+            indices = np.asarray(resolved, dtype=np.int64)
+            worker = TraceHeaderWorker(header_ds, indices, fields)
+
         worker.signals.finished.connect(
             lambda _id, arrays, i=index, g=generation, idx=indices: self._on_read(i, g, idx, arrays)
         )
@@ -412,13 +508,27 @@ class AttributePlotView(QWidget):
         self._sync_loading()
         self._pool.start(worker)
 
+    def _on_header_progress(self, index: int, generation: int, pct: float) -> None:
+        if index < len(self._generation) and generation == self._generation[index]:
+            self._header_progress[index] = float(pct)
+            self._sync_loading()
+
     def _on_read(self, index: int, generation: int, indices: np.ndarray, arrays: dict) -> None:
         if index >= len(self._generation) or generation != self._generation[index]:
             return
         self._workers.pop(index, None)
+        self._header_progress.pop(index, None)
         raw = missing_to_nan(arrays)
-        self._data[index] = _MemberData(indices, raw, points_for(self._config(), raw))
+        if self._config().trace_scope == "all":
+            trace_key: tuple = ("all", int(indices.size))
+        else:
+            trace_key = ("sel", hashlib.blake2b(indices.tobytes(), digest_size=16).hexdigest())
+        self._data[index] = _MemberData(
+            indices, raw, points_for(self._config(), raw), trace_key=trace_key
+        )
         self._sync_loading()
+        self._request_grids(index)
+        self._request_slices(index)
         self._redraw()
         if self._fit_pending and index == self.group.active_index:
             self._fit_pending = False
@@ -433,26 +543,209 @@ class AttributePlotView(QWidget):
         self.status_message.emit(f"Header read failed: {message}")
 
     def _sync_loading(self) -> None:
+        parts: list[str] = []
+        if self._header_progress:
+            parts.append(f"Reading headers… {min(self._header_progress.values()):.0f}%")
+        elif self._workers:
+            parts.append("Reading headers…")
+        if self._slice_workers:
+            # Keys are AMPLITUDE@<time>; show the times.
+            times = sorted({float(k[1].split("@", 1)[1]) for k in self._slice_workers})
+            pct = min(self._slice_progress.get(k, 0.0) for k in self._slice_workers)
+            label = ", ".join(_time_label(t) for t in times)
+            parts.append(f"Reading time slice {label}… {pct:.0f}%")
+        if self._grid_workers:
+            parts.append("Placing traces on the grid…")
         if self._background_progress is not None:
-            text = f"Reading all headers for the background… {self._background_progress:.0f}%"
-        else:
-            text = "Reading headers…"
-        self.loading_label.setText(text)
+            parts.append(
+                f"Reading all headers for the background… {self._background_progress:.0f}%"
+            )
+        self.loading_label.setText(" · ".join(parts))
         self.loading_label.adjustSize()
-        self.loading_label.setVisible(bool(self._workers) or self._background_progress is not None)
+        self.loading_label.setVisible(bool(parts))
+
+    def _sync_scope_ui(self) -> None:
+        """Grey the command bar out while every trace is plotted."""
+        config = self._config()
+        all_traces = config.trace_scope == "all"
+        self.command_bar.setEnabled(not all_traces)
+        if all_traces and not self.group.is_empty:
+            n = int(self.group.members[self.group.active_index].dataset.n_traces)
+            self.scope_label.setText(
+                f"Plotting all {n:,} traces — the command bar applies when Traces is "
+                "set to Selection (Attributes toolbar)."
+            )
+        self.scope_label.setVisible(all_traces)
 
     def _on_config_changed(self, _config: object) -> None:
+        config = self._config()
         self._refresh_background()
-        # A layer may now need a field that was never read; otherwise the
-        # values in hand are enough to redraw.
+        self._sync_scope_ui()
+        # A new scope or a field never read means new reads; otherwise the
+        # values in hand (plus any new time slice) are enough to redraw.
         wanted = set(self._fields_wanted())
-        if any(d is not None and not wanted <= set(d.raw) for d in self._data):
+        scope_changed = config.trace_scope != self._last_scope
+        self._last_scope = config.trace_scope
+        if scope_changed or any(d is not None and not wanted <= set(d.raw) for d in self._data):
+            self._fit_pending = True
             self._refetch_all()
             return
-        for d in self._data:
+        for i, d in enumerate(self._data):
             if d is not None:
-                d.points = points_for(self._config(), d.raw)
+                d.points = points_for(config, d.raw)
+                self._request_grids(i)
+                self._request_slices(i)
         self._redraw()
+
+    # --- time slices ---------------------------------------------------------
+
+    def _request_slices(self, index: int) -> None:
+        """Read the amplitudes the visible layers need for member *index*."""
+        data = self._data[index] if index < len(self._data) else None
+        if data is None:
+            return
+        ds = self.group.members[index].dataset
+        wanted = {amplitude_key(t): t for t in self._config().amplitude_times()}
+        for key in [k for k in data.raw if k.startswith(AMPLITUDE + "@") and k not in wanted]:
+            del data.raw[key]  # a time no longer shown: free its samples
+        for key in [k for k in self._slice_workers if k[0] == index and k[1] not in wanted]:
+            self._cancel_slice(key)
+        changed = False
+        for key, time_ms in wanted.items():
+            if key in data.raw or (index, key) in self._slice_workers:
+                continue
+            sample = sample_for_time(time_ms, ds.sample_interval_ms, ds.n_samples)
+            cache_key = (ds.id, sample, data.trace_key)
+            cached = self._slice_cache.get(cache_key)
+            if cached is not None:
+                self._slice_cache.move_to_end(cache_key)
+                data.raw[key] = cached
+                changed = True
+                continue
+            self._start_slice(index, key, ds, data.trace_indices, sample, cache_key)
+        if changed:
+            data.points = points_for(self._config(), data.raw)
+            self._redraw()
+
+    def _start_slice(
+        self,
+        index: int,
+        key: str,
+        ds: object,
+        indices: np.ndarray,
+        sample: int,
+        cache_key: tuple,
+    ) -> None:
+        worker = TimeSliceWorker(ds, indices, sample)
+        generation = self._generation[index]
+        worker.signals.finished.connect(
+            lambda _id, _s, values, w=worker: self._on_slice(
+                w, index, generation, key, cache_key, values
+            )
+        )
+        worker.signals.progress.connect(
+            lambda pct, w=worker: self._on_slice_progress(w, index, key, pct)
+        )
+        worker.signals.failed.connect(
+            lambda _id, msg, w=worker: self._on_slice_failed(w, index, key, msg)
+        )
+        self._slice_workers[(index, key)] = worker
+        self._slice_progress[(index, key)] = 0.0
+        self._sync_loading()
+        self._pool.start(worker)
+
+    def _cancel_slice(self, key: tuple[int, str]) -> None:
+        worker = self._slice_workers.pop(key, None)
+        if worker is not None:
+            worker.is_cancelled = True
+        self._slice_progress.pop(key, None)
+
+    def _on_slice_progress(self, worker: TimeSliceWorker, index: int, key: str, pct: float) -> None:
+        if self._slice_workers.get((index, key)) is worker:
+            self._slice_progress[(index, key)] = float(pct)
+            self._sync_loading()
+
+    def _on_slice(
+        self,
+        worker: TimeSliceWorker,
+        index: int,
+        generation: int,
+        key: str,
+        cache_key: tuple,
+        values: np.ndarray,
+    ) -> None:
+        if self._slice_workers.get((index, key)) is not worker:
+            return
+        self._slice_workers.pop((index, key))
+        self._slice_progress.pop((index, key), None)
+        self._slice_cache[cache_key] = values
+        while len(self._slice_cache) > _SLICE_CACHE_ENTRIES:
+            self._slice_cache.popitem(last=False)
+        self._sync_loading()
+        data = self._data[index] if index < len(self._data) else None
+        if data is None or generation != self._generation[index]:
+            return
+        data.raw[key] = values
+        data.points = points_for(self._config(), data.raw)
+        self._redraw()
+
+    def _on_slice_failed(self, worker: TimeSliceWorker, index: int, key: str, msg: str) -> None:
+        if self._slice_workers.get((index, key)) is not worker:
+            return
+        self._cancel_slice((index, key))
+        self._sync_loading()
+        log.warning("time slice read failed for member %d: %s", index, msg)
+        self.status_message.emit(f"Time slice read failed: {msg}")
+
+    # --- grid placement --------------------------------------------------------
+
+    def _request_grids(self, index: int) -> None:
+        """Work out, off-thread, where grid layers' traces fall on their grid."""
+        data = self._data[index] if index < len(self._data) else None
+        if data is None:
+            return
+        for layer in self._config().layers:
+            if not layer.visible or not is_grid_layer(layer):
+                continue
+            xy = (layer.x_field, layer.y_field)
+            if xy in data.grids or (index, *xy) in self._grid_workers:
+                continue
+            if layer.x_field not in data.raw or layer.y_field not in data.raw:
+                continue
+            # Only the arrays the placement reads: the GUI thread keeps
+            # adding time slices to ``data.raw`` meanwhile.
+            needed = {k: v for k, v in data.raw.items() if k in fields_for_xy(layer)}
+            worker = ComputeWorker(layer_grid, layer, needed)
+            generation = self._generation[index]
+            worker.signals.finished.connect(
+                lambda geometry, w=worker, xy=xy: self._on_grid(w, index, generation, xy, geometry)
+            )
+            worker.signals.failed.connect(
+                lambda msg, w=worker, xy=xy: self._on_grid(w, index, generation, xy, None)
+            )
+            self._grid_workers[(index, *xy)] = worker
+            self._sync_loading()
+            self._pool.start(worker)
+
+    def _on_grid(
+        self,
+        worker: ComputeWorker,
+        index: int,
+        generation: int,
+        xy: tuple[str, str],
+        geometry: GridGeometry | None,
+    ) -> None:
+        if self._grid_workers.get((index, *xy)) is not worker:
+            return
+        self._grid_workers.pop((index, *xy))
+        self._sync_loading()
+        data = self._data[index] if index < len(self._data) else None
+        if data is None or generation != self._generation[index]:
+            return
+        data.grids[xy] = geometry
+        self._redraw()
+        if self._fit_pending is False and index == self.group.active_index:
+            self.fit()
 
     # --- whole-file background ---------------------------------------------
 
@@ -583,17 +876,41 @@ class AttributePlotView(QWidget):
         n_layers = len(config.layers)
         scales = color_scales(config, [d.points for d in self._data if d is not None])
         for m, row in enumerate(self._items):
+            images = self._images[m]
             while len(row) < n_layers:
                 item = pg.ScatterPlotItem(pxMode=True)
                 self.plot_item.addItem(item)
                 row.append(item)
+                image = pg.ImageItem()
+                self.plot_item.addItem(image)
+                images.append(image)
             while len(row) > n_layers:
                 self.plot_item.removeItem(row.pop())
+                self.plot_item.removeItem(images.pop())
             data = self._data[m] if m < len(self._data) else None
-            for k, (layer, item) in enumerate(zip(config.layers, row, strict=True)):
+            for k, (layer, item, image) in enumerate(zip(config.layers, row, images, strict=True)):
                 item.setZValue(k)
+                image.setZValue(k - 0.5)
                 pts = data.points[k] if data is not None and k < len(data.points) else None
-                if pts is None or not layer.visible or len(pts) == 0:
+                if data is None or not layer.visible:
+                    item.setData([], [])
+                    image.clear()
+                    continue
+                if is_grid_layer(layer):
+                    xy = (layer.x_field, layer.y_field)
+                    if xy not in data.grids:
+                        # Placement still being worked out: dots for millions
+                        # of traces would only stall the GUI meanwhile.
+                        item.setData([], [])
+                        image.clear()
+                        continue
+                    geometry = data.grids[xy]
+                    if geometry is not None:
+                        item.setData([], [])
+                        self._draw_grid(image, layer, data, geometry, scales[k])
+                        continue
+                image.clear()
+                if pts is None or len(pts) == 0:
                     item.setData([], [])
                     continue
                 item.setData(
@@ -608,6 +925,34 @@ class AttributePlotView(QWidget):
         self._apply_visibility()
         self._redraw_labels()
         self._refresh_stats()
+
+    def _draw_grid(
+        self,
+        image: pg.ImageItem,
+        layer: AttributeLayer,
+        data: _MemberData,
+        geometry: GridGeometry,
+        scale: ColorScale | None,
+    ) -> None:
+        colors = layer_colors(layer, data.raw)
+        if colors is None or scale is None:
+            image.clear()
+            return
+        lo, hi = scale.levels
+        image.setImage(
+            geometry.bin(colors),
+            autoLevels=False,
+            levels=(lo, hi if hi > lo else lo + 1.0),
+            lut=get_colormap(scale.colormap),
+        )
+        image.setRect(
+            QRectF(
+                geometry.x0 - geometry.dx / 2,
+                geometry.y0 - geometry.dy / 2,
+                geometry.nx * geometry.dx,
+                geometry.ny * geometry.dy,
+            )
+        )
 
     def _layer_brush(self, layer_index: int, pts: LayerPoints, scale: ColorScale | None) -> object:
         if pts.color is None or scale is None:
@@ -634,7 +979,7 @@ class AttributePlotView(QWidget):
                 colorMap=cmap,
                 interactive=False,
                 width=14,
-                label=self._name(ds, scale.field),
+                label=self._scale_label(ds, scale),
             )
             self.plot_item.layout.addItem(bar, 2, col)
             self._color_bars.append(bar)
@@ -643,13 +988,28 @@ class AttributePlotView(QWidget):
     def _apply_visibility(self) -> None:
         active = self.group.active_index
         for m, row in enumerate(self._items):
-            for item in row:
+            for item in (*row, *self._images[m]):
                 item.setVisible(m == active)
         self._sync_message()
 
-    def _active_items(self) -> list[pg.ScatterPlotItem]:
+    def _scale_label(self, ds, scale: ColorScale) -> str:  # noqa: ANN001
+        if scale.is_amplitude and scale.time_ms is not None:
+            return f"Amplitude @ {_time_label(self._snapped_time(ds, scale.time_ms))}"
+        return self._name(ds, scale.field)
+
+    @staticmethod
+    def _snapped_time(ds, time_ms: float) -> float:  # noqa: ANN001
+        """The time of the sample actually read for *time_ms*."""
+        if ds is None:
+            return time_ms
+        dt = ds.sample_interval_ms or 1.0
+        return sample_for_time(time_ms, dt, ds.n_samples) * dt
+
+    def _active_items(self) -> list[pg.GraphicsObject]:
         active = self.group.active_index
-        return self._items[active] if 0 <= active < len(self._items) else []
+        if not 0 <= active < len(self._items):
+            return []
+        return [*self._items[active], *self._images[active]]
 
     def _active_dataset(self):  # noqa: ANN202
         if self.group.is_empty:
@@ -745,7 +1105,17 @@ class AttributePlotView(QWidget):
             message = "Reading headers…" if self._workers else "No traces read."
         elif pts is None:
             message = "This layer's header fields were not read."
-        report = layer_regularity(pts, config.stats_tolerance) if layer.visible else None
+        too_many = pts is not None and len(pts) > _STATS_MAX_POINTS
+        if too_many:
+            message = (
+                f"{len(pts):,} points: too many for statistics. "
+                "Select fewer traces (Traces: Selection)."
+            )
+        report = (
+            layer_regularity(pts, config.stats_tolerance)
+            if layer.visible and not too_many
+            else None
+        )
         if not layer.visible:
             message = "This layer is hidden."
         ds = self._active_dataset()
@@ -754,7 +1124,11 @@ class AttributePlotView(QWidget):
         self.stats_panel.set_report(
             report,
             layer_label=f"Layer {k + 1}",
-            group_label=self._name(ds, layer.color_field) if layer.color_field else None,
+            group_label=(
+                self._name(ds, layer.color_field)
+                if layer.color_field and not layer.is_amplitude
+                else None
+            ),
             unit=unit,
             message=message,
         )
@@ -782,55 +1156,89 @@ class AttributePlotView(QWidget):
         if hit is None:
             self._hover_marker.setData([], [])
             return
-        layer_index, row = hit
-        active = self.group.active_index
-        data = self._data[active]
-        assert data is not None
-        pts = data.points[layer_index]
-        assert pts is not None
-        self._hover_marker.setData([pts.x[row]], [pts.y[row]])
-        self.crosshair_readout.emit(self.format_readout(active, layer_index, row))
+        layer_index, row, mx, my = hit
+        self._hover_marker.setData([mx], [my])
+        self.crosshair_readout.emit(
+            self.format_readout_row(self.group.active_index, layer_index, row)
+        )
 
-    def _point_under(self, scene_pos: QPointF) -> tuple[int, int] | None:
-        """(layer, row) of the active member's point nearest the cursor."""
+    def _point_under(self, scene_pos: QPointF) -> tuple[int, int, float, float] | None:
+        """(layer, row, marker x, marker y) under the cursor for the active member.
+
+        *row* indexes the member's trace list. A grid layer answers with the
+        cell under the cursor; a dot layer with the nearest dot.
+        """
         active = self.group.active_index
         if not 0 <= active < len(self._data) or self._data[active] is None:
             return None
         data = self._data[active]
         assert data is not None
         view_pos = self.view_box.mapSceneToView(scene_pos)
+        vx, vy = view_pos.x(), view_pos.y()
         px_w, px_h = self.view_box.viewPixelSize()
-        best: tuple[int, int, float] | None = None
+        best: tuple[int, int, float, float, float] | None = None
         config = self._config()
         # Top layer first, so the point drawn on top wins a tie.
         for k in reversed(range(len(config.layers))):
-            pts = data.points[k] if k < len(data.points) else None
-            if pts is None or not config.layers[k].visible:
+            layer = config.layers[k]
+            if not layer.visible:
                 continue
-            hit = nearest_point(pts.x, pts.y, view_pos.x(), view_pos.y(), px_w, px_h)
-            if hit is not None and (best is None or hit[1] < best[2]):
-                best = (k, hit[0], hit[1])
-        return None if best is None else (best[0], best[1])
+            xy = (layer.x_field, layer.y_field)
+            geometry = data.grids.get(xy) if is_grid_layer(layer) else None
+            if geometry is not None:
+                cell = geometry.cell_at(vx, vy)
+                if cell is None:
+                    continue
+                rows = data.cell_rows.get(xy)
+                if rows is None:
+                    rows = data.cell_rows[xy] = geometry.row_per_cell()
+                row = int(rows[cell])
+                if row >= 0:
+                    i, j = divmod(cell, geometry.ny)
+                    cx, cy = geometry.x0 + i * geometry.dx, geometry.y0 + j * geometry.dy
+                    return k, row, cx, cy
+                continue
+            pts = data.points[k] if k < len(data.points) else None
+            if pts is None:
+                continue
+            hit = nearest_point(pts.x, pts.y, vx, vy, px_w, px_h)
+            if hit is not None and (best is None or hit[1] < best[4]):
+                r = hit[0]
+                best = (k, int(pts.trace_pos[r]), float(pts.x[r]), float(pts.y[r]), hit[1])
+        return None if best is None else best[:4]
 
     def format_readout(self, member_index: int, layer_index: int, row: int) -> str:
-        """Status-bar text for point *row* of layer *layer_index*."""
+        """Status-bar text for point *row* (a drawn dot) of layer *layer_index*."""
         data = self._data[member_index]
         assert data is not None
         pts = data.points[layer_index]
         assert pts is not None
+        return self.format_readout_row(member_index, layer_index, int(pts.trace_pos[row]))
+
+    def format_readout_row(self, member_index: int, layer_index: int, pos: int) -> str:
+        """Status-bar text for row *pos* of member *member_index*'s trace list."""
+        data = self._data[member_index]
+        assert data is not None
         layer = self._config().layers[layer_index]
         ds = self.group.members[member_index].dataset
-        pos = int(pts.trace_pos[row])
+        one = {k: v[pos : pos + 1] for k, v in data.raw.items()}
+        points = points_for(AttributePlotConfig(layers=(layer,)), one)[0]
 
         def num(v: float) -> str:
             return f"{v:.10g}"
 
-        parts = [
-            f"{self._name(ds, layer.x_field)} {num(pts.x[row])}",
-            f"{self._name(ds, layer.y_field)} {num(pts.y[row])}",
-        ]
-        if layer.color_field is not None and pts.color is not None:
-            parts.append(f"{self._name(ds, layer.color_field)} {num(pts.color[row])}")
+        parts: list[str] = []
+        if points is not None and len(points):
+            parts += [
+                f"{self._name(ds, layer.x_field)} {num(points.x[0])}",
+                f"{self._name(ds, layer.y_field)} {num(points.y[0])}",
+            ]
+            if points.color is not None:
+                if layer.is_amplitude:
+                    label = f"amp @ {_time_label(self._snapped_time(ds, layer.time_ms))}"
+                else:
+                    label = self._name(ds, layer.color_field or "")
+                parts.append(f"{label} {num(points.color[0])}")
         ident = []
         shown = {layer.x_field, layer.y_field, layer.color_field}
         for f in IDENTITY_FIELDS:
@@ -885,3 +1293,36 @@ class AttributePlotView(QWidget):
             if self.message_label.isVisible():
                 self._reposition_centered(self.message_label)
         return super().eventFilter(watched, event)
+
+
+def _time_label(time_ms: float) -> str:
+    return f"{time_ms:g} ms"
+
+
+def fields_for_xy(layer: AttributeLayer) -> set[str]:
+    """The header arrays grid placement of *layer* reads: X, Y and scalars."""
+    from seisvis.services.attribute_plot_service import fields_for as _fields_for
+
+    cfg = AttributePlotConfig(layers=(AttributeLayer(layer.x_field, layer.y_field, None),))
+    return set(_fields_for(cfg))
+
+
+def _drawn(item: pg.GraphicsObject) -> bool:
+    """Visible and holding something — empty items would skew a fit."""
+    if not item.isVisible():
+        return False
+    if isinstance(item, pg.ImageItem):
+        return item.image is not None
+    return len(item.getData()[0]) > 0
+
+
+def _item_bounds(item: pg.GraphicsObject) -> tuple[float, float, float, float] | None:
+    """(x0, x1, y0, y1) of what *item* draws, in data coordinates."""
+    if isinstance(item, pg.ImageItem):
+        r = item.mapRectToParent(item.boundingRect())
+        return r.left(), r.right(), r.top(), r.bottom()
+    xb = item.dataBounds(0)
+    yb = item.dataBounds(1)
+    if xb is None or yb is None or xb[0] is None or yb[0] is None:
+        return None
+    return float(xb[0]), float(xb[1]), float(yb[0]), float(yb[1])

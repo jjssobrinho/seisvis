@@ -73,7 +73,8 @@ def _settle(view: AttributePlotView, pool: QThreadPool) -> None:
     for _ in range(20):
         pool.waitForDone(5000)
         QApplication.processEvents()
-        if not view._workers and view._background_worker is None:
+        busy = view._workers or view._slice_workers or view._grid_workers or view._background_worker
+        if not busy:
             return
 
 
