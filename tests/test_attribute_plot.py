@@ -13,6 +13,7 @@ from seisvis.models.attribute_plot import (
     default_attribute_config,
 )
 from seisvis.processing.attribute_plot import (
+    background_points,
     color_levels,
     coordinate_unit,
     fields_to_read,
@@ -201,3 +202,37 @@ def test_normalize_colors_and_lut_indices() -> None:
 def test_color_levels() -> None:
     assert color_levels(np.array([3.0, np.nan, -1.0])) == (-1.0, 3.0)
     assert color_levels(np.array([np.nan])) is None
+
+
+# --- background -----------------------------------------------------------------
+
+
+def test_background_points_are_distinct_scaled_positions() -> None:
+    raw = {
+        "GroupX": np.array([100, 200, 100, 200, 300]),
+        "GroupY": np.array([10, 10, 10, 10, 10]),
+        "SourceGroupScalar": np.array([-10] * 5),
+    }
+    bg = background_points(AttributeLayer.receivers(), raw)
+    np.testing.assert_allclose(bg.x, [10, 20, 30])
+    np.testing.assert_allclose(bg.y, [1, 1, 1])
+    assert bg.n_unique == 3 and not bg.thinned
+
+
+def test_background_points_thin_deterministically() -> None:
+    n = 1000
+    raw = {"x": np.arange(n, dtype=float), "y": np.zeros(n)}
+    layer = AttributeLayer("x", "y", None)
+    a = background_points(layer, raw, max_points=100)
+    b = background_points(layer, raw, max_points=100)
+    assert a.x.size == 100 and a.n_unique == n and a.thinned
+    np.testing.assert_array_equal(a.x, b.x)
+    # Spread over the whole line, not the first hundred.
+    assert a.x.max() > 800
+
+
+def test_background_points_drop_non_finite_and_need_fields() -> None:
+    raw = {"x": np.array([1.0, np.nan]), "y": np.array([0.0, 0.0])}
+    assert background_points(AttributeLayer("x", "y", None), raw).x.tolist() == [1.0]
+    with pytest.raises(KeyError):
+        background_points(AttributeLayer("x", "z", None), raw)

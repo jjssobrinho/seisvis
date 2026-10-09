@@ -15,6 +15,7 @@ import numpy as np
 
 from seisvis.models.attribute_plot import AttributePlotConfig
 from seisvis.processing.attribute_plot import (
+    BackgroundPoints,
     LayerPoints,
     color_levels,
     coordinate_unit,
@@ -109,6 +110,7 @@ def units_label(raw: Mapping[str, np.ndarray]) -> str | None:
 
 
 __all__ = [
+    "BackgroundPoints",
     "IDENTITY_FIELDS",
     "ColorScale",
     "UNITS_FIELD",

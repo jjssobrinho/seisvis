@@ -73,7 +73,7 @@ def _settle(view: AttributePlotView, pool: QThreadPool) -> None:
     for _ in range(20):
         pool.waitForDone(5000)
         QApplication.processEvents()
-        if not view._workers:
+        if not view._workers and view._background_worker is None:
             return
 
 
@@ -211,3 +211,69 @@ def test_layers_coloured_alike_share_one_colour_bar(
     view.group.set_attribute_config(config.add_layer())  # sources, also by shot
     _settle(view, pool)
     assert len(view._color_bars) == 1
+
+
+# --- whole-file background ------------------------------------------------------
+
+
+def _with_background(view: AttributePlotView, pool: QThreadPool, on: bool = True) -> None:
+    from dataclasses import replace
+
+    config = view.group.attribute_config
+    assert config is not None
+    view.group.set_attribute_config(replace(config, show_background=on))
+    _settle(view, pool)
+
+
+def test_background_shows_every_receiver_station_of_the_file(
+    view: AttributePlotView, pool: QThreadPool
+) -> None:
+    view.group.update_shared_state(commanded_trace_range=(4, 8))  # one shot selected
+    _settle(view, pool)
+    _with_background(view, pool)
+    item = view._background_items[0]
+    assert item.isVisible()
+    x, _y = item.getData()
+    # 3 shots × 4 channels, 50 m roll / 25 m spacing → 8 distinct stations.
+    np.testing.assert_allclose(sorted(x), [1025 + 25 * i for i in range(8)])
+    # Behind the selection; F fits the selection, Shift+F the whole line too.
+    assert item.zValue() < view._items[0][0].zValue()
+    view.fit()
+    (x0, x1), _ = view.view_box.viewRange()
+    assert x0 > 1025 - 50 and x1 < 1200 + 50
+    view.fit_all()
+    (x0, x1), _ = view.view_box.viewRange()
+    assert x0 <= 1025 and x1 >= 1200
+
+
+def test_background_off_hides_it_and_on_again_reuses_the_read(
+    view: AttributePlotView, pool: QThreadPool
+) -> None:
+    _with_background(view, pool)
+    _with_background(view, pool, on=False)
+    assert not view._background_items[0].isVisible()
+    config = view.group.attribute_config
+    assert config is not None
+    from dataclasses import replace
+
+    view.group.set_attribute_config(replace(config, show_background=True))
+    assert view._background_worker is None  # served from what was read
+    assert view._background_items[0].isVisible()
+
+
+def test_background_follows_the_active_member(
+    view: AttributePlotView, pool: QThreadPool, tmp_path: Path
+) -> None:
+    other_path = tmp_path / "shifted.sgy"
+    _make_line(other_path, x_shift_m=10.0)
+    other = load_segy(other_path)
+    try:
+        view.group.add_member(other)
+        _with_background(view, pool)
+        x0, _ = view._background_items[0].getData()
+        view.group.set_active(1)
+        _settle(view, pool)
+        x1, _ = view._background_items[0].getData()
+        np.testing.assert_allclose(np.sort(x1), np.sort(x0) + 10.0)
+    finally:
+        other.close()

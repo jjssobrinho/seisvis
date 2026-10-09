@@ -24,10 +24,11 @@ from PySide6.QtCore import QEvent, QPointF, Qt, QThreadPool, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
-from seisvis.models.attribute_plot import AttributePlotConfig
+from seisvis.models.attribute_plot import AttributeLayer, AttributePlotConfig
 from seisvis.models.toggle_group import ToggleGroup
 from seisvis.services.attribute_plot_service import (
     IDENTITY_FIELDS,
+    BackgroundPoints,
     ColorScale,
     LayerPoints,
     color_scales,
@@ -42,9 +43,13 @@ from seisvis.ui.widgets.toggle_bar import ToggleBar
 from seisvis.utils.colormaps import get_colormap
 from seisvis.utils.member_colors import member_color
 from seisvis.utils.mime import DATASET_MIME_TYPE, decode_dataset_ids
+from seisvis.workers.attribute_background_worker import AttributeBackgroundWorker
 from seisvis.workers.trace_header_worker import MISSING, TraceHeaderWorker
 
 log = logging.getLogger(__name__)
+
+# Whole-file positions behind the selection: light, small, unoutlined.
+_BACKGROUND_BRUSH = pg.mkBrush(170, 170, 170, 110)
 
 # Thin dark rim so overlapping layers (sources over receivers) stay apart.
 _OUTLINE_PEN = pg.mkPen((30, 30, 30, 200), width=0.5)
@@ -131,6 +136,12 @@ class AttributePlotView(QWidget):
         self._color_bars: list[pg.ColorBarItem] = []
         self._brush_cache: dict[str, np.ndarray] = {}
         self._sv_connected: list[object] = []
+        # Whole-file background, per (header dataset id, x field, y field);
+        # None = the fields could not be read for that file.
+        self._background_cache: dict[tuple[str, str, str], BackgroundPoints | None] = {}
+        self._background_items: list[pg.ScatterPlotItem] = []
+        self._background_worker: AttributeBackgroundWorker | None = None
+        self._background_progress: float | None = None
 
         self.setAcceptDrops(True)
         self._build_ui()
@@ -200,6 +211,7 @@ class AttributePlotView(QWidget):
             (QKeySequence(Qt.Key.Key_Home), self.command_bar.go_first),
             (QKeySequence(Qt.Key.Key_End), self.command_bar.go_last),
             (QKeySequence(Qt.Key.Key_F), self.fit),
+            (QKeySequence("Shift+F"), self.fit_all),
             (QKeySequence(Qt.Key.Key_Space), self._toggle_flicker),
         ):
             sc = QShortcut(seq, self)
@@ -244,6 +256,8 @@ class AttributePlotView(QWidget):
 
     def reload_after_dataset_change(self) -> None:
         """Re-read every member after one of them was reloaded from disk."""
+        self._background_cache.clear()
+        self._cancel_background()
         state = self.group.shared_state
         if not self.group.is_empty and state.commanded_trace_range is not None:
             ref = self.group.members[self.group.reference_index].dataset
@@ -252,6 +266,11 @@ class AttributePlotView(QWidget):
                 state.zoomed_trace_range = None
         self._seed_trace_range()
         self._refetch_all()
+
+    def fit_all(self) -> None:
+        """Fit the selection and the whole-file background together."""
+        items = [i for i in (*self._active_items(), *self._background_items) if i.isVisible()]
+        self.view_box.autoRange(items=items or None)
 
     def fit(self) -> None:
         """Fit the view to every visible point of the active member."""
@@ -275,6 +294,7 @@ class AttributePlotView(QWidget):
         self._seed_trace_range()
         self._fit_pending = True
         self._refetch_all()
+        self._refresh_background()
 
     def _connect_sv_signals(self) -> None:
         for sig in self._sv_connected:
@@ -310,6 +330,7 @@ class AttributePlotView(QWidget):
         self._refetch_all()
 
     def _on_active_changed(self) -> None:
+        self._refresh_background()
         self._apply_visibility()
         self._hover_marker.setData([], [])
         self._redraw_labels()
@@ -393,9 +414,16 @@ class AttributePlotView(QWidget):
         self.status_message.emit(f"Header read failed: {message}")
 
     def _sync_loading(self) -> None:
-        self.loading_label.setVisible(bool(self._workers))
+        if self._background_progress is not None:
+            text = f"Reading all headers for the background… {self._background_progress:.0f}%"
+        else:
+            text = "Reading headers…"
+        self.loading_label.setText(text)
+        self.loading_label.adjustSize()
+        self.loading_label.setVisible(bool(self._workers) or self._background_progress is not None)
 
     def _on_config_changed(self, _config: object) -> None:
+        self._refresh_background()
         # A layer may now need a field that was never read; otherwise the
         # values in hand are enough to redraw.
         wanted = set(self._fields_wanted())
@@ -406,6 +434,120 @@ class AttributePlotView(QWidget):
             if d is not None:
                 d.points = points_for(self._config(), d.raw)
         self._redraw()
+
+    # --- whole-file background ---------------------------------------------
+
+    def _background_dataset(self):  # noqa: ANN202
+        """The file whose every trace the background shows: the active member's."""
+        ds = self._active_dataset()
+        if ds is None:
+            return None
+        header_ds = getattr(ds, "parent_a", ds)
+        if getattr(header_ds, "handle", None) is None or header_ds.is_closed:
+            return None
+        return header_ds
+
+    def _cancel_background(self) -> None:
+        if self._background_worker is not None:
+            self._background_worker.is_cancelled = True
+            self._background_worker = None
+        self._background_progress = None
+        self._sync_loading()
+
+    def _refresh_background(self) -> None:
+        """Draw what is cached for the background; read what is missing."""
+        config = self._config()
+        ds = self._background_dataset() if config.show_background else None
+        if ds is None:
+            self._cancel_background()
+            self._draw_background()
+            return
+        keys = {(ds.id, layer.x_field, layer.y_field) for layer in config.layers if layer.visible}
+        missing = sorted(k for k in keys if k not in self._background_cache)
+        worker = self._background_worker
+        if worker is not None:
+            in_flight = {(worker.dataset.id, lyr.x_field, lyr.y_field) for lyr in worker.layers}
+            if set(missing) <= in_flight:
+                self._draw_background()
+                return
+            self._cancel_background()
+        if missing:
+            self._start_background(ds, missing)
+        self._draw_background()
+
+    def _start_background(self, ds, keys: list[tuple[str, str, str]]) -> None:  # noqa: ANN001
+        layers = tuple(AttributeLayer(x, y, color_field=None) for _id, x, y in keys)
+        worker = AttributeBackgroundWorker(ds, layers)
+        worker.signals.progress.connect(lambda pct, w=worker: self._on_background_progress(w, pct))
+        worker.signals.finished.connect(
+            lambda _id, points, w=worker: self._on_background_read(w, points)
+        )
+        worker.signals.failed.connect(lambda _id, msg, w=worker: self._on_background_failed(w, msg))
+        self._background_worker = worker
+        self._background_progress = 0.0
+        self._sync_loading()
+        self._pool.start(worker)
+
+    def _on_background_progress(self, worker: AttributeBackgroundWorker, pct: float) -> None:
+        if worker is self._background_worker:
+            self._background_progress = float(pct)
+            self._sync_loading()
+
+    def _on_background_read(self, worker: AttributeBackgroundWorker, points: list) -> None:
+        if worker is not self._background_worker:
+            return
+        self._background_worker = None
+        self._background_progress = None
+        thinned = []
+        for layer, pts in zip(worker.layers, points, strict=True):
+            self._background_cache[(worker.dataset.id, layer.x_field, layer.y_field)] = pts
+            if pts is not None and pts.thinned:
+                thinned.append(
+                    f"{layer.x_field}/{layer.y_field}: {pts.x.size:,} of {pts.n_unique:,}"
+                )
+        self._sync_loading()
+        if thinned:
+            self.status_message.emit(f"Background thinned ({'; '.join(thinned)} positions)")
+        # The config may have moved on while reading; fetch anything new.
+        self._refresh_background()
+
+    def _on_background_failed(self, worker: AttributeBackgroundWorker, message: str) -> None:
+        if worker is not self._background_worker:
+            return
+        self._background_worker = None
+        self._background_progress = None
+        self._sync_loading()
+        log.warning("attribute background read failed: %s", message)
+        self.status_message.emit(f"Background read failed: {message}")
+
+    def _draw_background(self) -> None:
+        config = self._config()
+        ds = self._background_dataset() if config.show_background else None
+        n = len(config.layers)
+        while len(self._background_items) < n:
+            item = pg.ScatterPlotItem(pxMode=True, pen=None, brush=_BACKGROUND_BRUSH)
+            item.setZValue(-10)
+            self.plot_item.addItem(item)
+            self._background_items.append(item)
+        while len(self._background_items) > n:
+            self.plot_item.removeItem(self._background_items.pop())
+        for layer, item in zip(config.layers, self._background_items, strict=True):
+            pts = None
+            if ds is not None and layer.visible:
+                pts = self._background_cache.get((ds.id, layer.x_field, layer.y_field))
+            if pts is None:
+                item.setData([], [])
+                item.setVisible(False)
+                continue
+            item.setData(
+                x=pts.x,
+                y=pts.y,
+                symbol=layer.symbol,
+                size=max(3.0, layer.size * 0.6),
+                pen=None,
+                brush=_BACKGROUND_BRUSH,
+            )
+            item.setVisible(True)
 
     # --- drawing ------------------------------------------------------------
 

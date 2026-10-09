@@ -157,3 +157,50 @@ def lut_indices(values: np.ndarray, levels: tuple[float, float], lut_size: int =
     """Row of a ``lut_size``-entry colour LUT for each value."""
     norm = normalize_colors(values, levels)
     return np.minimum((norm * lut_size).astype(np.int64), lut_size - 1)
+
+
+# Most grey points a background layer draws. Receivers and shots repeat
+# across a survey, so the unique positions usually fall far below this.
+BACKGROUND_MAX_POINTS = 200_000
+
+
+@dataclass(frozen=True)
+class BackgroundPoints:
+    """Distinct (x, y) positions of a layer over a whole file."""
+
+    x: np.ndarray  # float64
+    y: np.ndarray  # float64
+    n_unique: int  # distinct positions before any thinning
+
+    @property
+    def thinned(self) -> bool:
+        return self.n_unique > self.x.size
+
+
+def background_points(
+    layer: AttributeLayer,
+    raw: Mapping[str, np.ndarray],
+    max_points: int = BACKGROUND_MAX_POINTS,
+) -> BackgroundPoints:
+    """Every distinct scaled (x, y) of *layer* in *raw*, thinned to *max_points*.
+
+    Thinning picks a fixed pseudo-random subset (seeded, so redraws do not
+    shimmer) rather than every n-th point, which would follow the sort
+    order and leave bands. Raises ``KeyError`` if a field is missing.
+    """
+    x = scaled_values(layer.x_field, raw)
+    y = scaled_values(layer.y_field, raw)
+    keep = np.isfinite(x) & np.isfinite(y)
+    pairs = np.empty(int(keep.sum()), dtype=[("x", np.float64), ("y", np.float64)])
+    pairs["x"] = x[keep]
+    pairs["y"] = y[keep]
+    unique = np.unique(pairs)
+    n_unique = int(unique.size)
+    if n_unique > max_points:
+        pick = np.random.default_rng(0).choice(n_unique, size=max_points, replace=False)
+        unique = unique[np.sort(pick)]
+    return BackgroundPoints(
+        x=np.ascontiguousarray(unique["x"]),
+        y=np.ascontiguousarray(unique["y"]),
+        n_unique=n_unique,
+    )
