@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 
 from seisvis.models.project import Project
 from seisvis.models.toggle_group import ToggleGroup
+from seisvis.ui.widgets.dataset_tooltip import dataset_path_tooltip
 
 log = logging.getLogger(__name__)
 
@@ -126,6 +127,7 @@ class _MemberRow(QFrame):
         self.active_button = self._active_btn
 
         self._label = QLabel(member.dataset.name, self)
+        self._label.setToolTip(dataset_path_tooltip(member.dataset))
 
         badge = QLabel("●", self)
         color = _COMPAT_OK_COLOR if compat.ok else _COMPAT_WARN_COLOR

@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from seisvis.models.toggle_group import ToggleGroup
+from seisvis.ui.widgets.dataset_tooltip import dataset_path_tooltip
 from seisvis.ui.widgets.member_strip import MemberStrip
 from seisvis.utils.member_colors import member_color
 
@@ -185,10 +186,10 @@ class ToggleBar(QWidget):
         self._buttons.clear()
 
         names = [m.dataset.name for m in self.group.members]
-        for i, name in enumerate(names):
+        for i, member in enumerate(self.group.members):
             btn = QPushButton(str(i + 1), self._strip)
             btn.setCheckable(True)
-            btn.setToolTip(name)
+            btn.setToolTip(dataset_path_tooltip(member.dataset))
             colour = member_color(i)
             btn.setStyleSheet(
                 f"QPushButton {{ color: {colour.name()}; font-weight: bold; }}"
