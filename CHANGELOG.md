@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Full dataset paths on member buttons
+
+- **The selected member's button shows its full file path** in the
+  canvas toggle bar and the Model Window. The label uses the room around
+  the bar's centre, shortened in the middle ("…") only when it does not
+  fit; the other numbers sit either side and are hidden when they run
+  out of room. A diff, having no file of its own, keeps its name.
+- **Hovering a member shows its full path**: the numbers in either
+  toggle bar, and the number and name in the Viewport Manager. A diff
+  lists both parents' paths (A and B).
+
 ### Display modes: Smooth, Blocky, Wavelet
 
 - **Traces are drawn smoothed by default.** The canvas image is
