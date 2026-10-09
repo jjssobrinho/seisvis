@@ -9,7 +9,10 @@ from PySide6.QtWidgets import QInputDialog, QMenu, QTabBar, QTabWidget, QToolBut
 from seisvis.io.slice_cache import SliceCache
 from seisvis.models.project import Project
 from seisvis.models.toggle_group import ToggleGroup
+from seisvis.ui.widgets.attribute_plot_view import AttributePlotView
 from seisvis.ui.widgets.seismic_view import SeismicView
+
+CanvasView = SeismicView | AttributePlotView
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +48,12 @@ class _RenameableTabBar(QTabBar):
 
 
 class DisplayPanel(QTabWidget):
-    """QTabWidget with one ``SeismicView`` per toggle group."""
+    """QTabWidget with one view per toggle group.
+
+    A seismic group gets a :class:`SeismicView`, an attribute-plot group an
+    :class:`AttributePlotView`; both expose the toggle bar and the signals
+    this panel forwards.
+    """
 
     status_message = Signal(str)
     crosshair_readout = Signal(str)
@@ -66,7 +74,7 @@ class DisplayPanel(QTabWidget):
         self._project = project
         self._pool = pool
         self._cache = cache
-        self._views: dict[str, SeismicView] = {}
+        self._views: dict[str, CanvasView] = {}
         # Toolbar-driven selection mode persists across tab switches; new
         # views inherit the current mode on creation so the user's choice
         # in the toolbar survives opening a fresh group.
@@ -99,7 +107,11 @@ class DisplayPanel(QTabWidget):
     # --- Project events ---
 
     def _on_group_added(self, group: ToggleGroup) -> None:
-        view = SeismicView(group, self._pool, self._cache, parent=self)
+        view: CanvasView
+        if group.is_attribute_plot:
+            view = AttributePlotView(group, self._pool, parent=self)
+        else:
+            view = SeismicView(group, self._pool, self._cache, parent=self)
         view.status_message.connect(self.status_message)
         view.crosshair_readout.connect(self.crosshair_readout)
         view.cursor_readout.connect(self.cursor_readout)
@@ -178,7 +190,7 @@ class DisplayPanel(QTabWidget):
 
     # --- Utility ---
 
-    def view_for(self, group_id: str) -> SeismicView | None:
+    def view_for(self, group_id: str) -> CanvasView | None:
         return self._views.get(group_id)
 
     def reload_views_for(self, dataset_id: str) -> None:

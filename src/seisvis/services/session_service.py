@@ -178,6 +178,8 @@ def _capture_group(
         crosshair_fields=tuple(group.crosshair_fields),
         flicker_hz=float(flicker[0]) if flicker is not None else None,
         flicker_excluded=tuple(flicker[1]) if flicker is not None else (),
+        view_kind=group.view_kind,
+        attribute_config=group.attribute_config,
     )
     # Members backed by a difference that can no longer be rebuilt.
     kept, _notes = filter_group(entry, {m.dataset for m in members if m.dataset})
@@ -467,7 +469,10 @@ def build_toggle_group(entry: GroupEntry, datasets: Mapping[str, Dataset]) -> To
     the group is on a canvas and its datasets are indexed — see
     :func:`restore_group_view`. Every member key must be in *datasets*.
     """
-    group = ToggleGroup(name=entry.name or "Group")
+    view_kind = "attribute" if entry.view_kind == "attribute" else "seismic"
+    group = ToggleGroup(name=entry.name or "Group", view_kind=view_kind)
+    if view_kind == "attribute" and entry.attribute_config is not None:
+        group.set_attribute_config(entry.attribute_config)
     for m in entry.members:
         group.add_member(datasets[m.dataset])
     for member, saved in zip(group.members, entry.members, strict=True):

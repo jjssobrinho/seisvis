@@ -24,6 +24,11 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from seisvis.models.attribute_plot import (
+    AttributePlotConfig,
+    attribute_config_from_dict,
+    attribute_config_to_dict,
+)
 from seisvis.models.display_state import DisplayState
 from seisvis.models.processing_chain import ProcessingChain
 from seisvis.models.render_mode import DEFAULT_RENDER_MODE, RenderMode, parse_render_mode
@@ -98,6 +103,10 @@ class GroupEntry:
     flicker_hz: float | None = None
     # Member indices auto-flicker skips.
     flicker_excluded: tuple[int, ...] = ()
+    # "seismic" or "attribute"; sessions written before attribute plots
+    # have no key and read as seismic.
+    view_kind: str = "seismic"
+    attribute_config: AttributePlotConfig | None = None
 
 
 @dataclass
@@ -310,6 +319,10 @@ def _group_to_dict(g: GroupEntry) -> dict[str, object]:
         "crosshair_fields": list(g.crosshair_fields),
         "flicker_hz": g.flicker_hz,
         "flicker_excluded": list(g.flicker_excluded),
+        "view_kind": g.view_kind,
+        "attribute": (
+            attribute_config_to_dict(g.attribute_config) if g.attribute_config is not None else None
+        ),
     }
 
 
@@ -323,6 +336,8 @@ def _group_from_dict(raw: dict) -> GroupEntry:
         for m in raw["members"]
     ]
     sort_raw = raw.get("sort")
+    view_kind = raw.get("view_kind")
+    is_attribute = view_kind == "attribute"
     return GroupEntry(
         name=str(raw.get("name", "")),
         members=members,
@@ -341,6 +356,8 @@ def _group_from_dict(raw: dict) -> GroupEntry:
         crosshair_fields=tuple(str(f) for f in raw.get("crosshair_fields", [])),
         flicker_hz=_opt_float(raw.get("flicker_hz")),
         flicker_excluded=tuple(int(i) for i in raw.get("flicker_excluded", [])),
+        view_kind="attribute" if is_attribute else "seismic",
+        attribute_config=attribute_config_from_dict(raw.get("attribute")) if is_attribute else None,
     )
 
 

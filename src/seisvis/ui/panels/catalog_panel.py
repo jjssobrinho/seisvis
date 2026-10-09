@@ -317,6 +317,7 @@ class CatalogPanel(QWidget):
     remove_requested = Signal(str)  # dataset id
     open_in_new_group_requested = Signal(object)  # Dataset
     open_multi_in_new_group_requested = Signal(object)  # list[Dataset]
+    open_attribute_plot_requested = Signal(object)  # list[Dataset]
     add_to_active_group_requested = Signal(object)  # Dataset
     reload_requested = Signal(object)  # Dataset whose file changed on disk
     add_to_active_model_requested = Signal(object)  # depth Dataset
@@ -491,6 +492,14 @@ class CatalogPanel(QWidget):
                 add_to_active = menu.addAction("Add to active toggle group")
                 add_to_active.triggered.connect(lambda: self.add_to_active_group_requested.emit(ds))
                 add_to_active.setEnabled(self._project.active_toggle_group() is not None)
+                attribute_plot = menu.addAction("Open attribute plot")
+                attribute_plot.setToolTip(
+                    "Plot header fields against each other (e.g. receiver X/Y coloured by "
+                    "shot) for the traces the command bar selects."
+                )
+                attribute_plot.triggered.connect(
+                    lambda checked=False, d=ds: self.open_attribute_plot_requested.emit([d])
+                )
             if getattr(ds, "data_stale", False):
                 menu.addSeparator()
                 reload_action = menu.addAction("Reload from disk")
@@ -523,6 +532,15 @@ class CatalogPanel(QWidget):
             open_group.triggered.connect(
                 lambda checked=False, d=selected: self.open_multi_in_new_group_requested.emit(d)
             )
+            if not any(_is_depth(d) for d in selected):
+                attribute_plot = menu.addAction("Open attribute plot")
+                attribute_plot.setToolTip(
+                    f"Plot header fields of all {len(selected)} selected datasets, "
+                    "as members of one attribute plot."
+                )
+                attribute_plot.triggered.connect(
+                    lambda checked=False, d=selected: self.open_attribute_plot_requested.emit(d)
+                )
             if len(selected) == 2:
                 menu.addSeparator()
                 a, b = selected[0], selected[1]

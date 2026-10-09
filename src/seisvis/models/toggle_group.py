@@ -5,11 +5,12 @@ import uuid
 from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
+from seisvis.models.attribute_plot import AttributePlotConfig, default_attribute_config
 from seisvis.models.compatibility import CompatResult, are_toggle_compatible
 from seisvis.models.dataset import Dataset
 from seisvis.models.display_state import DisplayState
@@ -21,6 +22,12 @@ from seisvis.models.trace_alignment import AlignmentStatus, TraceAlignment
 log = logging.getLogger(__name__)
 
 _UNSET = object()
+
+# What a group's canvas tab draws: trace images (the default) or an
+# attribute plot — header field against header field, one point per trace.
+# Fixed when the group is created; both kinds share members and sort.
+ViewKind = Literal["seismic", "attribute"]
+VIEW_KINDS: tuple[ViewKind, ...] = ("seismic", "attribute")
 
 
 @dataclass
@@ -95,11 +102,21 @@ class ToggleGroup(QObject):
     crosshair_fields_changed = Signal()
     selection_changed = Signal(object)  # Selection | None
     member_alignment_changed = Signal(int)  # member index
+    attribute_config_changed = Signal(object)  # AttributePlotConfig
 
-    def __init__(self, name: str, parent: QObject | None = None) -> None:
+    def __init__(
+        self, name: str, parent: QObject | None = None, *, view_kind: ViewKind = "seismic"
+    ) -> None:
         super().__init__(parent)
+        if view_kind not in VIEW_KINDS:
+            raise ValueError(f"unknown view kind {view_kind!r}")
         self.id: str = str(uuid.uuid4())
         self._name: str = name
+        self._view_kind: ViewKind = view_kind
+        # How an attribute plot draws its traces; None for a seismic group.
+        self._attribute_config: AttributePlotConfig | None = (
+            default_attribute_config() if view_kind == "attribute" else None
+        )
         self._members: list[Member] = []
         # Populated header fields the crosshair readout adds on hover,
         # in the order they are shown. Kept out of the .sv, which holds facts
@@ -158,6 +175,27 @@ class ToggleGroup(QObject):
         return not self._members
 
     @property
+    def view_kind(self) -> ViewKind:
+        return self._view_kind
+
+    @property
+    def is_attribute_plot(self) -> bool:
+        return self._view_kind == "attribute"
+
+    @property
+    def attribute_config(self) -> AttributePlotConfig | None:
+        return self._attribute_config
+
+    def set_attribute_config(self, config: AttributePlotConfig) -> None:
+        """Replace an attribute group's plot config. Emits when it changes."""
+        if not self.is_attribute_plot:
+            raise ValueError("only an attribute-plot group has an attribute config")
+        if config == self._attribute_config:
+            return
+        self._attribute_config = config
+        self.attribute_config_changed.emit(config)
+
+    @property
     def selection(self) -> Selection | None:
         return self._selection
 
@@ -186,7 +224,8 @@ class ToggleGroup(QObject):
         are copied. The canvas selection and transform window are not: they
         belong to the original tab.
         """
-        dup = ToggleGroup(name=name)
+        dup = ToggleGroup(name=name, view_kind=self._view_kind)
+        dup._attribute_config = self._attribute_config
         dup._members = [
             Member(
                 dataset=m.dataset,

@@ -46,7 +46,7 @@ from seisvis.models.session import (
     SessionFormatError,
 )
 from seisvis.models.sort_config import TRACE_RANGE_FIELD, RowSelection, SortConfig
-from seisvis.models.toggle_group import ToggleGroup
+from seisvis.models.toggle_group import ToggleGroup, ViewKind
 from seisvis.models.trace_alignment import AlignmentStatus, TraceAlignment
 from seisvis.services.dataset_reload import ReloadError, reload_dataset
 from seisvis.services.file_watch_service import FileWatchService
@@ -310,6 +310,7 @@ class MainWindow(QMainWindow):
         self.catalog_panel.open_multi_in_new_group_requested.connect(
             self._on_open_multi_in_new_group
         )
+        self.catalog_panel.open_attribute_plot_requested.connect(self._on_open_attribute_plot)
         self.catalog_panel.add_to_active_group_requested.connect(self._on_add_to_active_group)
         self.catalog_panel.reload_requested.connect(self._on_reload_dataset)
         self.catalog_panel.quick_load_requested.connect(self._on_quick_load)
@@ -1350,6 +1351,15 @@ class MainWindow(QMainWindow):
             group.add_member(ds)
         self.statusBar().showMessage(f"Opened {len(datasets)} datasets in {group.name}", 4000)
 
+    def _on_open_attribute_plot(self, datasets: list[Dataset]) -> None:
+        """Open *datasets* as the members of a new attribute-plot group."""
+        datasets = self._refuse_depth(datasets)
+        if not datasets:
+            return
+        group = self._create_group_for(datasets[0], view_kind="attribute")
+        for ds in datasets[1:]:
+            group.add_member(ds)
+
     def _on_add_to_active_group(self, dataset: Dataset) -> None:
         if not self._refuse_depth([dataset]):
             return
@@ -1359,9 +1369,12 @@ class MainWindow(QMainWindow):
             return
         group.add_member(dataset)
 
-    def _create_group_for(self, dataset: Dataset) -> ToggleGroup:
-        name = f"Group {self.project.next_toggle_group_number()}"
-        group = ToggleGroup(name=name)
+    def _create_group_for(
+        self, dataset: Dataset, *, view_kind: ViewKind = "seismic"
+    ) -> ToggleGroup:
+        number = self.project.next_toggle_group_number()
+        name = f"Attributes {number}" if view_kind == "attribute" else f"Group {number}"
+        group = ToggleGroup(name=name, view_kind=view_kind)
         group.add_member(dataset)
         # Seed primary.count/skip from the user's saved defaults. The default
         # field remains TRACE_RANGE (uncommitted) so natural file order renders
