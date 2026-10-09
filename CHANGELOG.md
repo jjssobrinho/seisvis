@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed: Window wider than the screen, full display
+
+- **The window no longer grows past the screen.** The Attributes toolbar
+  tab sits on two rows, only the toolbar tab being shown sets the
+  toolbar's width, and long status-bar texts (the hover readout, the file
+  name) are shortened with "…" — the whole text is in their tooltip.
+- **Full display fills the screen from a normal-sized window** on GNOME
+  (Wayland), and leaving it puts the window and panels back as they were.
+- **No black canvas after entering full display**: the plots are redrawn
+  in full once the switch has settled.
+
 ### Time slices
 
 - **Open attribute plot… asks what to plot.** A dialog offers a **Time
