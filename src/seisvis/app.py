@@ -6,7 +6,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThreadPool, QTimer
+from PySide6.QtCore import QRect, Qt, QThreadPool, QTimer
 from PySide6.QtGui import (
     QCloseEvent,
     QDragEnterEvent,
@@ -201,6 +201,7 @@ class MainWindow(QMainWindow):
         # Full display mode: canvas takes the whole screen, chrome hidden.
         self._full_display: bool = False
         self._pre_full_display_sizes: list[int] = []
+        self._pre_full_display_geometry: QRect | None = None
         self._was_maximized: bool = False
 
         # Persisted defaults applied to new groups.
@@ -510,28 +511,57 @@ class MainWindow(QMainWindow):
         if enabled:
             self._pre_full_display_sizes = self._h_splitter.sizes()
             self._was_maximized = self.isMaximized()
+            self._pre_full_display_geometry = self.geometry()
             self._left_splitter.setVisible(False)
             self.toolbar.setVisible(False)
             self.menuBar().setVisible(False)
             self.showFullScreen()
             self.statusBar().showMessage("Full display mode — F11 or Esc to exit", 4000)
+            # On Wayland (GNOME) the compositor marks the window full-screen
+            # but leaves sizing to the client, and Qt keeps the old size: a
+            # normal-sized window then sits centred on black. Size it to the
+            # screen ourselves once the state change has gone through.
+            QTimer.singleShot(0, self._fill_screen)
+            QTimer.singleShot(100, self._fill_screen)
             QTimer.singleShot(500, self._log_full_display_geometry)
         else:
             self._left_splitter.setVisible(True)
             self.toolbar.setVisible(True)
             self.menuBar().setVisible(True)
-            if self._pre_full_display_sizes:
-                self._h_splitter.setSizes(self._pre_full_display_sizes)
             if self._was_maximized:
                 self.showMaximized()
             else:
                 self.showNormal()
+            # Now and once the state change has gone through: some platforms
+            # put back their own idea of the normal size after showNormal.
+            self._restore_pre_full_display()
+            QTimer.singleShot(0, self._restore_pre_full_display)
 
         # Keyboard navigation (1..9, F, Delete) is canvas-scoped, so hand
         # focus back to the view after the layout change.
         view = self.display_panel.currentWidget()
         if view is not None:
             view.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _restore_pre_full_display(self) -> None:
+        """Back to the window size and panel widths from before full display."""
+        if self._full_display:
+            return
+        if not self._was_maximized and self._pre_full_display_geometry is not None:
+            # Undo _fill_screen.
+            self.setGeometry(self._pre_full_display_geometry)
+        # After the window size, which would otherwise rescale them.
+        if self._pre_full_display_sizes:
+            self._h_splitter.setSizes(self._pre_full_display_sizes)
+
+    def _fill_screen(self) -> None:
+        """In full display, make the window exactly as large as its screen."""
+        screen = self.screen()
+        if not self._full_display or screen is None:
+            return
+        target = screen.geometry()
+        if self.geometry().size() != target.size():
+            self.setGeometry(target)
 
     def _log_full_display_geometry(self) -> None:
         """Log what full display ended up as: a window that cannot shrink to
