@@ -106,7 +106,7 @@ class ActiveGroupController(QObject):
         )
         self._refresh_selector()
         self._rebind_toolbar_values()
-        self._toolbar.set_group_enabled(group.n_members > 0)
+        self._toolbar.set_group_enabled(group.n_members > 0, attribute_plot=group.is_attribute_plot)
 
     # ------------------------------------------------------------------
     # Group-side events
@@ -123,7 +123,7 @@ class ActiveGroupController(QObject):
         group.set_edit_target(target, link_all=desired_link_all)
         self._refresh_selector()
         self._rebind_toolbar_values()
-        self._toolbar.set_group_enabled(group.n_members > 0)
+        self._toolbar.set_group_enabled(group.n_members > 0, attribute_plot=group.is_attribute_plot)
 
     def _on_reference_changed(self, _index: int) -> None:
         group = self._group

@@ -89,3 +89,20 @@ def test_exit_handler_is_a_noop_outside_full_display(window: MainWindow) -> None
     window._on_exit_full_display()
     assert not window._full_display
     assert not window.display_panel.full_display_button.isChecked()
+
+
+def test_full_display_fills_the_screen_and_restores_the_size(window: MainWindow) -> None:
+    from PySide6.QtWidgets import QApplication
+
+    window.showNormal()
+    width = window.minimumSizeHint().width() + 40
+    window.resize(width, 600)
+    QApplication.processEvents()
+    assert window.size().width() == width
+    window.display_panel.full_display_button.setChecked(True)
+    QApplication.processEvents()  # the full-screen state change goes through
+    window._fill_screen()  # what the timers do once it has settled
+    assert window.geometry().size() == window.screen().geometry().size()
+    window.display_panel.full_display_button.setChecked(False)
+    QApplication.processEvents()
+    assert window.size().width() == width and window.size().height() == 600

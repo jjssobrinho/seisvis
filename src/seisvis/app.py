@@ -6,7 +6,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThreadPool, QTimer
+from PySide6.QtCore import QRect, Qt, QThreadPool, QTimer
 from PySide6.QtGui import (
     QCloseEvent,
     QDragEnterEvent,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QGraphicsView,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -31,11 +32,17 @@ from PySide6.QtWidgets import (
 
 from seisvis.controllers.active_group_controller import ActiveGroupController
 from seisvis.controllers.alignment_controller import AlignmentController
+from seisvis.controllers.attribute_controller import (
+    AttributeController,
+    attribute_field_label,
+    plottable_fields,
+)
 from seisvis.controllers.session_controller import SessionRestorer
 from seisvis.controllers.transforms_coordinator import TransformsCoordinator
 from seisvis.io.header_cache import HeaderCache
 from seisvis.io.loader import SUPPORTED_SUFFIXES
 from seisvis.io.slice_cache import SliceCache
+from seisvis.models.attribute_plot import AttributePlotConfig
 from seisvis.models.dataset import Dataset
 from seisvis.models.derived_dataset import DerivedDataset
 from seisvis.models.project import Project
@@ -46,7 +53,7 @@ from seisvis.models.session import (
     SessionFormatError,
 )
 from seisvis.models.sort_config import TRACE_RANGE_FIELD, RowSelection, SortConfig
-from seisvis.models.toggle_group import ToggleGroup
+from seisvis.models.toggle_group import ToggleGroup, ViewKind
 from seisvis.models.trace_alignment import AlignmentStatus, TraceAlignment
 from seisvis.services.dataset_reload import ReloadError, reload_dataset
 from seisvis.services.file_watch_service import FileWatchService
@@ -54,11 +61,13 @@ from seisvis.services.session_service import apply_model_group_entry, capture, c
 from seisvis.ui.dialogs.crosshair_fields_dialog import CrosshairFieldsDialog
 from seisvis.ui.dialogs.dataset_properties_dialog import DatasetPropertiesDialog
 from seisvis.ui.dialogs.missing_files_dialog import MissingFilesDialog
+from seisvis.ui.dialogs.new_attribute_plot_dialog import NewAttributePlotDialog
 from seisvis.ui.panels.catalog_panel import CatalogPanel
 from seisvis.ui.panels.display_panel import DisplayPanel
 from seisvis.ui.panels.viewport_manager_panel import ViewportManagerPanel
 from seisvis.ui.toolbar.global_toolbar import GlobalToolbar
 from seisvis.ui.widgets.crosshair_readout import CrosshairReadout
+from seisvis.ui.widgets.eliding_label import ElidingLabel
 from seisvis.ui.widgets.model_view import ModelView
 from seisvis.ui.widgets.seismic_view import SeismicView
 from seisvis.ui.windows.model_window import ModelWindow
@@ -72,6 +81,10 @@ _LOG_PATH = Path("logs/seisvis.log")
 _SESSION_FILTER = f"SeisVis sessions (*{SESSION_SUFFIX});;All files (*)"
 _SUPPORTED_SUFFIXES = SUPPORTED_SUFFIXES
 log = logging.getLogger(__name__)
+
+# How long a full-display state change is given to settle (compositor
+# resize) before the app checks the window size and repaints.
+_FULL_DISPLAY_SETTLE_MS = 300
 
 
 def _configure_logging() -> None:
@@ -193,6 +206,7 @@ class MainWindow(QMainWindow):
         # Full display mode: canvas takes the whole screen, chrome hidden.
         self._full_display: bool = False
         self._pre_full_display_sizes: list[int] = []
+        self._pre_full_display_geometry: QRect | None = None
         self._was_maximized: bool = False
 
         # Persisted defaults applied to new groups.
@@ -216,7 +230,7 @@ class MainWindow(QMainWindow):
         self._install_global_shortcuts()
 
         # Permanent right-side status label (group / member / state info).
-        self._status_group_label = QLabel("", self)
+        self._status_group_label = ElidingLabel(self, min_width=160)
         self._status_group_label.setStyleSheet("padding: 0 6px;")
         # The crosshair readout gets a widget of its own rather than sharing
         # showMessage() with every transient message — they used to overwrite
@@ -298,6 +312,9 @@ class MainWindow(QMainWindow):
         self.active_group_controller = ActiveGroupController(
             self.project, self.toolbar, parent=self
         )
+        self.attribute_controller = AttributeController(
+            self.project, self.toolbar.attributes, parent=self
+        )
         root_layout.addWidget(self.toolbar)
 
         self._h_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -310,6 +327,7 @@ class MainWindow(QMainWindow):
         self.catalog_panel.open_multi_in_new_group_requested.connect(
             self._on_open_multi_in_new_group
         )
+        self.catalog_panel.open_attribute_plot_requested.connect(self._on_open_attribute_plot)
         self.catalog_panel.add_to_active_group_requested.connect(self._on_add_to_active_group)
         self.catalog_panel.reload_requested.connect(self._on_reload_dataset)
         self.catalog_panel.quick_load_requested.connect(self._on_quick_load)
@@ -498,27 +516,92 @@ class MainWindow(QMainWindow):
         if enabled:
             self._pre_full_display_sizes = self._h_splitter.sizes()
             self._was_maximized = self.isMaximized()
+            self._pre_full_display_geometry = self.geometry()
             self._left_splitter.setVisible(False)
             self.toolbar.setVisible(False)
             self.menuBar().setVisible(False)
             self.showFullScreen()
             self.statusBar().showMessage("Full display mode — F11 or Esc to exit", 4000)
+            # On Wayland (GNOME) a normal-sized window can stay its old size,
+            # centred on black. Give the compositor time to size it first —
+            # resizing during its transition left a black, never-repainted
+            # canvas — and only then fill the screen if it is still short.
+            QTimer.singleShot(_FULL_DISPLAY_SETTLE_MS, self._fill_screen)
+            QTimer.singleShot(_FULL_DISPLAY_SETTLE_MS + 400, self._log_full_display_geometry)
         else:
             self._left_splitter.setVisible(True)
             self.toolbar.setVisible(True)
             self.menuBar().setVisible(True)
-            if self._pre_full_display_sizes:
-                self._h_splitter.setSizes(self._pre_full_display_sizes)
             if self._was_maximized:
                 self.showMaximized()
             else:
                 self.showNormal()
+            # Now and once the state change has gone through: some platforms
+            # put back their own idea of the normal size after showNormal.
+            self._restore_pre_full_display()
+            QTimer.singleShot(0, self._restore_pre_full_display)
+            QTimer.singleShot(_FULL_DISPLAY_SETTLE_MS, self._repaint_canvases)
 
         # Keyboard navigation (1..9, F, Delete) is canvas-scoped, so hand
         # focus back to the view after the layout change.
         view = self.display_panel.currentWidget()
         if view is not None:
             view.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _restore_pre_full_display(self) -> None:
+        """Back to the window size and panel widths from before full display."""
+        if self._full_display:
+            return
+        if not self._was_maximized and self._pre_full_display_geometry is not None:
+            # Undo _fill_screen.
+            self.setGeometry(self._pre_full_display_geometry)
+        # After the window size, which would otherwise rescale them.
+        if self._pre_full_display_sizes:
+            self._h_splitter.setSizes(self._pre_full_display_sizes)
+
+    def _fill_screen(self) -> None:
+        """In full display, make the window as large as its screen if the
+        platform did not; then repaint the canvases either way."""
+        screen = self.screen()
+        if not self._full_display or screen is None:
+            return
+        target = screen.geometry()
+        if self.geometry().size() != target.size():
+            self.setGeometry(target)
+        self._repaint_canvases()
+
+    def _repaint_canvases(self) -> None:
+        """Repaint every plot in full.
+
+        After a window-state change the platform may hand over a fresh
+        buffer that Qt believes already painted; a graphics view then only
+        redraws what changes next (the hover ring), leaving the rest black.
+        """
+        for view in self.findChildren(QGraphicsView):
+            view.viewport().update()
+        self.update()
+
+    def _log_full_display_geometry(self) -> None:
+        """Log what full display ended up as: a window that cannot shrink to
+        the screen is not made full-screen by the window manager."""
+        screen = self.screen()
+        widest = sorted(
+            (
+                (w.minimumSizeHint().width(), type(w).__name__, w.objectName())
+                for w in self.findChildren(QWidget)
+                if w.isVisible()
+            ),
+            reverse=True,
+        )[:6]
+        log.info(
+            "full display: window %s min %s, screen %s (dpr %.2f), fullscreen=%s, widest %s",
+            self.geometry().getRect(),
+            self.minimumSizeHint().toTuple(),
+            screen.geometry().getRect() if screen is not None else None,
+            screen.devicePixelRatio() if screen is not None else 0.0,
+            self.isFullScreen(),
+            widest,
+        )
 
     def _on_exit_full_display(self) -> None:
         """Esc in full display mode: drop the canvas's red trace, else leave.
@@ -763,7 +846,7 @@ class MainWindow(QMainWindow):
     def _update_status_group_info(self) -> None:
         group = self.project.active_toggle_group()
         if group is None or group.n_members == 0:
-            self._status_group_label.setText("")
+            self._status_group_label.set_full_text("")
             return
 
         k = group.active_index + 1
@@ -785,7 +868,7 @@ class MainWindow(QMainWindow):
             parts.append(compat)
         if index_state:
             parts.append(index_state)
-        self._status_group_label.setText("  |  ".join(parts))
+        self._status_group_label.set_full_text("  |  ".join(parts))
 
     # --- File loading ---
 
@@ -1350,6 +1433,39 @@ class MainWindow(QMainWindow):
             group.add_member(ds)
         self.statusBar().showMessage(f"Opened {len(datasets)} datasets in {group.name}", 4000)
 
+    def _on_open_attribute_plot(self, datasets: list[Dataset]) -> None:
+        """Ask what to plot, then open *datasets* as a new attribute plot's members."""
+        datasets = self._refuse_depth(datasets)
+        if not datasets:
+            return
+        config = self._ask_attribute_config(datasets[0])
+        if config is None:
+            return
+        group = self._create_group_for(datasets[0], view_kind="attribute", attribute_config=config)
+        for ds in datasets[1:]:
+            group.add_member(ds)
+
+    def _ask_attribute_config(self, dataset: Dataset) -> AttributePlotConfig | None:
+        """The New attribute plot dialog for *dataset*; None if cancelled."""
+        # The field lists come from the surange probe, which is fast enough
+        # to run here when nothing has asked for it yet.
+        try:
+            dataset.populate_surange()
+        except Exception:  # noqa: BLE001 - fall back to the standard field list
+            log.warning("surange scan failed for %s", dataset.name, exc_info=True)
+        fields = [(f, attribute_field_label(dataset, f)) for f in plottable_fields(dataset)]
+        dlg = NewAttributePlotDialog(
+            fields,
+            sample_interval_ms=float(dataset.sample_interval_ms or 1.0),
+            n_samples=int(dataset.n_samples),
+            n_traces=int(dataset.n_traces),
+            title=f"New attribute plot — {dataset.name}",
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dlg.config()
+
     def _on_add_to_active_group(self, dataset: Dataset) -> None:
         if not self._refuse_depth([dataset]):
             return
@@ -1359,9 +1475,18 @@ class MainWindow(QMainWindow):
             return
         group.add_member(dataset)
 
-    def _create_group_for(self, dataset: Dataset) -> ToggleGroup:
-        name = f"Group {self.project.next_toggle_group_number()}"
-        group = ToggleGroup(name=name)
+    def _create_group_for(
+        self,
+        dataset: Dataset,
+        *,
+        view_kind: ViewKind = "seismic",
+        attribute_config: AttributePlotConfig | None = None,
+    ) -> ToggleGroup:
+        number = self.project.next_toggle_group_number()
+        name = f"Attributes {number}" if view_kind == "attribute" else f"Group {number}"
+        group = ToggleGroup(name=name, view_kind=view_kind)
+        if attribute_config is not None:
+            group.set_attribute_config(attribute_config)
         group.add_member(dataset)
         # Seed primary.count/skip from the user's saved defaults. The default
         # field remains TRACE_RANGE (uncommitted) so natural file order renders

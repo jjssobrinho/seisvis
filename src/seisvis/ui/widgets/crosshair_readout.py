@@ -10,30 +10,35 @@ stable widget behind it, gives the double-click somewhere to land.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtWidgets import QWidget
+
+from seisvis.ui.widgets.eliding_label import ElidingLabel
 
 _HINT = "Double-click to choose which header fields appear here"
 
 
-class CrosshairReadout(QLabel):
-    """Shows the cursor readout; double-click opens the field picker."""
+class CrosshairReadout(ElidingLabel):
+    """Shows the cursor readout; double-click opens the field picker.
+
+    Eliding: an attribute plot's readout is long, and a status-bar label
+    that insists on its full width widens the whole window past the screen.
+    """
 
     double_clicked = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setText("")
-        self.setToolTip(_HINT)
+        self.set_tooltip_suffix(_HINT)
         # An undiscoverable gesture is no feature, so the cursor advertises it.
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setStyleSheet("padding: 0 6px;")
         self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
 
     def set_readout(self, text: str) -> None:
-        self.setText(text)
+        self.set_full_text(text)
 
     def clear_readout(self) -> None:
-        self.setText("")
+        self.set_full_text("")
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: ANN001 - Qt override
         if event.button() == Qt.MouseButton.LeftButton:

@@ -28,6 +28,10 @@ data. Current capabilities:
   f-k transforms in a separate window per toggle group.
 - Session files (`.svsession`): save the workspace, reopen it later,
   with missing files located or skipped.
+- Attribute plots: a canvas tab plotting header field against header
+  field (receiver X/Y coloured by shot, stacking charts, …) for the
+  traces the command bar selects, with a whole-file background and
+  2D-line regularity statistics.
 
 ---
 
@@ -82,6 +86,7 @@ data. Current capabilities:
 | v6.2  | Sessions (save / open workspace)              | `v62-done`       |
 | v6.3  | Fast Header Scan (vectorized, parallel reads) | `v63-done`       |
 | v6.4  | Header Index Cache (`~/.cache/seisvis`)       | `v64-done`       |
+| v6.5  | Attribute Plot (branch `feat/attribute-plot`) | `v65-done`       |
 
 Milestones are sequential; each in its own session. Finish, commit,
 tag, stop. **Let tests run to completion** before tagging. Check
@@ -99,11 +104,13 @@ tests, pre-commit for hooks. No matplotlib in the rendering path.
 
 ## Conventions (non-negotiable)
 
-- **Time axis** (Display Canvas): milliseconds, time-down
+- **Time axis** (Display Canvas, seismic tabs): milliseconds, time-down
   (t=0 at top). This binds the Display Canvas and everything
   feeding it. Depth-domain data does not render there — it is
   routed to the Model Window, whose axes are metres, depth-down.
-- **Trace axis** (Display Canvas): 0-indexed, left-to-right.
+  An attribute-plot tab has no time axis: its axes are header fields
+  (see Attribute Plots).
+- **Trace axis** (Display Canvas, seismic tabs): 0-indexed, left-to-right.
 - Sample interval stored as `float` ms (segyio gives µs).
 - Amplitudes: `float32` throughout.
 - Type hints everywhere. `ruff check` and `ruff format` before
@@ -137,6 +144,11 @@ ui/  →  controllers/  →  services/  →  models/ ← processing/, io/
 - `Dataset.read_slice(trace_indices, time_slice, pad_samples=0) -> np.ndarray[float32]`
   is the **only** access path for trace data.
   `trace_indices` may be a slice or `np.ndarray[int]`.
+  Internally, a request for ≥ 1024 traces and ≤ 16 samples (a time
+  slice) takes the strided block reader `io/sample_reader` — large
+  contiguous reads on a small thread pool, IBM floats converted — once
+  its layout has matched segyio on the first, middle and last trace;
+  otherwise, or on any mismatch, traces are read one by one via segyio.
 - **`load_segy` is O(1) regardless of file size.** It reads only the
   binary header and a few probes. No per-trace header reads on the
   load path.
@@ -474,7 +486,8 @@ session holds what the user was looking at.
   edit target, link_all, per-member display state and processing
   chain, `SortConfig`, commanded and zoomed ranges (incl. the time window, restored
   under any sort), colour scale,
-  crosshair fields, flicker rate and excluded members), Model Window
+  crosshair fields, flicker rate and excluded members, view kind and
+  attribute-plot config), Model Window
   tabs (members, per-kind style, overlay, flicker, render mode), active tabs.
 - **Not saved**: `.sv` content (it loads with its file), header scans
   (cached per file, see Scan cache), group indices, trace alignments, selection, transform windows,
@@ -508,6 +521,8 @@ list of members.
 ```
 ToggleGroup
   id, name                    uuid; user-editable (default "Group N")
+  view_kind                   "seismic" | "attribute", fixed at creation
+  attribute_config            Optional[AttributePlotConfig]  # attribute only
   members                     ordered list, N ≥ 1, no upper bound
   active_index                which member is shown
   reference_index             whose coordinates define commanded shared_state
@@ -830,8 +845,7 @@ buttons (`ui/widgets/render_mode_buttons.py`, icons painted in code).
 
 ## Layout
 
-- **Top toolbar** (global, pinned), three sections separated by
-  visual dividers:
+- **Top toolbar** (global, pinned), four sections (tabs):
   - **Appearance**: colormap with Smooth / Blocky / Wavelet icon
     buttons (see Display Modes), clip %, gain, colour scale, time
     window (Time min / max → the group's `commanded_time_range_ms`,
@@ -840,6 +854,10 @@ buttons (`ui/widgets/render_mode_buttons.py`, icons painted in code).
     a change refetches and clears the selection).
   - **Analysis**: rectangle-selection button, FFT button, f-k button.
   - **Processing**: bandpass, AGC.
+  - **Attributes**: the active attribute plot's layers and switches
+    (see Attribute Plots). Enabled only on an attribute tab, which in
+    turn disables the three sections above, the edit target and Reset;
+    the tab bar follows the active tab's kind.
   - At the right end: edit-target selector `[1] [2] … [All]`.
 - **Top-left** (Catalog): loaded + derived datasets. Derived names
   render in blue.
@@ -847,9 +865,84 @@ buttons (`ui/widgets/render_mode_buttons.py`, icons painted in code).
   Diff Selection bar at the bottom.
 - **Right** (Display Canvas): `QTabWidget`, one tab per toggle group.
   Vertical stack per tab: toggle bar / info track / plot / group
-  command bar.
+  command bar. An attribute tab: toggle bar / scatter plot (+ stats
+  panel) / group command bar.
 - **Transform Window** (one per toggle group, opened on demand):
   separate `QMainWindow` with a tab system. See Selection & Transforms.
+
+---
+
+## Attribute Plots
+
+A toggle group created with `view_kind="attribute"` (Catalog right-click
+→ "Open attribute plot…"; not offered for depth data) renders as an
+`AttributePlotView`: one point per trace, at (header field X, header
+field Y), optionally coloured by a third header field or by the trace's
+**amplitude at one time** — with INLINE_3D × CROSSLINE_3D on the axes,
+a time slice. Members, sort, flicker and trace alignment behave as on a
+seismic tab.
+
+The **New attribute plot** dialog (`ui/dialogs/new_attribute_plot_dialog`)
+picks the kind first — Time slice (X / Y / time) or Header attribute
+(X / Y / colour) — and the traces (All / command-bar selection). Defaults
+follow the file: INLINE_3D and CROSSLINE_3D filled → time slice of all
+traces; otherwise receivers (GroupX/GroupY) by shot of the selection.
+
+```
+AttributePlotConfig (frozen, on the group, saved in sessions)
+  layers            tuple[AttributeLayer, ...]   ≥ 1, drawn in order
+  edit_layer        layer the toolbar edits
+  show_background   every trace of the file in grey
+  show_stats        regularity side panel
+  equal_aspect      honoured only when every visible axis is a coordinate
+  stats_tolerance   fraction of the nominal spacing (default 0.10)
+  trace_scope       "selection" (command bar) | "all" (every trace)
+
+AttributeLayer
+  x_field, y_field, color_field | None, colormap, symbol, size, visible
+  time_ms           sample time when color_field == AMPLITUDE
+```
+
+- **Trace scope "all"**: the command bar is disabled with a note; every
+  trace's headers come from `FieldScanWorker` (header cache), and command
+  -bar edits do not refetch.
+- **Amplitude layers** (`color_field = AMPLITUDE`, values keyed
+  `AMPLITUDE@<time>`): raw amplitudes, the sample nearest `time_ms`
+  (`sample_for_time`), read per member by `TimeSliceWorker` through
+  `read_slice` in 262,144-trace chunks with progress. The last six slices
+  are kept per (dataset, sample, trace list). Colour: seismic colormap,
+  symmetric levels at the 99th percentile of |amplitude|, one bar per
+  time labelled "Amplitude @ <sample time> ms".
+- **Grid layers**: a coloured layer whose axes are both grid numbers
+  (`GRID_FIELDS`: INLINE_3D, CROSSLINE_3D, CDP, CDP_TRACE, FieldRecord,
+  TraceNumber, …) is placed on its grid off-thread (`GridGeometry` via
+  `ComputeWorker`; step = GCD of the numbering, ≤ 50 M cells) and drawn
+  as an `ImageItem`, one cell per bin, shared cells averaged, empty cells
+  transparent. Otherwise (coordinates, sparse grids) it stays dots.
+
+- **Reads**: per member, `resolve_member_trace_indices` → a
+  `TraceHeaderWorker` for the fields the visible layers need plus their
+  scalars, FieldRecord / TraceNumber and CoordinateUnits. Natural order
+  is capped at 20,000 traces. A diff reads parent A's headers.
+- **Scalars**: Source/Group/CDP X/Y × SourceGroupScalar, elevations ×
+  ElevationScalar, ShotPoint × ShotPointScalar (s>0 multiplies, s<0
+  divides by |s|, 0 = 1); unset scalars leave values raw.
+- **Colour**: visible layers with the same colour field and colormap
+  share one colour bar and range, across members.
+- **Background**: per visible layer, every trace's X/Y of the active
+  member's file, reduced to distinct positions off-thread
+  (`AttributeBackgroundWorker`), thinned past 200,000 with a fixed seed.
+- **Stats** (`processing/attribute_stats.py`): edited layer, grouped by
+  its colour values. Straight principal-axis line fit; within groups the
+  nominal spacing is the median gap and points are snapped to that grid
+  (off grid / missing / duplicates); between groups the same on group
+  centres; off line = |crossline| > tolerance × nominal. Flagged points
+  get orange rings. Runs on the GUI thread (~20 ms per 20,000 points);
+  declined above 200,000 points.
+- **Keys**: `F` fits the selection, `Shift+F` with the background;
+  `1`..`9`, Space, ←/→/Home/End as on the canvas. Hover reads the nearest
+  point (≤ 10 px) out to the status bar.
+- `ui/` reaches `processing/` through `services/attribute_plot_service`.
 
 ---
 
@@ -941,8 +1034,11 @@ contiguous range. Used by Range-type rows in either position.
 
 - Raw data immutable after load; processing produces new arrays.
 - All file I/O and any processing > 50 ms runs on `QThreadPool`.
-- Display Canvas time axis is always ms, time-down; the Model
-  Window's vertical axis is always metres, depth-down.
+- Display Canvas time axis (seismic tabs) is always ms, time-down;
+  the Model Window's vertical axis is always metres, depth-down.
+- An attribute plot reads trace data only for amplitude layers, and then
+  only through `read_slice`; whole-file header reads (trace scope "all",
+  background) go through `read_fields_cached`.
 - A depth-domain dataset never enters a toggle group.
 - `read_slice` is the only trace-data access path.
 - Switching compatible members = `setVisible()` only.

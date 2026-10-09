@@ -9,6 +9,7 @@ import segyio
 from PySide6.QtCore import QObject, Signal
 
 from seisvis.io.header_cache import HeaderCacheKey
+from seisvis.io.sample_reader import SampleLayout, read_samples, sample_layout
 from seisvis.io.surange import FieldSample, scan_populated_fields
 from seisvis.models.group_index import GroupIndex, GroupingMode, ModeState
 from seisvis.models.layer_kind import LayerKind
@@ -16,6 +17,12 @@ from seisvis.models.sv_sidecar import SVSidecar
 from seisvis.models.vertical_domain import DepthGeometry, VerticalDomain
 
 log = logging.getLogger(__name__)
+
+# read_slice switches from per-trace segyio reads to strided block reads
+# (io.sample_reader) when it is asked for many traces and few samples — a
+# time slice, not a display window.
+FAST_PATH_MIN_TRACES = 1024
+FAST_PATH_MAX_SAMPLES = 16
 
 # Default display labels for well-known SEG-Y header fields.
 _DEFAULT_FIELD_NAMES: dict[str, str] = {
@@ -98,6 +105,11 @@ class Dataset(QObject):
         self.id = id if id is not None else str(uuid.uuid4())
         self.name = name if name else Path(source_path).stem
         self._closed = False
+        # Strided sample layout for read_slice's fast path, worked out on
+        # first use per handle (a reload swaps the handle). False = tried,
+        # not usable.
+        self._sample_layout: SampleLayout | None | bool = None
+        self._sample_layout_handle: object | None = None
         self.header_fields_available: dict[str, FieldSample] | None = None
         # SEG-Y field names this file structurally cannot supply, filtered
         # out of the surange result. SU reuses the CDP_X / CDP_Y / INLINE_3D
@@ -170,11 +182,28 @@ class Dataset(QObject):
         t0 = max(0, t_start - pad_samples)
         t1 = min(self.n_samples, t_stop + pad_samples)
 
+        if idx_array.size >= FAST_PATH_MIN_TRACES and t1 - t0 <= FAST_PATH_MAX_SAMPLES:
+            layout = self._fast_layout()
+            if layout is not None:
+                return read_samples(self.source_path, layout, idx_array, t0, t1)
+
         out = np.empty((idx_array.size, t1 - t0), dtype=np.float32)
         for row, idx in enumerate(idx_array):
             trace = self.handle.trace[int(idx)]
             out[row] = np.asarray(trace[t0:t1], dtype=np.float32)
         return out
+
+    def _fast_layout(self) -> SampleLayout | None:
+        """The verified strided layout of this file, or None to read per trace."""
+        if self._sample_layout_handle is not self.handle:
+            self._sample_layout_handle = self.handle
+            try:
+                layout = sample_layout(self.handle, self.source_path, self.n_traces)
+            except Exception:  # noqa: BLE001 - the slow path always works
+                log.debug("no fast sample layout for %s", self.source_path, exc_info=True)
+                layout = None
+            self._sample_layout = layout if layout is not None else False
+        return self._sample_layout or None  # type: ignore[return-value]
 
     def inline_at(self, trace_index: int) -> int | None:
         """Return the inline number at ``trace_index``, or ``None``.

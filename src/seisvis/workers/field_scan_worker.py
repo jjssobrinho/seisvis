@@ -49,7 +49,10 @@ class FieldScanWorker(QRunnable):
         self.fields = list(fields)
         self._cache = cache
         self.signals = FieldScanWorkerSignals()
-        self._is_cancelled = is_cancelled if is_cancelled is not None else (lambda: False)
+        external = is_cancelled if is_cancelled is not None else (lambda: False)
+        # Settable flag, as on the other workers, alongside the callable.
+        self.is_cancelled: bool = False
+        self._is_cancelled = lambda: self.is_cancelled or bool(external())
         self._chunk_traces = chunk_traces
 
     @Slot()
