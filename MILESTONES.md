@@ -74,6 +74,32 @@ ui/widgets/attribute_stats_panel.py   regularity report + tolerance
 
 ---
 
+Time slices (second part of v6.5)
+
+- `AttributeLayer.color_field = AMPLITUDE` + `time_ms` (key
+  `AMPLITUDE@<time>`); `AttributePlotConfig.trace_scope` ("selection" |
+  "all"); `time_slice_config()`.
+- `io/sample_reader.py`: strided block reads of samples, IBM conversion,
+  layout verified against segyio. `Dataset.read_slice` uses it for
+  ≥ 1024 traces × ≤ 16 samples — still the only trace-data path.
+- `workers/time_slice_worker.py` (chunked read_slice, progress, cancel),
+  `workers/compute_worker.py` (generic off-thread call),
+  `FieldScanWorker.is_cancelled`.
+- `processing/attribute_plot.py`: `GridGeometry` / `grid_geometry` /
+  `grid_image`, `symmetric_levels` (subsampled past 1 M values),
+  `sample_for_time`, `GRID_FIELDS`.
+- View: all-traces mode (command bar disabled + note), slice reads and
+  cache (6 entries), grid layers as `ImageItem`, hover per cell, fit that
+  copes with flat extents.
+- Toolbar: Colour → Amplitude @ time, Time (ms) box, Traces switch.
+- `ui/dialogs/new_attribute_plot_dialog.py`; the catalog action opens it.
+
+Measured (synthetic 620 MB cube, 500,000 traces, warm page cache): headers
+0.20 s (cache afterwards: instant), one-sample slice 0.19 s (per-trace
+path ~0.7 s), grid placement 0.03 s, binning 0.01 s.
+
+---
+
 Tests
 
 `test_attribute_plot.py` (config, scalars, points, background),
@@ -81,7 +107,9 @@ Tests
 `test_attribute_plot_group.py` (group kind, sessions, catalog),
 `test_attribute_plot_view.py` (reads, drawing, readout, members,
 background, stats), `test_attribute_background_worker.py`,
-`test_attribute_toolbar.py`.
+`test_attribute_toolbar.py`; time slices: `test_time_slice_model.py`,
+`test_sample_reader.py`, `test_time_slice_worker.py`,
+`test_time_slice_view.py`, `test_new_attribute_plot_dialog.py`.
 
 Out of scope for v6.5
 

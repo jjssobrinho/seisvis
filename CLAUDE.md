@@ -144,6 +144,11 @@ ui/  →  controllers/  →  services/  →  models/ ← processing/, io/
 - `Dataset.read_slice(trace_indices, time_slice, pad_samples=0) -> np.ndarray[float32]`
   is the **only** access path for trace data.
   `trace_indices` may be a slice or `np.ndarray[int]`.
+  Internally, a request for ≥ 1024 traces and ≤ 16 samples (a time
+  slice) takes the strided block reader `io/sample_reader` — large
+  contiguous reads on a small thread pool, IBM floats converted — once
+  its layout has matched segyio on the first, middle and last trace;
+  otherwise, or on any mismatch, traces are read one by one via segyio.
 - **`load_segy` is O(1) regardless of file size.** It reads only the
   binary header and a few probes. No per-trace header reads on the
   load path.
@@ -870,10 +875,18 @@ buttons (`ui/widgets/render_mode_buttons.py`, icons painted in code).
 ## Attribute Plots
 
 A toggle group created with `view_kind="attribute"` (Catalog right-click
-→ "Open attribute plot"; not offered for depth data) renders as an
-`AttributePlotView`: one point per trace the command bar selects, at
-(header field X, header field Y), optionally coloured by a third field.
-Members, sort, flicker and trace alignment behave as on a seismic tab.
+→ "Open attribute plot…"; not offered for depth data) renders as an
+`AttributePlotView`: one point per trace, at (header field X, header
+field Y), optionally coloured by a third header field or by the trace's
+**amplitude at one time** — with INLINE_3D × CROSSLINE_3D on the axes,
+a time slice. Members, sort, flicker and trace alignment behave as on a
+seismic tab.
+
+The **New attribute plot** dialog (`ui/dialogs/new_attribute_plot_dialog`)
+picks the kind first — Time slice (X / Y / time) or Header attribute
+(X / Y / colour) — and the traces (All / command-bar selection). Defaults
+follow the file: INLINE_3D and CROSSLINE_3D filled → time slice of all
+traces; otherwise receivers (GroupX/GroupY) by shot of the selection.
 
 ```
 AttributePlotConfig (frozen, on the group, saved in sessions)
@@ -883,10 +896,29 @@ AttributePlotConfig (frozen, on the group, saved in sessions)
   show_stats        regularity side panel
   equal_aspect      honoured only when every visible axis is a coordinate
   stats_tolerance   fraction of the nominal spacing (default 0.10)
+  trace_scope       "selection" (command bar) | "all" (every trace)
 
 AttributeLayer
   x_field, y_field, color_field | None, colormap, symbol, size, visible
+  time_ms           sample time when color_field == AMPLITUDE
 ```
+
+- **Trace scope "all"**: the command bar is disabled with a note; every
+  trace's headers come from `FieldScanWorker` (header cache), and command
+  -bar edits do not refetch.
+- **Amplitude layers** (`color_field = AMPLITUDE`, values keyed
+  `AMPLITUDE@<time>`): raw amplitudes, the sample nearest `time_ms`
+  (`sample_for_time`), read per member by `TimeSliceWorker` through
+  `read_slice` in 262,144-trace chunks with progress. The last six slices
+  are kept per (dataset, sample, trace list). Colour: seismic colormap,
+  symmetric levels at the 99th percentile of |amplitude|, one bar per
+  time labelled "Amplitude @ <sample time> ms".
+- **Grid layers**: a coloured layer whose axes are both grid numbers
+  (`GRID_FIELDS`: INLINE_3D, CROSSLINE_3D, CDP, CDP_TRACE, FieldRecord,
+  TraceNumber, …) is placed on its grid off-thread (`GridGeometry` via
+  `ComputeWorker`; step = GCD of the numbering, ≤ 50 M cells) and drawn
+  as an `ImageItem`, one cell per bin, shared cells averaged, empty cells
+  transparent. Otherwise (coordinates, sparse grids) it stays dots.
 
 - **Reads**: per member, `resolve_member_trace_indices` → a
   `TraceHeaderWorker` for the fields the visible layers need plus their
@@ -905,7 +937,8 @@ AttributeLayer
   nominal spacing is the median gap and points are snapped to that grid
   (off grid / missing / duplicates); between groups the same on group
   centres; off line = |crossline| > tolerance × nominal. Flagged points
-  get orange rings. Runs on the GUI thread (~20 ms per 20,000 points).
+  get orange rings. Runs on the GUI thread (~20 ms per 20,000 points);
+  declined above 200,000 points.
 - **Keys**: `F` fits the selection, `Shift+F` with the background;
   `1`..`9`, Space, ←/→/Home/End as on the canvas. Hover reads the nearest
   point (≤ 10 px) out to the status bar.
@@ -1003,9 +1036,9 @@ contiguous range. Used by Range-type rows in either position.
 - All file I/O and any processing > 50 ms runs on `QThreadPool`.
 - Display Canvas time axis (seismic tabs) is always ms, time-down;
   the Model Window's vertical axis is always metres, depth-down.
-- An attribute plot reads headers only — never `read_slice` — and only
-  for the selected traces; whole-file reads (background) go through
-  `read_fields_cached`.
+- An attribute plot reads trace data only for amplitude layers, and then
+  only through `read_slice`; whole-file header reads (trace scope "all",
+  background) go through `read_fields_cached`.
 - A depth-domain dataset never enters a toggle group.
 - `read_slice` is the only trace-data access path.
 - Switching compatible members = `setVisible()` only.

@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Time slices
+
+- **Open attribute plot… asks what to plot.** A dialog offers a **Time
+  slice** (X / Y, default inline × crossline, and a time in ms that snaps
+  to the sample interval) or a **Header attribute** (X / Y / colour), and
+  whether to plot **all traces** or the command-bar selection. A 3D file
+  starts as a time slice of the whole survey, a 2D file as receivers by
+  shot.
+- **Time slices** are drawn as an image in seismic colours — one cell per
+  inline/crossline bin, empty bins left blank, clipped symmetrically at
+  the 99th percentile — with a colour bar reading "Amplitude @ 1200 ms".
+  Hover a bin to read its inline, crossline, amplitude and trace.
+- **Change the time** from the Attributes toolbar tab: Colour →
+  *Amplitude @ time* and the **Time** box beside it (steps one sample;
+  commits on Enter or the arrows). The last few slices are kept, so going
+  back is instant. Raw amplitudes; the member's processing is not applied.
+- **Traces: Selection / All traces** in the Attributes tab. With All, the
+  command bar is greyed out and every trace is plotted — headers come from
+  the header cache after the first read.
+- **Faster single-sample reads.** Reading a few samples from many traces
+  now uses large block reads instead of one read per trace: one sample
+  from 500,000 traces in about 0.2 s from the page cache (about 3.5×
+  faster). A slice of a file not yet in memory is bound by the disk.
+
 ### Attribute plots
 
 - **Plot header fields against each other.** Right-click a dataset in the
