@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QToolButton,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -66,8 +67,15 @@ class AttributesGroup(QGroupBox):
             "border: 1px solid #8a8a8a; }"
         )
         self._config: AttributePlotConfig | None = None
-        row = QHBoxLayout(self)
-        row.setContentsMargins(6, 6, 6, 6)
+        # Two rows, like the Processing section: one long row made the whole
+        # toolbar — and so the window — wider than a 1920 px screen.
+        rows = QVBoxLayout(self)
+        rows.setContentsMargins(6, 6, 6, 6)
+        rows.setSpacing(4)
+        row = QHBoxLayout()
+        row2 = QHBoxLayout()
+        rows.addLayout(row)
+        rows.addLayout(row2)
 
         # Layer selector.
         row.addWidget(QLabel("Layer", self))
@@ -123,15 +131,18 @@ class AttributesGroup(QGroupBox):
             ("Y", self.y_combo),
             ("Colour", self.color_combo),
             ("", self.time_spin),
-            ("", self.colormap_combo),
-            ("", self.symbol_combo),
-            ("", self.size_spin),
         ):
             if label:
                 row.addWidget(QLabel(label, self))
             row.addWidget(widget)
-        row.addWidget(self.visible_check)
-        row.addWidget(_separator(self))
+        row.addStretch(1)
+        # Second row: the layer's look, then the plot-wide switches.
+        row2.addWidget(QLabel("Style", self))
+        for widget in (self.colormap_combo, self.symbol_combo, self.size_spin):
+            row2.addWidget(widget)
+        row2.addWidget(self.visible_check)
+        row2.addWidget(_separator(self))
+        row = row2
 
         # Plot-wide switches.
         row.addWidget(QLabel("Traces", self))
@@ -309,7 +320,11 @@ class AttributesGroup(QGroupBox):
 def _combo(parent: QWidget, tip: str) -> QComboBox:
     combo = QComboBox(parent)
     combo.setToolTip(tip)
-    combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+    # A bounded width, whatever the file's field names: long entries are
+    # cut in the box but shown whole in the open list.
+    combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    combo.setMinimumContentsLength(14)
+    combo.view().setTextElideMode(Qt.TextElideMode.ElideNone)
     return combo
 
 
@@ -318,9 +333,8 @@ def _fill(combo: QComboBox, items: Sequence[tuple[str | None, str]], current: st
     for name, label in items:
         combo.addItem(label, name)
     _select(combo, current)
-    # AdjustToContents sizes for the items present when the layout last
-    # asked; refilled items can be longer, so widen to fit them now.
-    combo.setMinimumWidth(combo.sizeHint().width())
+    # The open list is as wide as its longest entry.
+    combo.view().setMinimumWidth(combo.view().sizeHintForColumn(0) + 24)
 
 
 def _select(combo: QComboBox, value: object) -> None:

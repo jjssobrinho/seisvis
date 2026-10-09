@@ -66,6 +66,7 @@ from seisvis.ui.panels.display_panel import DisplayPanel
 from seisvis.ui.panels.viewport_manager_panel import ViewportManagerPanel
 from seisvis.ui.toolbar.global_toolbar import GlobalToolbar
 from seisvis.ui.widgets.crosshair_readout import CrosshairReadout
+from seisvis.ui.widgets.eliding_label import ElidingLabel
 from seisvis.ui.widgets.model_view import ModelView
 from seisvis.ui.widgets.seismic_view import SeismicView
 from seisvis.ui.windows.model_window import ModelWindow
@@ -223,7 +224,7 @@ class MainWindow(QMainWindow):
         self._install_global_shortcuts()
 
         # Permanent right-side status label (group / member / state info).
-        self._status_group_label = QLabel("", self)
+        self._status_group_label = ElidingLabel(self, min_width=160)
         self._status_group_label.setStyleSheet("padding: 0 6px;")
         # The crosshair readout gets a widget of its own rather than sharing
         # showMessage() with every transient message — they used to overwrite
@@ -514,6 +515,7 @@ class MainWindow(QMainWindow):
             self.menuBar().setVisible(False)
             self.showFullScreen()
             self.statusBar().showMessage("Full display mode — F11 or Esc to exit", 4000)
+            QTimer.singleShot(500, self._log_full_display_geometry)
         else:
             self._left_splitter.setVisible(True)
             self.toolbar.setVisible(True)
@@ -530,6 +532,28 @@ class MainWindow(QMainWindow):
         view = self.display_panel.currentWidget()
         if view is not None:
             view.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _log_full_display_geometry(self) -> None:
+        """Log what full display ended up as: a window that cannot shrink to
+        the screen is not made full-screen by the window manager."""
+        screen = self.screen()
+        widest = sorted(
+            (
+                (w.minimumSizeHint().width(), type(w).__name__, w.objectName())
+                for w in self.findChildren(QWidget)
+                if w.isVisible()
+            ),
+            reverse=True,
+        )[:6]
+        log.info(
+            "full display: window %s min %s, screen %s (dpr %.2f), fullscreen=%s, widest %s",
+            self.geometry().getRect(),
+            self.minimumSizeHint().toTuple(),
+            screen.geometry().getRect() if screen is not None else None,
+            screen.devicePixelRatio() if screen is not None else 0.0,
+            self.isFullScreen(),
+            widest,
+        )
 
     def _on_exit_full_display(self) -> None:
         """Esc in full display mode: drop the canvas's red trace, else leave.
@@ -774,7 +798,7 @@ class MainWindow(QMainWindow):
     def _update_status_group_info(self) -> None:
         group = self.project.active_toggle_group()
         if group is None or group.n_members == 0:
-            self._status_group_label.setText("")
+            self._status_group_label.set_full_text("")
             return
 
         k = group.active_index + 1
@@ -796,7 +820,7 @@ class MainWindow(QMainWindow):
             parts.append(compat)
         if index_state:
             parts.append(index_state)
-        self._status_group_label.setText("  |  ".join(parts))
+        self._status_group_label.set_full_text("  |  ".join(parts))
 
     # --- File loading ---
 

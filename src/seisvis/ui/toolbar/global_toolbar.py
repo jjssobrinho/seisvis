@@ -86,7 +86,21 @@ class GlobalToolbar(QWidget):
 
         root.addWidget(self._content)
 
-        self._tab_bar.currentChanged.connect(self._stack.setCurrentIndex)
+        self._tab_bar.currentChanged.connect(self._on_section_changed)
+        self._on_section_changed(self._tab_bar.currentIndex())
+
+    def _on_section_changed(self, index: int) -> None:
+        """Show page *index*; only the shown page sizes the toolbar.
+
+        A QStackedWidget otherwise takes the largest page's minimum width,
+        so one wide section would widen the window under every tab.
+        """
+        for i in range(self._stack.count()):
+            page = self._stack.widget(i)
+            policy = QSizePolicy.Policy.Preferred if i == index else QSizePolicy.Policy.Ignored
+            page.setSizePolicy(policy, policy)
+        self._stack.setCurrentIndex(index)
+        self._stack.adjustSize()
 
     def set_group_enabled(self, enabled: bool, *, attribute_plot: bool = False) -> None:
         """Enable the sections the active group uses; disable the rest.
