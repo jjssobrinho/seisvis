@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from seisvis.models.toggle_group import ToggleGroup
-from seisvis.ui.widgets.dataset_tooltip import dataset_path_tooltip
+from seisvis.ui.widgets.dataset_tooltip import dataset_path_label, dataset_path_tooltip
 from seisvis.ui.widgets.member_strip import MemberStrip
 from seisvis.utils.member_colors import member_color
 
@@ -105,7 +105,7 @@ class ToggleBar(QWidget):
         self._button_group.idClicked.connect(self.group.set_active)
         # First in the row so its centre maths starts from the bar's left edge;
         # it takes all the slack, which leaves the other controls at the right.
-        self._strip = MemberStrip(self)
+        self._strip = MemberStrip(self, fill_width=True)
         layout.addWidget(self._strip, 1)
         layout.addWidget(self._compat_label)
         layout.addSpacing(8)
@@ -185,7 +185,7 @@ class ToggleBar(QWidget):
             btn.deleteLater()
         self._buttons.clear()
 
-        names = [m.dataset.name for m in self.group.members]
+        names = [dataset_path_label(m.dataset) for m in self.group.members]
         for i, member in enumerate(self.group.members):
             btn = QPushButton(str(i + 1), self._strip)
             btn.setCheckable(True)

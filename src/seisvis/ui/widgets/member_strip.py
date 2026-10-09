@@ -26,8 +26,12 @@ class MemberStrip(QWidget):
     would not fit whole inside the strip are hidden rather than clipped.
     """
 
-    def __init__(self, parent: QWidget) -> None:
+    def __init__(self, parent: QWidget, fill_width: bool = False) -> None:
         super().__init__(parent)
+        # When set, the active label may grow to the room around the bar's
+        # centre (keeping one neighbour visible each side) instead of
+        # stopping at ``_NAME_MAX_PX`` — for long labels such as full paths.
+        self._fill_width = fill_width
         self._buttons: list[QAbstractButton] = []
         self._names: list[str] = []
         self._active = -1
@@ -68,10 +72,22 @@ class MemberStrip(QWidget):
             return number
         btn = self._buttons[index]
         btn.ensurePolished()
-        name = QFontMetrics(btn.font()).elidedText(
-            self._names[index], Qt.TextElideMode.ElideMiddle, _NAME_MAX_PX
-        )
+        fm = QFontMetrics(btn.font())
+        max_px = _NAME_MAX_PX
+        if self._fill_width:
+            # The active button is centred on the parent, so it can be at
+            # most twice the distance from that centre to the nearer edge.
+            centre = self._centre()
+            half = min(centre, self.width() - centre)
+            button_px = 2 * (half - _BUTTON_WIDTH - _BUTTON_SPACING)
+            max_px = max(_NAME_MAX_PX, int(button_px) - 20 - fm.horizontalAdvance(f"{number}  "))
+        name = fm.elidedText(self._names[index], Qt.TextElideMode.ElideMiddle, max_px)
         return f"{number}  {name}"
+
+    def _centre(self) -> float:
+        """The parent bar's horizontal centre, in strip coordinates."""
+        parent = self.parentWidget()
+        return (parent.width() if parent else self.width()) / 2 - self.x()
 
     def _width(self, index: int) -> int:
         if index != self._active:
@@ -90,8 +106,7 @@ class MemberStrip(QWidget):
             btn.setText(self._label(i))
         widths = [self._width(i) for i in range(n)]
 
-        parent = self.parentWidget()
-        centre = (parent.width() if parent else self.width()) / 2 - self.x()
+        centre = self._centre()
         xs = [0] * n
         xs[active] = round(centre - widths[active] / 2)
         for i in range(active - 1, -1, -1):

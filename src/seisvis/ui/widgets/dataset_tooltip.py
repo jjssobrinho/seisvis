@@ -15,3 +15,10 @@ def dataset_path_tooltip(ds: Dataset | DerivedDataset) -> str:
             f"B: {dataset_path_tooltip(ds.parent_b)}"
         )
     return str(ds.source_path.absolute())
+
+
+def dataset_path_label(ds: Dataset | DerivedDataset) -> str:
+    """Full source path of ``ds``; a diff, having no file, keeps its name."""
+    if isinstance(ds, DerivedDataset):
+        return ds.name
+    return str(ds.source_path.absolute())
