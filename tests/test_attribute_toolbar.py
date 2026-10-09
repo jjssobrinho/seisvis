@@ -188,3 +188,35 @@ def test_switching_tabs_rebinds_the_section(window: MainWindow, dataset: Dataset
     window.project.set_active_toggle_group(first.id)
     assert len(section._layer_buttons) == 2
     assert second.attribute_config == default_attribute_config()
+
+
+# --- time slices -------------------------------------------------------------------
+
+
+def test_amplitude_colour_enables_the_time_box(window: MainWindow, dataset: Dataset) -> None:
+    group = _open_attribute_plot(window, dataset)
+    section = window.toolbar.attributes
+    assert not section.time_spin.isEnabled()
+    labels = [section.color_combo.itemText(i) for i in range(section.color_combo.count())]
+    assert labels[:2] == ["None (solid)", "Amplitude @ time"]
+    # The raw sentinel never shows up as a header field.
+    assert "AMPLITUDE" not in labels
+    _pick(section.color_combo, "AMPLITUDE")
+    layer = group.attribute_config.current_layer  # type: ignore[union-attr]
+    assert layer.is_amplitude and layer.colormap == "seismic"
+    assert section.time_spin.isEnabled()
+    # The test line has 8 samples at 2 ms.
+    assert section.time_spin.singleStep() == 2.0
+    assert section.time_spin.maximum() == 14.0
+    section.time_spin.setValue(6.0)
+    assert group.attribute_config.current_layer.time_ms == 6.0  # type: ignore[union-attr]
+
+
+def test_traces_switch_sets_the_scope(window: MainWindow, dataset: Dataset) -> None:
+    group = _open_attribute_plot(window, dataset)
+    section = window.toolbar.attributes
+    assert section.scope_combo.currentData() == "selection"
+    _pick(section.scope_combo, "all")
+    assert group.attribute_config.trace_scope == "all"  # type: ignore[union-attr]
+    view = window.display_panel.view_for(group.id)
+    assert view is not None and not view.command_bar.isEnabled()

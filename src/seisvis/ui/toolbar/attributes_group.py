@@ -25,7 +25,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from seisvis.models.attribute_plot import SYMBOLS, AttributeLayer, AttributePlotConfig
+from seisvis.models.attribute_plot import (
+    AMPLITUDE,
+    AMPLITUDE_COLORMAP,
+    SYMBOLS,
+    AttributeLayer,
+    AttributePlotConfig,
+)
 from seisvis.utils.colormaps import available_colormaps
 
 SYMBOL_LABELS: dict[str, str] = {
@@ -38,6 +44,8 @@ SYMBOL_LABELS: dict[str, str] = {
     "x": "× cross",
 }
 NO_COLOR_LABEL = "None (solid)"
+AMPLITUDE_LABEL = "Amplitude @ time"
+SCOPE_LABELS: dict[str, str] = {"selection": "Selection", "all": "All traces"}
 
 
 class AttributesGroup(QGroupBox):
@@ -49,6 +57,7 @@ class AttributesGroup(QGroupBox):
     layer_edited = Signal(object)  # AttributeLayer for the selected layer
     # show_background, show_stats, equal_aspect
     flags_changed = Signal(bool, bool, bool)
+    scope_changed = Signal(str)  # "selection" | "all"
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Attributes", parent)
@@ -99,10 +108,21 @@ class AttributesGroup(QGroupBox):
         self.size_spin.setToolTip("Marker size")
         self.visible_check = QCheckBox("Show", self)
         self.visible_check.setToolTip("Draw this layer")
+        # Time of the sample an "Amplitude @ time" layer shows. Commits on
+        # Enter / arrow / focus-out, not per keystroke: each value is a read
+        # of one sample from every trace.
+        self.time_spin = QDoubleSpinBox(self)
+        self.time_spin.setDecimals(1)
+        self.time_spin.setSuffix(" ms")
+        self.time_spin.setKeyboardTracking(False)
+        self.time_spin.setToolTip(
+            "Time of the slice; snaps to the nearest sample. Used when Colour is Amplitude @ time."
+        )
         for label, widget in (
             ("X", self.x_combo),
             ("Y", self.y_combo),
             ("Colour", self.color_combo),
+            ("", self.time_spin),
             ("", self.colormap_combo),
             ("", self.symbol_combo),
             ("", self.size_spin),
@@ -114,6 +134,18 @@ class AttributesGroup(QGroupBox):
         row.addWidget(_separator(self))
 
         # Plot-wide switches.
+        row.addWidget(QLabel("Traces", self))
+        self.scope_combo = _combo(
+            self,
+            "Selection: the traces the command bar picks. All traces: every trace "
+            "in the file (the command bar is set aside).",
+        )
+        for scope, label in SCOPE_LABELS.items():
+            self.scope_combo.addItem(label, scope)
+        self.scope_combo.activated.connect(
+            lambda _i: self.scope_changed.emit(str(self.scope_combo.currentData()))
+        )
+        row.addWidget(self.scope_combo)
         self.background_check = QCheckBox("Background", self)
         self.background_check.setToolTip(
             "Show every trace of the file in grey behind the selection"
@@ -136,6 +168,7 @@ class AttributesGroup(QGroupBox):
         ):
             combo.activated.connect(self._emit_layer)
         self.size_spin.valueChanged.connect(self._emit_layer)
+        self.time_spin.valueChanged.connect(self._emit_layer)
         self.visible_check.toggled.connect(self._emit_layer)
 
     # --- binding ------------------------------------------------------------
@@ -146,8 +179,13 @@ class AttributesGroup(QGroupBox):
         fields: Sequence[tuple[str, str]] = (),
         *,
         aspect_applies: bool = True,
+        time_axis: tuple[float, float] | None = None,
     ) -> None:
-        """Show *config* with *fields* ``(name, label)`` offered; never emits."""
+        """Show *config* with *fields* ``(name, label)`` offered; never emits.
+
+        *time_axis* is ``(sample interval, last sample time)`` in ms of the
+        active member, bounding and stepping the Time box.
+        """
         self._config = config
         blocked = [
             self.x_combo,
@@ -157,6 +195,8 @@ class AttributesGroup(QGroupBox):
             self.symbol_combo,
             self.size_spin,
             self.visible_check,
+            self.time_spin,
+            self.scope_combo,
             self.background_check,
             self.stats_check,
             self.aspect_check,
@@ -175,12 +215,22 @@ class AttributesGroup(QGroupBox):
             # A field the layer uses stays selectable even if this member
             # lacks it, so the controls never misreport the layer.
             for f in (layer.x_field, layer.y_field, layer.color_field):
-                if f is not None and f not in names:
+                if f is not None and f != AMPLITUDE and f not in names:
                     offered.append((f, f))
                     names.add(f)
             _fill(self.x_combo, offered, layer.x_field)
             _fill(self.y_combo, offered, layer.y_field)
-            _fill(self.color_combo, [(None, NO_COLOR_LABEL), *offered], layer.color_field)
+            _fill(
+                self.color_combo,
+                [(None, NO_COLOR_LABEL), (AMPLITUDE, AMPLITUDE_LABEL), *offered],
+                layer.color_field,
+            )
+            dt, t_max = time_axis if time_axis is not None else (1.0, 100_000.0)
+            self.time_spin.setRange(0.0, max(0.0, t_max))
+            self.time_spin.setSingleStep(dt if dt > 0 else 1.0)
+            self.time_spin.setValue(layer.time_ms)
+            self.time_spin.setEnabled(layer.is_amplitude)
+            _select(self.scope_combo, config.trace_scope)
             _select(self.colormap_combo, layer.colormap)
             _select(self.symbol_combo, layer.symbol)
             self.colormap_combo.setEnabled(layer.color_field is not None)
@@ -229,14 +279,18 @@ class AttributesGroup(QGroupBox):
         if not isinstance(x, str) or not isinstance(y, str):
             return None
         color = self.color_combo.currentData()
+        colormap = self.colormap_combo.currentData() or base.colormap
+        if color == AMPLITUDE and not base.is_amplitude:
+            colormap = AMPLITUDE_COLORMAP  # amplitudes read in seismic colours
         return AttributeLayer(
             x_field=x,
             y_field=y,
             color_field=color if isinstance(color, str) else None,
-            colormap=self.colormap_combo.currentData() or base.colormap,
+            colormap=colormap,
             symbol=self.symbol_combo.currentData() or base.symbol,
             size=float(self.size_spin.value()),
             visible=self.visible_check.isChecked(),
+            time_ms=float(self.time_spin.value()),
         )
 
     def _emit_layer(self, *_args: object) -> None:

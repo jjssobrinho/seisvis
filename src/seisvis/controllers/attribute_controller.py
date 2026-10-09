@@ -78,6 +78,7 @@ class AttributeController(QObject):
         section.layer_remove_requested.connect(self._on_layer_remove)
         section.layer_edited.connect(self._on_layer_edited)
         section.flags_changed.connect(self._on_flags_changed)
+        section.scope_changed.connect(self._on_scope_changed)
 
         project.active_toggle_group_changed.connect(self._on_active_group_changed)
         gid = project.active_toggle_group_id
@@ -148,7 +149,12 @@ class AttributeController(QObject):
             return
         ds = self._dataset
         fields = [(f, _display_name(ds, f)) for f in plottable_fields(ds)]
-        self._section.set_state(config, fields, aspect_applies=aspect_applies(config))
+        self._section.set_state(
+            config,
+            fields,
+            aspect_applies=aspect_applies(config),
+            time_axis=_time_axis(ds),
+        )
 
     # --- section intents ----------------------------------------------------
 
@@ -179,6 +185,11 @@ class AttributeController(QObject):
         if config is not None:
             self._apply(config.with_layer(config.edit_layer, layer))
 
+    def _on_scope_changed(self, scope: str) -> None:
+        config = self._config()
+        if config is not None and scope in ("selection", "all"):
+            self._apply(replace(config, trace_scope=scope))  # type: ignore[arg-type]
+
     def _on_flags_changed(self, background: bool, stats: bool, equal_aspect: bool) -> None:
         config = self._config()
         if config is not None:
@@ -201,3 +212,12 @@ def _display_name(dataset: object, field: str) -> str:
     except Exception:  # noqa: BLE001 - a label must never break the toolbar
         return field
     return name if name == field else f"{name} ({field})"
+
+
+def _time_axis(dataset: object) -> tuple[float, float] | None:
+    """(sample interval, last sample time) in ms, or None if unknown."""
+    dt = getattr(dataset, "sample_interval_ms", None)
+    n = getattr(dataset, "n_samples", None)
+    if not dt or not n:
+        return None
+    return float(dt), float((int(n) - 1) * dt)
