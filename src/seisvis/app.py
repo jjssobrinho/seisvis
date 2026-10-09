@@ -31,12 +31,17 @@ from PySide6.QtWidgets import (
 
 from seisvis.controllers.active_group_controller import ActiveGroupController
 from seisvis.controllers.alignment_controller import AlignmentController
-from seisvis.controllers.attribute_controller import AttributeController
+from seisvis.controllers.attribute_controller import (
+    AttributeController,
+    attribute_field_label,
+    plottable_fields,
+)
 from seisvis.controllers.session_controller import SessionRestorer
 from seisvis.controllers.transforms_coordinator import TransformsCoordinator
 from seisvis.io.header_cache import HeaderCache
 from seisvis.io.loader import SUPPORTED_SUFFIXES
 from seisvis.io.slice_cache import SliceCache
+from seisvis.models.attribute_plot import AttributePlotConfig
 from seisvis.models.dataset import Dataset
 from seisvis.models.derived_dataset import DerivedDataset
 from seisvis.models.project import Project
@@ -55,6 +60,7 @@ from seisvis.services.session_service import apply_model_group_entry, capture, c
 from seisvis.ui.dialogs.crosshair_fields_dialog import CrosshairFieldsDialog
 from seisvis.ui.dialogs.dataset_properties_dialog import DatasetPropertiesDialog
 from seisvis.ui.dialogs.missing_files_dialog import MissingFilesDialog
+from seisvis.ui.dialogs.new_attribute_plot_dialog import NewAttributePlotDialog
 from seisvis.ui.panels.catalog_panel import CatalogPanel
 from seisvis.ui.panels.display_panel import DisplayPanel
 from seisvis.ui.panels.viewport_manager_panel import ViewportManagerPanel
@@ -1356,13 +1362,37 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Opened {len(datasets)} datasets in {group.name}", 4000)
 
     def _on_open_attribute_plot(self, datasets: list[Dataset]) -> None:
-        """Open *datasets* as the members of a new attribute-plot group."""
+        """Ask what to plot, then open *datasets* as a new attribute plot's members."""
         datasets = self._refuse_depth(datasets)
         if not datasets:
             return
-        group = self._create_group_for(datasets[0], view_kind="attribute")
+        config = self._ask_attribute_config(datasets[0])
+        if config is None:
+            return
+        group = self._create_group_for(datasets[0], view_kind="attribute", attribute_config=config)
         for ds in datasets[1:]:
             group.add_member(ds)
+
+    def _ask_attribute_config(self, dataset: Dataset) -> AttributePlotConfig | None:
+        """The New attribute plot dialog for *dataset*; None if cancelled."""
+        # The field lists come from the surange probe, which is fast enough
+        # to run here when nothing has asked for it yet.
+        try:
+            dataset.populate_surange()
+        except Exception:  # noqa: BLE001 - fall back to the standard field list
+            log.warning("surange scan failed for %s", dataset.name, exc_info=True)
+        fields = [(f, attribute_field_label(dataset, f)) for f in plottable_fields(dataset)]
+        dlg = NewAttributePlotDialog(
+            fields,
+            sample_interval_ms=float(dataset.sample_interval_ms or 1.0),
+            n_samples=int(dataset.n_samples),
+            n_traces=int(dataset.n_traces),
+            title=f"New attribute plot — {dataset.name}",
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dlg.config()
 
     def _on_add_to_active_group(self, dataset: Dataset) -> None:
         if not self._refuse_depth([dataset]):
@@ -1374,11 +1404,17 @@ class MainWindow(QMainWindow):
         group.add_member(dataset)
 
     def _create_group_for(
-        self, dataset: Dataset, *, view_kind: ViewKind = "seismic"
+        self,
+        dataset: Dataset,
+        *,
+        view_kind: ViewKind = "seismic",
+        attribute_config: AttributePlotConfig | None = None,
     ) -> ToggleGroup:
         number = self.project.next_toggle_group_number()
         name = f"Attributes {number}" if view_kind == "attribute" else f"Group {number}"
         group = ToggleGroup(name=name, view_kind=view_kind)
+        if attribute_config is not None:
+            group.set_attribute_config(attribute_config)
         group.add_member(dataset)
         # Seed primary.count/skip from the user's saved defaults. The default
         # field remains TRACE_RANGE (uncommitted) so natural file order renders

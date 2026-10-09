@@ -37,6 +37,8 @@ _FALLBACK_FIELDS: tuple[str, ...] = (
     "GroupY",
     "CDP_X",
     "CDP_Y",
+    "INLINE_3D",
+    "CROSSLINE_3D",
 )
 
 
@@ -148,7 +150,7 @@ class AttributeController(QObject):
             self._section.set_state(None)
             return
         ds = self._dataset
-        fields = [(f, _display_name(ds, f)) for f in plottable_fields(ds)]
+        fields = [(f, attribute_field_label(ds, f)) for f in plottable_fields(ds)]
         self._section.set_state(
             config,
             fields,
@@ -203,7 +205,8 @@ class AttributeController(QObject):
             )
 
 
-def _display_name(dataset: object, field: str) -> str:
+def attribute_field_label(dataset: object, field: str) -> str:
+    """``Display name (Field)`` for a renamed field, else the field name."""
     fn = getattr(dataset, "display_name_for", None)
     if fn is None:
         return field

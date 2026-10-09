@@ -492,7 +492,7 @@ class CatalogPanel(QWidget):
                 add_to_active = menu.addAction("Add to active toggle group")
                 add_to_active.triggered.connect(lambda: self.add_to_active_group_requested.emit(ds))
                 add_to_active.setEnabled(self._project.active_toggle_group() is not None)
-                attribute_plot = menu.addAction("Open attribute plot")
+                attribute_plot = menu.addAction("Open attribute plot…")
                 attribute_plot.setToolTip(
                     "Plot header fields against each other (e.g. receiver X/Y coloured by "
                     "shot) for the traces the command bar selects."
@@ -533,7 +533,7 @@ class CatalogPanel(QWidget):
                 lambda checked=False, d=selected: self.open_multi_in_new_group_requested.emit(d)
             )
             if not any(_is_depth(d) for d in selected):
-                attribute_plot = menu.addAction("Open attribute plot")
+                attribute_plot = menu.addAction("Open attribute plot…")
                 attribute_plot.setToolTip(
                     f"Plot header fields of all {len(selected)} selected datasets, "
                     "as members of one attribute plot."

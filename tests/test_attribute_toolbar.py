@@ -69,8 +69,10 @@ def gui_app() -> QApplication:
 
 
 @pytest.fixture
-def window(gui_app) -> MainWindow:  # noqa: ARG001
+def window(gui_app, monkeypatch: pytest.MonkeyPatch) -> MainWindow:  # noqa: ARG001
     win = MainWindow(Project())
+    # Stand in for the modal "New attribute plot" dialog.
+    monkeypatch.setattr(win, "_ask_attribute_config", lambda _ds: default_attribute_config())
     yield win
     win.close()
 

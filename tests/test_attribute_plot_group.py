@@ -137,8 +137,10 @@ def gui_app() -> QApplication:
 
 
 @pytest.fixture
-def window(gui_app) -> MainWindow:  # noqa: ARG001
+def window(gui_app, monkeypatch: pytest.MonkeyPatch) -> MainWindow:  # noqa: ARG001
     win = MainWindow(Project())
+    # Stand in for the modal "New attribute plot" dialog.
+    monkeypatch.setattr(win, "_ask_attribute_config", lambda _ds: default_attribute_config())
     yield win
     win.close()
 
@@ -165,7 +167,7 @@ def _action(menu, text: str):  # noqa: ANN001, ANN202
 def test_catalog_menu_opens_attribute_plot(window: MainWindow, two_datasets: list[Dataset]) -> None:
     menu = window.catalog_panel.build_context_menu([two_datasets[0]])
     assert menu is not None
-    _action(menu, "Open attribute plot").trigger()
+    _action(menu, "Open attribute plot…").trigger()
     group = window.project.active_toggle_group()
     assert group is not None and group.is_attribute_plot
     assert group.name.startswith("Attributes")
@@ -186,7 +188,7 @@ def test_catalog_multi_selection_opens_one_attribute_plot(
         selection.select(panel.model.index(row, 0, parent), select)
     menu = panel.build_context_menu(panel.selected_datasets())
     assert menu is not None
-    _action(menu, "Open attribute plot").trigger()
+    _action(menu, "Open attribute plot…").trigger()
     group = window.project.active_toggle_group()
     assert group is not None and group.is_attribute_plot
     assert [m.dataset.name for m in group.members] == ["b", "a"]
