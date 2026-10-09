@@ -322,3 +322,11 @@ def symmetric_levels(values: np.ndarray, percentile: float = 99.0) -> tuple[floa
     if not a > 0:
         a = float(v.max()) or 1.0
     return -a, a
+
+
+def sample_for_time(time_ms: float, sample_interval_ms: float, n_samples: int) -> int:
+    """Index of the sample nearest *time_ms*, clamped into the trace."""
+    if n_samples <= 0:
+        return 0
+    dt = sample_interval_ms if sample_interval_ms and sample_interval_ms > 0 else 1.0
+    return int(min(n_samples - 1, max(0, round(float(time_ms) / dt))))
