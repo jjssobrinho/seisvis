@@ -115,9 +115,13 @@ class _MemberRow(QFrame):
         self._active_btn.setText(str(index + 1))
         self._active_btn.setChecked(index == group.active_index)
         self._active_btn.setToolTip(
-            f"Show this member in the canvas (shortcut: {index + 1})"
-            if index < 9
-            else "Show this member in the canvas"
+            dataset_path_tooltip(member.dataset)
+            + "\n\n"
+            + (
+                f"Show this member in the canvas (shortcut: {index + 1})"
+                if index < 9
+                else "Show this member in the canvas"
+            )
         )
         self._active_btn.setAutoRaise(False)
         self._active_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
