@@ -88,6 +88,7 @@ def test_config_round_trips_through_json() -> None:
         show_background=True,
         show_stats=True,
         equal_aspect=False,
+        stats_tolerance=0.25,
     )
     raw = json.loads(json.dumps(attribute_config_to_dict(cfg)))
     assert attribute_config_from_dict(raw) == cfg
@@ -236,3 +237,12 @@ def test_background_points_drop_non_finite_and_need_fields() -> None:
     assert background_points(AttributeLayer("x", "y", None), raw).x.tolist() == [1.0]
     with pytest.raises(KeyError):
         background_points(AttributeLayer("x", "z", None), raw)
+
+
+def test_stats_tolerance_is_validated_and_read_leniently() -> None:
+    with pytest.raises(ValueError):
+        AttributePlotConfig(layers=(AttributeLayer.receivers(),), stats_tolerance=0.0)
+    raw = attribute_config_to_dict(default_attribute_config())
+    for bad in (-1, 5, "x", True):
+        raw["stats_tolerance"] = bad
+        assert attribute_config_from_dict(raw).stats_tolerance == 0.10

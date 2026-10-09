@@ -277,3 +277,63 @@ def test_background_follows_the_active_member(
         np.testing.assert_allclose(np.sort(x1), np.sort(x0) + 10.0)
     finally:
         other.close()
+
+
+# --- regularity stats -------------------------------------------------------------
+
+
+def _with_stats(view: AttributePlotView, pool: QThreadPool, **changes: object) -> None:
+    from dataclasses import replace
+
+    config = view.group.attribute_config
+    assert config is not None
+    view.group.set_attribute_config(replace(config, show_stats=True, **changes))
+    _settle(view, pool)
+
+
+def test_stats_panel_reports_the_regular_test_line(
+    view: AttributePlotView, pool: QThreadPool
+) -> None:
+    assert not view.stats_panel.isVisibleTo(view)
+    _with_stats(view, pool)
+    assert view.stats_panel.isVisibleTo(view)
+    text = view.stats_panel.body.text()
+    assert "12 points in 3 Shot groups" in text
+    assert "nominal: 25 m" in text  # receivers within a shot
+    assert "nominal: 50 m" in text  # shot to shot
+    assert "Flagged points:</b> 0" in text
+    assert len(view._outlier_marker.getData()[0]) == 0
+
+
+def test_stats_flag_a_displaced_receiver(pool: QThreadPool, tmp_path: Path) -> None:
+    path = tmp_path / "bad.sgy"
+    _make_line(path)
+    with segyio.open(str(path), "r+", ignore_geometry=True) as f:
+        f.header[5] = {segyio.TraceField.GroupX: f.header[5][segyio.TraceField.GroupX] + 800}
+    ds = load_segy(path)
+    group = ToggleGroup("attrs", view_kind="attribute")
+    group.add_member(ds)
+    view = AttributePlotView(group, pool)
+    try:
+        _settle(view, pool)
+        _with_stats(view, pool)
+        x, _y = view._outlier_marker.getData()
+        np.testing.assert_allclose(x, [1100.0 + 8.0])
+        # A looser tolerance (40 % of 25 m = 10 m) accepts the 8 m slip.
+        view.stats_panel.tolerance_spin.setValue(40)
+        assert view.group.attribute_config.stats_tolerance == pytest.approx(0.4)  # type: ignore[union-attr]
+        assert len(view._outlier_marker.getData()[0]) == 0
+    finally:
+        view.deleteLater()
+        ds.close()
+
+
+def test_stats_off_clears_the_rings(view: AttributePlotView, pool: QThreadPool) -> None:
+    _with_stats(view, pool)
+    from dataclasses import replace
+
+    config = view.group.attribute_config
+    assert config is not None
+    view.group.set_attribute_config(replace(config, show_stats=False))
+    assert not view.stats_panel.isVisibleTo(view)
+    assert len(view._outlier_marker.getData()[0]) == 0

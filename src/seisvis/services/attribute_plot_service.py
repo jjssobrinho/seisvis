@@ -24,6 +24,7 @@ from seisvis.processing.attribute_plot import (
     layer_points,
     lut_indices,
 )
+from seisvis.processing.attribute_stats import RegularityReport, regularity
 
 # Read for every point regardless of layers, for the hover readout.
 IDENTITY_FIELDS: tuple[str, ...] = ("FieldRecord", "TraceNumber")
@@ -98,6 +99,17 @@ def color_scales(
     return scales
 
 
+def layer_regularity(points: LayerPoints | None, tolerance: float) -> RegularityReport | None:
+    """Regularity of one layer's plotted points, grouped by their colour field.
+
+    With a colour field the groups are its values — receivers of each shot
+    when colouring by shot; a solid-colour layer is one group.
+    """
+    if points is None or len(points) == 0:
+        return None
+    return regularity(points.x, points.y, points.color, tolerance)
+
+
 def units_label(raw: Mapping[str, np.ndarray]) -> str | None:
     """Coordinate unit from the first set CoordinateUnits value, if any."""
     units = raw.get(UNITS_FIELD)
@@ -115,6 +127,8 @@ __all__ = [
     "ColorScale",
     "UNITS_FIELD",
     "LayerPoints",
+    "RegularityReport",
+    "layer_regularity",
     "color_scales",
     "fields_for",
     "is_coordinate",

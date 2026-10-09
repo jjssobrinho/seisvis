@@ -23,6 +23,9 @@ SYMBOLS: tuple[Symbol, ...] = ("o", "t", "s", "d", "star", "+", "x")
 
 DEFAULT_COLORMAP = "viridis"
 DEFAULT_SIZE = 6.0
+# Regularity stats: how far off the nominal spacing (as a fraction of it) a
+# station may sit before it is flagged.
+DEFAULT_STATS_TOLERANCE = 0.10
 
 
 @dataclass(frozen=True)
@@ -58,8 +61,11 @@ class AttributePlotConfig:
     show_background: bool = False  # every trace in the file, in grey
     show_stats: bool = False  # regularity stats panel
     equal_aspect: bool = True
+    stats_tolerance: float = DEFAULT_STATS_TOLERANCE
 
     def __post_init__(self) -> None:
+        if not 0.0 < self.stats_tolerance <= 1.0:
+            raise ValueError(f"stats_tolerance must be in (0, 1], got {self.stats_tolerance}")
         if not self.layers:
             raise ValueError("AttributePlotConfig needs at least one layer")
         if not 0 <= self.edit_layer < len(self.layers):
@@ -162,6 +168,7 @@ def attribute_config_to_dict(config: AttributePlotConfig) -> dict[str, object]:
         "show_background": config.show_background,
         "show_stats": config.show_stats,
         "equal_aspect": config.equal_aspect,
+        "stats_tolerance": config.stats_tolerance,
     }
 
 
@@ -187,10 +194,17 @@ def attribute_config_from_dict(raw: object) -> AttributePlotConfig:
         value = raw.get(key)
         return value if isinstance(value, bool) else default
 
+    tol = raw.get("stats_tolerance")
+    tolerance = (
+        float(tol)
+        if isinstance(tol, int | float) and not isinstance(tol, bool) and 0.0 < tol <= 1.0
+        else DEFAULT_STATS_TOLERANCE
+    )
     return AttributePlotConfig(
         layers=layers,
         edit_layer=edit_layer,
         show_background=flag("show_background", False),
         show_stats=flag("show_stats", False),
         equal_aspect=flag("equal_aspect", True),
+        stats_tolerance=tolerance,
     )

@@ -16,13 +16,13 @@ exactly those traces. Every member is read, so toggling is a
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QEvent, QPointF, Qt, QThreadPool, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from seisvis.models.attribute_plot import AttributeLayer, AttributePlotConfig
 from seisvis.models.toggle_group import ToggleGroup
@@ -34,10 +34,12 @@ from seisvis.services.attribute_plot_service import (
     color_scales,
     fields_for,
     is_coordinate,
+    layer_regularity,
     lut_indices,
     points_for,
     units_label,
 )
+from seisvis.ui.widgets.attribute_stats_panel import OUTLIER_COLOR, AttributeStatsPanel
 from seisvis.ui.widgets.group_command_bar import GroupCommandBar
 from seisvis.ui.widgets.toggle_bar import ToggleBar
 from seisvis.utils.colormaps import get_colormap
@@ -164,7 +166,16 @@ class AttributePlotView(QWidget):
         self.plot_item.showGrid(x=True, y=True, alpha=0.2)
         self.view_box = self.plot_item.getViewBox()
         self.view_box.setMouseMode(pg.ViewBox.RectMode)
-        root.addWidget(self.plot_widget, stretch=1)
+        plot_row = QWidget(self)
+        plot_row_layout = QHBoxLayout(plot_row)
+        plot_row_layout.setContentsMargins(0, 0, 0, 0)
+        plot_row_layout.setSpacing(0)
+        plot_row_layout.addWidget(self.plot_widget, stretch=1)
+        self.stats_panel = AttributeStatsPanel(plot_row)
+        self.stats_panel.setVisible(False)
+        self.stats_panel.tolerance_changed.connect(self._on_tolerance_changed)
+        plot_row_layout.addWidget(self.stats_panel)
+        root.addWidget(plot_row, stretch=1)
         self.plot_widget.installEventFilter(self)
 
         # Ring drawn around the hovered point.
@@ -172,6 +183,13 @@ class AttributePlotView(QWidget):
             size=16, symbol="o", pen=pg.mkPen((255, 60, 60), width=2), brush=None, pxMode=True
         )
         self._hover_marker.setZValue(1000)
+
+        # Rings around the points the stats panel flags.
+        self._outlier_marker = pg.ScatterPlotItem(
+            symbol="o", pen=pg.mkPen(OUTLIER_COLOR, width=2), brush=None, pxMode=True
+        )
+        self._outlier_marker.setZValue(500)
+        self.plot_item.addItem(self._outlier_marker, ignoreBounds=True)
         self.plot_item.addItem(self._hover_marker, ignoreBounds=True)
         self.plot_widget.scene().sigMouseMoved.connect(self._on_mouse_moved)
 
@@ -334,6 +352,7 @@ class AttributePlotView(QWidget):
         self._apply_visibility()
         self._hover_marker.setData([], [])
         self._redraw_labels()
+        self._refresh_stats()
 
     # --- reading ------------------------------------------------------------
 
@@ -588,6 +607,7 @@ class AttributePlotView(QWidget):
         self._update_color_bars(scales)
         self._apply_visibility()
         self._redraw_labels()
+        self._refresh_stats()
 
     def _layer_brush(self, layer_index: int, pts: LayerPoints, scale: ColorScale | None) -> object:
         if pts.color is None or scale is None:
@@ -704,6 +724,53 @@ class AttributePlotView(QWidget):
     def _reposition_centered(self, label: QLabel) -> None:
         w, h = self.plot_widget.width(), self.plot_widget.height()
         label.move(max(0, (w - label.width()) // 2), max(0, (h - label.height()) // 2))
+
+    # --- regularity stats ------------------------------------------------------
+
+    def _refresh_stats(self) -> None:
+        """Recompute the edited layer's regularity for the active member."""
+        config = self._config()
+        self.stats_panel.setVisible(config.show_stats)
+        if not config.show_stats:
+            self._outlier_marker.setData([], [])
+            return
+        self.stats_panel.set_tolerance(config.stats_tolerance)
+        k = config.edit_layer
+        layer = config.layers[k]
+        active = self.group.active_index
+        data = self._data[active] if 0 <= active < len(self._data) else None
+        pts = data.points[k] if data is not None and k < len(data.points) else None
+        message = ""
+        if data is None:
+            message = "Reading headers…" if self._workers else "No traces read."
+        elif pts is None:
+            message = "This layer's header fields were not read."
+        report = layer_regularity(pts, config.stats_tolerance) if layer.visible else None
+        if not layer.visible:
+            message = "This layer is hidden."
+        ds = self._active_dataset()
+        xy = [layer.x_field, layer.y_field]
+        unit = self._coordinate_unit() if all(is_coordinate(f) for f in xy) else None
+        self.stats_panel.set_report(
+            report,
+            layer_label=f"Layer {k + 1}",
+            group_label=self._name(ds, layer.color_field) if layer.color_field else None,
+            unit=unit,
+            message=message,
+        )
+        if report is None or pts is None or not report.outliers.any():
+            self._outlier_marker.setData([], [])
+            return
+        flagged = report.outliers
+        self._outlier_marker.setData(
+            x=pts.x[flagged], y=pts.y[flagged], size=layer.size + 8, symbol="o"
+        )
+
+    def _on_tolerance_changed(self, fraction: float) -> None:
+        config = self._config()
+        fraction = min(1.0, max(0.01, fraction))
+        if fraction != config.stats_tolerance:
+            self.group.set_attribute_config(replace(config, stats_tolerance=fraction))
 
     # --- hover readout --------------------------------------------------------
 
