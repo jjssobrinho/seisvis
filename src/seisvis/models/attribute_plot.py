@@ -7,6 +7,11 @@ FieldRecord), channel vs offset, and so on. Which traces are plotted is
 decided by the group's command bar exactly as for a seismic group; this
 module only describes *how* they are drawn.
 
+A layer may instead be coloured by the trace *amplitude* at one time
+(``color_field == AMPLITUDE``, at ``time_ms``): with INLINE_3D × CROSSLINE_3D
+on the axes that is a time slice. ``trace_scope`` says whether the plot
+covers the command bar's selection or every trace in the file.
+
 A plot holds one or more :class:`AttributeLayer` (receivers and sources on
 the same axes, say). :class:`AttributePlotConfig` is the group-level record,
 frozen like :class:`~seisvis.models.sort_config.SortConfig` so it can be
@@ -17,6 +22,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from typing import Literal
+
+# Colour source meaning "the sample at ``time_ms``", not a header field.
+AMPLITUDE = "AMPLITUDE"
+AMPLITUDE_COLORMAP = "seismic"
+
+
+def amplitude_key(time_ms: float) -> str:
+    return f"{AMPLITUDE}@{float(time_ms):g}"
+
+
+TraceScope = Literal["selection", "all"]
+TRACE_SCOPES: tuple[TraceScope, ...] = ("selection", "all")
 
 Symbol = Literal["o", "t", "s", "d", "star", "+", "x"]
 SYMBOLS: tuple[Symbol, ...] = ("o", "t", "s", "d", "star", "+", "x")
@@ -37,13 +54,42 @@ class AttributeLayer:
     symbol: Symbol = "o"
     size: float = DEFAULT_SIZE
     visible: bool = True
+    time_ms: float = 0.0  # sample time when color_field == AMPLITUDE
+
+    @property
+    def is_amplitude(self) -> bool:
+        return self.color_field == AMPLITUDE
+
+    @property
+    def color_key(self) -> str | None:
+        """Key of this layer's colour values among the values read.
+
+        A header field's own name, or ``AMPLITUDE@<time>`` so layers at
+        different times keep their samples apart.
+        """
+        if self.is_amplitude:
+            return amplitude_key(self.time_ms)
+        return self.color_field
 
     def fields(self) -> tuple[str, ...]:
         """Header fields this layer reads, in first-use order, deduplicated."""
         names = [self.x_field, self.y_field]
-        if self.color_field is not None:
+        if self.color_field is not None and not self.is_amplitude:
             names.append(self.color_field)
         return tuple(dict.fromkeys(names))
+
+    @classmethod
+    def time_slice(
+        cls, time_ms: float, x_field: str = "INLINE_3D", y_field: str = "CROSSLINE_3D"
+    ) -> AttributeLayer:
+        return cls(
+            x_field=x_field,
+            y_field=y_field,
+            color_field=AMPLITUDE,
+            colormap=AMPLITUDE_COLORMAP,
+            symbol="s",
+            time_ms=float(time_ms),
+        )
 
     @classmethod
     def receivers(cls) -> AttributeLayer:
@@ -62,8 +108,11 @@ class AttributePlotConfig:
     show_stats: bool = False  # regularity stats panel
     equal_aspect: bool = True
     stats_tolerance: float = DEFAULT_STATS_TOLERANCE
+    trace_scope: TraceScope = "selection"
 
     def __post_init__(self) -> None:
+        if self.trace_scope not in TRACE_SCOPES:
+            raise ValueError(f"unknown trace scope {self.trace_scope!r}")
         if not 0.0 < self.stats_tolerance <= 1.0:
             raise ValueError(f"stats_tolerance must be in (0, 1], got {self.stats_tolerance}")
         if not self.layers:
@@ -80,6 +129,11 @@ class AttributePlotConfig:
             if layer.visible:
                 names.extend(layer.fields())
         return tuple(dict.fromkeys(names))
+
+    def amplitude_times(self) -> tuple[float, ...]:
+        """Times (ms) the visible amplitude layers sample, deduplicated."""
+        times = [layer.time_ms for layer in self.layers if layer.visible and layer.is_amplitude]
+        return tuple(dict.fromkeys(times))
 
     @property
     def current_layer(self) -> AttributeLayer:
@@ -116,6 +170,17 @@ def default_attribute_config() -> AttributePlotConfig:
     return AttributePlotConfig(layers=(AttributeLayer.receivers(),))
 
 
+def time_slice_config(
+    time_ms: float, x_field: str = "INLINE_3D", y_field: str = "CROSSLINE_3D"
+) -> AttributePlotConfig:
+    """A time slice over every trace in the file."""
+    return AttributePlotConfig(
+        layers=(AttributeLayer.time_slice(time_ms, x_field, y_field),),
+        trace_scope="all",
+        equal_aspect=False,
+    )
+
+
 def next_default_layer(config: AttributePlotConfig) -> AttributeLayer:
     """The layer ``+`` adds: sources first, then a copy of the edit layer."""
     if not any(layer.x_field == "SourceX" for layer in config.layers):
@@ -135,6 +200,7 @@ def attribute_layer_to_dict(layer: AttributeLayer) -> dict[str, object]:
         "symbol": layer.symbol,
         "size": layer.size,
         "visible": layer.visible,
+        "time_ms": layer.time_ms,
     }
 
 
@@ -150,6 +216,7 @@ def attribute_layer_from_dict(raw: object) -> AttributeLayer | None:
     size = raw.get("size")
     colormap = raw.get("colormap")
     visible = raw.get("visible")
+    time_ms = raw.get("time_ms")
     return AttributeLayer(
         x_field=x_field,
         y_field=y_field,
@@ -158,6 +225,11 @@ def attribute_layer_from_dict(raw: object) -> AttributeLayer | None:
         symbol=symbol if symbol in SYMBOLS else "o",
         size=float(size) if isinstance(size, int | float) and size > 0 else DEFAULT_SIZE,
         visible=visible if isinstance(visible, bool) else True,
+        time_ms=(
+            float(time_ms)
+            if isinstance(time_ms, int | float) and not isinstance(time_ms, bool) and time_ms >= 0
+            else 0.0
+        ),
     )
 
 
@@ -169,6 +241,7 @@ def attribute_config_to_dict(config: AttributePlotConfig) -> dict[str, object]:
         "show_stats": config.show_stats,
         "equal_aspect": config.equal_aspect,
         "stats_tolerance": config.stats_tolerance,
+        "trace_scope": config.trace_scope,
     }
 
 
@@ -207,4 +280,5 @@ def attribute_config_from_dict(raw: object) -> AttributePlotConfig:
         show_stats=flag("show_stats", False),
         equal_aspect=flag("equal_aspect", True),
         stats_tolerance=tolerance,
+        trace_scope="all" if raw.get("trace_scope") == "all" else "selection",
     )

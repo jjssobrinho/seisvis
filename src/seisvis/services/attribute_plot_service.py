@@ -16,13 +16,17 @@ import numpy as np
 from seisvis.models.attribute_plot import AttributePlotConfig
 from seisvis.processing.attribute_plot import (
     BackgroundPoints,
+    GridImage,
     LayerPoints,
     color_levels,
     coordinate_unit,
     fields_to_read,
+    grid_image,
     is_coordinate,
+    is_grid_layer,
     layer_points,
     lut_indices,
+    symmetric_levels,
 )
 from seisvis.processing.attribute_stats import RegularityReport, regularity
 
@@ -64,11 +68,20 @@ def shared_levels(
 
 @dataclass(frozen=True)
 class ColorScale:
-    """One colour bar: the field it shows, its colormap and its range."""
+    """One colour bar: what it shows, its colormap and its range.
+
+    ``field`` is the layer's colour key: a header field name, or
+    ``AMPLITUDE@<time>`` for an amplitude layer (``time_ms`` set).
+    """
 
     field: str
     colormap: str
     levels: tuple[float, float]
+    time_ms: float | None = None
+
+    @property
+    def is_amplitude(self) -> bool:
+        return self.time_ms is not None
 
 
 def color_scales(
@@ -84,16 +97,27 @@ def color_scales(
     """
     groups: dict[tuple[str, str], list[int]] = {}
     for k, layer in enumerate(config.layers):
-        if layer.visible and layer.color_field is not None:
-            groups.setdefault((layer.color_field, layer.colormap), []).append(k)
+        key = layer.color_key
+        if layer.visible and key is not None:
+            groups.setdefault((key, layer.colormap), []).append(k)
     scales: list[ColorScale | None] = [None] * len(config.layers)
     for (field, colormap), layer_indices in groups.items():
-        levels = shared_levels(
+        members = [
             member[k] for member in points_per_member for k in layer_indices if k < len(member)
-        )
+        ]
+        first = config.layers[layer_indices[0]]
+        if first.is_amplitude:
+            # Seismic convention: symmetric about zero, clipped at the 99th
+            # percentile so a few spikes do not wash the slice out.
+            values = [p.color for p in members if p is not None and p.color is not None]
+            levels = symmetric_levels(np.concatenate(values)) if values else None
+            time_ms: float | None = first.time_ms
+        else:
+            levels = shared_levels(members)
+            time_ms = None
         if levels is None:
             continue
-        scale = ColorScale(field, colormap, levels)
+        scale = ColorScale(field, colormap, levels, time_ms)
         for k in layer_indices:
             scales[k] = scale
     return scales
@@ -123,6 +147,9 @@ def units_label(raw: Mapping[str, np.ndarray]) -> str | None:
 
 __all__ = [
     "BackgroundPoints",
+    "GridImage",
+    "grid_image",
+    "is_grid_layer",
     "IDENTITY_FIELDS",
     "ColorScale",
     "UNITS_FIELD",

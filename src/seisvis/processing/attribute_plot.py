@@ -122,7 +122,8 @@ def layer_points(layer: AttributeLayer, raw: Mapping[str, np.ndarray]) -> LayerP
     """
     x = scaled_values(layer.x_field, raw)
     y = scaled_values(layer.y_field, raw)
-    color = scaled_values(layer.color_field, raw) if layer.color_field is not None else None
+    key = layer.color_key
+    color = scaled_values(key, raw) if key is not None else None
     keep = np.isfinite(x) & np.isfinite(y)
     if color is not None:
         keep &= np.isfinite(color)
@@ -204,3 +205,120 @@ def background_points(
         y=np.ascontiguousarray(unique["y"]),
         n_unique=n_unique,
     )
+
+
+# Integer-numbered header fields whose values index a regular grid. A layer
+# with both axes on such fields is drawn as an image, one cell per bin —
+# a time slice on INLINE_3D × CROSSLINE_3D — instead of a dot per trace.
+GRID_FIELDS: frozenset[str] = frozenset(
+    {
+        "INLINE_3D",
+        "CROSSLINE_3D",
+        "CDP",
+        "CDP_TRACE",
+        "FieldRecord",
+        "TraceNumber",
+        "EnergySourcePoint",
+        "TRACE_SEQUENCE_LINE",
+        "TRACE_SEQUENCE_FILE",
+    }
+)
+# Largest image a grid layer may become; a sparser grid falls back to dots.
+MAX_GRID_CELLS = 50_000_000
+
+
+def is_grid_layer(layer: AttributeLayer) -> bool:
+    """A coloured layer whose two axes are grid numbers."""
+    return (
+        layer.color_field is not None
+        and layer.x_field in GRID_FIELDS
+        and layer.y_field in GRID_FIELDS
+    )
+
+
+@dataclass(frozen=True)
+class GridImage:
+    """Values binned onto a regular (x, y) grid; NaN where no trace falls.
+
+    ``values[i, j]`` is the cell centred at ``(x0 + i*dx, y0 + j*dy)``,
+    the axis order pyqtgraph's ImageItem expects by default.
+    """
+
+    values: np.ndarray  # float32, (nx, ny)
+    x0: float
+    y0: float
+    dx: float
+    dy: float
+    n_filled: int
+
+    def cell_at(self, x: float, y: float) -> tuple[int, int] | None:
+        i = int(round((x - self.x0) / self.dx))
+        j = int(round((y - self.y0) / self.dy))
+        nx, ny = self.values.shape
+        if 0 <= i < nx and 0 <= j < ny:
+            return i, j
+        return None
+
+
+def _grid_step(unique_sorted: np.ndarray) -> int:
+    if unique_sorted.size < 2:
+        return 1
+    return max(1, int(np.gcd.reduce(np.diff(unique_sorted).astype(np.int64))))
+
+
+def grid_image(
+    x: np.ndarray, y: np.ndarray, values: np.ndarray, max_cells: int = MAX_GRID_CELLS
+) -> GridImage | None:
+    """Bin *values* at integer (x, y) onto their grid, averaging shared cells.
+
+    The step along each axis is the GCD of the gaps between the distinct
+    values, so inlines numbered 1000, 1002, … make a two-step grid without
+    empty rows. None when the positions are not integers, nothing is
+    finite, or the grid would exceed *max_cells* (so the caller draws dots).
+    Several traces in one cell (prestack data) are averaged.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    v = np.asarray(values, dtype=np.float64)
+    keep = np.isfinite(x) & np.isfinite(y) & np.isfinite(v)
+    if not keep.any():
+        return None
+    x, y, v = x[keep], y[keep], v[keep]
+    if np.any(x != np.round(x)) or np.any(y != np.round(y)):
+        return None
+    xi = x.astype(np.int64)
+    yi = y.astype(np.int64)
+    ux = np.unique(xi)
+    uy = np.unique(yi)
+    dx, dy = _grid_step(ux), _grid_step(uy)
+    nx = int((ux[-1] - ux[0]) // dx) + 1
+    ny = int((uy[-1] - uy[0]) // dy) + 1
+    if nx * ny > max_cells:
+        return None
+    ix = (xi - ux[0]) // dx
+    iy = (yi - uy[0]) // dy
+    flat = ix * ny + iy
+    sums = np.bincount(flat, weights=v, minlength=nx * ny)
+    counts = np.bincount(flat, minlength=nx * ny)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        cells = np.where(counts > 0, sums / np.maximum(counts, 1), np.nan)
+    return GridImage(
+        values=cells.reshape(nx, ny).astype(np.float32),
+        x0=float(ux[0]),
+        y0=float(uy[0]),
+        dx=float(dx),
+        dy=float(dy),
+        n_filled=int(np.count_nonzero(counts)),
+    )
+
+
+def symmetric_levels(values: np.ndarray, percentile: float = 99.0) -> tuple[float, float] | None:
+    """``(-a, a)`` with ``a`` the *percentile* of ``|values|`` — seismic clip."""
+    v = np.asarray(values, dtype=np.float64)
+    v = np.abs(v[np.isfinite(v)])
+    if v.size == 0:
+        return None
+    a = float(np.percentile(v, percentile))
+    if not a > 0:
+        a = float(v.max()) or 1.0
+    return -a, a
