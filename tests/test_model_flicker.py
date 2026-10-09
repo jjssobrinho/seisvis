@@ -71,7 +71,7 @@ def test_adding_a_member_enables_flicker_and_a_button(
         g.add_member(b)
         assert len(bar._buttons) == 2
         assert bar._flicker_check.isEnabled()
-        assert bar._buttons[1].toolTip() == b.name
+        assert bar._buttons[1].toolTip() == str(b.source_path.absolute())
     finally:
         a.close()
         b.close()

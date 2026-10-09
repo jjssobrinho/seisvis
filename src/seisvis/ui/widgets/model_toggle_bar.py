@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from seisvis.models.model_group import ModelGroup
+from seisvis.ui.widgets.dataset_tooltip import dataset_path_label, dataset_path_tooltip
 from seisvis.ui.widgets.member_strip import MemberStrip
 from seisvis.ui.widgets.toggle_bar import (
     FLICKER_MAX_HZ,
@@ -58,7 +59,7 @@ class ModelToggleBar(QWidget):
         self._button_group.idClicked.connect(self.group.set_active_index)
         # First in the row so its centre maths starts from the bar's left edge;
         # it takes all the slack, which leaves the flicker controls at the right.
-        self._strip = MemberStrip(self)
+        self._strip = MemberStrip(self, fill_width=True)
         layout.addWidget(self._strip, 1)
 
         layout.addSpacing(12)
@@ -98,7 +99,7 @@ class ModelToggleBar(QWidget):
         for i, ds in enumerate(self.group.members):
             btn = QPushButton(str(i + 1), self._strip)
             btn.setCheckable(True)
-            btn.setToolTip(ds.name)
+            btn.setToolTip(dataset_path_tooltip(ds))
             colour = member_color(i)
             btn.setStyleSheet(
                 f"QPushButton {{ color: {colour.name()}; font-weight: bold; }}"
@@ -107,7 +108,8 @@ class ModelToggleBar(QWidget):
             self._button_group.addButton(btn, i)
             btn.show()
             self._buttons.append(btn)
-        self._strip.set_buttons(list(self._buttons), [ds.name for ds in self.group.members])
+        labels = [dataset_path_label(ds) for ds in self.group.members]
+        self._strip.set_buttons(list(self._buttons), labels)
         self._strip.updateGeometry()
 
         # A single member has nothing to flicker between.
