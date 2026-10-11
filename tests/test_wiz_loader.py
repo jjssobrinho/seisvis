@@ -338,7 +338,8 @@ def test_sidecar_lives_beside_the_directory(line: Path) -> None:
         assert ds.persist_sv()
     finally:
         ds.close()
-    assert (line.parent / "line.sv").is_file()
+    assert (line.parent / "line.wiz.sv").is_file()  # not line.sv: a line.su's name
+    assert not (line.parent / "line.sv").exists()
     assert _tree(line) == before  # nothing written inside the .wiz
 
     again = load_wiz(line)

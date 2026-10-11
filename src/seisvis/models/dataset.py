@@ -9,6 +9,7 @@ import numpy as np
 import segyio
 from PySide6.QtCore import QObject, Signal
 
+from seisvis.io.dataset_paths import sidecar_path
 from seisvis.io.header_cache import HeaderCacheKey
 from seisvis.io.sample_reader import SampleLayout, read_samples, sample_layout
 from seisvis.io.segy_field_source import SegyFieldSource
@@ -417,8 +418,16 @@ class Dataset(QObject):
             return ""
         return self.display_name_for(field)
 
+    @property
+    def sv_path(self) -> Path:
+        """Where this dataset's ``.sv`` sidecar lives (``sidecar_path``)."""
+        return sidecar_path(self.source_path)
+
     def persist_sv(self) -> bool:
-        """Write ``self.sv`` to ``<source_path>.sv``; report whether it landed.
+        """Write ``self.sv`` to the source's sidecar path; report whether it landed.
+
+        ``<stem>.sv`` for SEG-Y / SU, ``<name>.wiz.sv`` for wiz
+        (``io/dataset_paths.sidecar_path``).
 
         Returns False on an unwritable target — a read-only directory or a
         dead network mount — rather than raising through the caller's UI
@@ -429,7 +438,7 @@ class Dataset(QObject):
         """
         if self.sv is None:
             return False
-        sv_path = self.source_path.with_suffix(".sv")
+        sv_path = self.sv_path
         try:
             self.sv.to_json(sv_path)
         except OSError:

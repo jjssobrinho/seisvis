@@ -23,6 +23,29 @@ def is_wiz_path(path: Path) -> bool:
     return Path(path).suffix.lower() in WIZ_SUFFIXES
 
 
+def sidecar_path(path: Path) -> Path:
+    """Where *path*'s ``.sv`` sidecar lives.
+
+    SEG-Y / SU: ``line.sgy`` → ``line.sv``. Wiz: ``line.wiz`` → ``line.wiz.sv``
+    beside the directory — not ``line.sv``, which a SEG-Y / SU file of the same
+    stem (often the wiz dataset's source) already uses.
+    """
+    path = Path(path)
+    if is_wiz_path(path):
+        return path.with_name(path.name + ".sv")
+    return path.with_suffix(".sv")
+
+
+def legacy_sidecar_path(path: Path) -> Path | None:
+    """Where v7.2–v7.5 put a wiz dataset's sidecar (``line.sv``); None otherwise.
+
+    Shared with any same-stem SEG-Y / SU file, so it is only ever read after
+    its fingerprint has been checked against the wiz dataset.
+    """
+    path = Path(path)
+    return path.with_suffix(".sv") if is_wiz_path(path) else None
+
+
 def normalize_dataset_path(path: Path) -> Path:
     """Map ``X.wiz/meta.json`` (what a file chooser can pick) to ``X.wiz``."""
     path = Path(path)

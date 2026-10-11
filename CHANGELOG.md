@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A wiz dataset no longer shares its sidecar with a same-named SU or
+  SEG-Y file.** `marm.wiz` converted next to `marm.su` used to read and
+  overwrite `marm.su`'s `marm.sv` (renames crossed over, and both showed
+  as stale). Wiz sidecars are now `marm.wiz.sv`; SEG-Y and SU keep
+  `marm.sv`, so existing sidecars still load. A wiz dataset with no
+  `marm.wiz.sv` still uses an older `marm.sv` when it was written for that
+  dataset (its fingerprint matches), and saves it as `marm.wiz.sv` next
+  time; a `marm.sv` belonging to another file is ignored and left alone.
+
 ### Trace-attribute strip (v7.5)
 
 - **Header fields above the traces.** The **Strip** button in a canvas's
@@ -67,8 +78,9 @@
   second, without marking it changed. Rewriting its samples marks it
   changed on disk, as for SEG-Y and SU; reload as usual.
 - **Sidecar beside the folder.** Renames for `line.wiz` are saved in
-  `line.sv` next to it; nothing is written inside a wiz dataset. Attribute
-  edits don't make the sidecar stale.
+  `line.wiz.sv` next to it (`line.sv` before v0.7.0 — see Fixed); nothing
+  is written inside a wiz dataset. Attribute edits don't make the sidecar
+  stale.
 - Wiz datasets are time domain: the Vertical Domain panel is disabled for
   them.
 

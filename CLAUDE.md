@@ -544,7 +544,7 @@ fail validation.
 
 ## `.sv` Sidecar
 
-JSON file `<segy_name>.sv` next to the SEG-Y:
+JSON file `<segy_name>.sv` next to the SEG-Y (wiz: `<name>.wiz.sv`, see below):
 
 ```json
 {
@@ -585,9 +585,14 @@ JSON file `<segy_name>.sv` next to the SEG-Y:
 - **Sort is not persisted in the `.sv`.** A dataset loaded into a
   toggle group starts uncommitted / natural file order. Sort is
   workspace state and is saved in a session file (see Sessions).
-- A wiz dataset's sidecar is `X.sv` **beside** `X.wiz/`
-  (`source_path.with_suffix(".sv")`); nothing is ever written inside the
-  directory.
+- Sidecar paths come from `io/dataset_paths.sidecar_path` (also
+  `Dataset.sv_path`) — never build one with `with_suffix(".sv")`. SEG-Y /
+  SU: `line.sgy` → `line.sv`. Wiz: `X.wiz` → `X.wiz.sv` **beside** the
+  directory (not `X.sv`, which a same-stem SU / SEG-Y — often the wiz
+  dataset's source — owns); nothing is ever written inside the directory.
+  Migration: with no `X.wiz.sv`, a legacy `X.sv` (`legacy_sidecar_path`) is
+  used only when its `sha1_prefix` matches the wiz anchor, and the next save
+  writes `X.wiz.sv`; a non-matching `X.sv` is never read for the wiz.
 - Staleness: `sha1_prefix` (first 3600 bytes of the SEG-Y — for a wiz,
   of its default vector file, `io/dataset_paths.content_anchor`) + mtime
   must match. Attribute edits therefore don't make a wiz `.sv` stale. Stale `.sv` is loaded with a warning, not refused.

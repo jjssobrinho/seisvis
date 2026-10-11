@@ -16,27 +16,27 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from seisvis.io.dataset_paths import legacy_sidecar_path, sidecar_path
 from seisvis.models.dataset import Dataset
-from seisvis.models.sv_sidecar import SVSidecar
+from seisvis.models.sv_sidecar import SVSidecar, compute_sha1_prefix
 
 log = logging.getLogger(__name__)
 
 
 def apply_sidecar(ds: Dataset, path: Path) -> None:
-    """Load ``<path>.sv`` if present and apply it to *ds* in place.
+    """Load *path*'s sidecar (:func:`sidecar_path`) if present; apply it to *ds*.
+
+    A wiz dataset without one falls back to a pre-v7.6 ``<stem>.sv`` only
+    when that sidecar's fingerprint is the dataset's own (it may belong to a
+    same-stem SU / SEG-Y file); the next save writes ``<stem>.wiz.sv``.
 
     A stale sidecar is applied with a warning rather than refused (CLAUDE.md).
     A depth declaration in the sidecar overrides whatever the loader detected
     from headers; the sidecar never *downgrades* a detected depth dataset to
     time, since a v2 sidecar has no opinion about domain at all.
     """
-    sv_path = path.with_suffix(".sv")
-    if not sv_path.exists():
-        return
-    try:
-        sidecar = SVSidecar.from_json(sv_path)
-    except Exception:
-        log.warning("failed to load .sv for %s", path.name, exc_info=True)
+    sidecar = _read_sidecar(path)
+    if sidecar is None:
         return
 
     ds.sv = sidecar
@@ -56,6 +56,36 @@ def apply_sidecar(ds: Dataset, path: Path) -> None:
             sidecar.depth_geometry.dz,
             sidecar.depth_geometry.dx,
         )
+
+
+def _read(sv_path: Path, path: Path) -> SVSidecar | None:
+    try:
+        return SVSidecar.from_json(sv_path)
+    except Exception:
+        log.warning("failed to load %s for %s", sv_path.name, path.name, exc_info=True)
+        return None
+
+
+def _read_sidecar(path: Path) -> SVSidecar | None:
+    """*path*'s sidecar, or (wiz) a fingerprint-matching legacy one."""
+    sv_path = sidecar_path(path)
+    if sv_path.exists():
+        return _read(sv_path, path)
+    legacy = legacy_sidecar_path(path)
+    if legacy is None or not legacy.exists():
+        return None
+    sidecar = _read(legacy, path)
+    if sidecar is None:
+        return None
+    try:
+        own = compute_sha1_prefix(path)
+    except (OSError, ValueError):
+        return None
+    if sidecar.sha1_prefix != own:
+        log.info("%s: %s describes another file; not used", path.name, legacy.name)
+        return None
+    log.info("%s: using %s; it will be saved as %s", path.name, legacy.name, sv_path.name)
+    return sidecar
 
 
 __all__ = ["apply_sidecar"]

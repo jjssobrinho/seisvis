@@ -324,7 +324,7 @@ class HeaderInspectorDialog(QDialog):
         ds.depth_geometry = geometry
 
         if not ds.persist_sv():
-            self.sv_write_failed.emit(ds.source_path.with_suffix(".sv").name)
+            self.sv_write_failed.emit(ds.sv_path.name)
 
         if (geometry is not None) != was_depth:
             self.domain_changed.emit(ds)

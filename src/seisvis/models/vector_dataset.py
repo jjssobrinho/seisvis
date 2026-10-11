@@ -59,6 +59,7 @@ _PROXIED = (
     "unavailable_header_fields",
     "sv",
     "sv_stale",
+    "sv_path",
     "stored_order",
     "supports_depth",
     "vertical_domain",
