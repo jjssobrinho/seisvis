@@ -65,6 +65,9 @@ log = logging.getLogger(__name__)
 
 DRAG_THROTTLE_MS = 150
 
+# Appended to a populated field that can't be a sort key (greyed out).
+INELIGIBLE_SUFFIX = "(not whole numbers)"
+
 # Soft cap for List-row size: at or above this count, the row's parsed
 # summary appends a perf warning and the status bar emits a one-shot
 # notification when the list crosses the threshold.
@@ -681,9 +684,10 @@ class GroupCommandBar(QWidget):
         for f in fields:
             combo.addItem(self._field_label(f), userData=f)
         # Populated fields that can't be keys are listed, greyed out, with
-        # the reason on hover — so a missing key is explained, not hidden.
+        # the reason — so a missing key is explained, not hidden. The label
+        # says it too: tooltips over an open popup don't show on Wayland.
         for f, reason in self._ineligible_fields().items():
-            combo.addItem(self._field_label(f), userData=f)
+            combo.addItem(f"{self._field_label(f)} {INELIGIBLE_SUFFIX}", userData=f)
             i = combo.count() - 1
             combo.setItemData(i, reason, Qt.ItemDataRole.ToolTipRole)
             item = combo.model().item(i)  # type: ignore[attr-defined]

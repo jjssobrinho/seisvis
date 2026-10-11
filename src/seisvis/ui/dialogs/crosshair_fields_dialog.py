@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from seisvis.models.dataset import Dataset
+from seisvis.models.field_format import NO_VALUE
 
 _COLUMNS = ["Show", "Field", "Display name", "Byte", "Sample values"]
 
@@ -48,7 +49,11 @@ class CrosshairFieldsDialog(QDialog):
         if dataset.header_fields_available is None:
             dataset.populate_surange()
         fields = dataset.header_fields_available or {}
-        self._sorted = sorted(fields.values(), key=lambda f: f.byte_offset)
+        # SEG-Y fields in byte order; a backend without byte offsets (wiz)
+        # keeps its own order, after them — as in the Header Inspector.
+        self._sorted = sorted(
+            fields.values(), key=lambda f: (f.byte_offset is None, f.byte_offset or 0)
+        )
 
         layout = QVBoxLayout(self)
         layout.addWidget(
@@ -80,9 +85,8 @@ class CrosshairFieldsDialog(QDialog):
 
             samples = ", ".join(str(v) for v in fs.samples) if fs.samples else "—"
             display = dataset.display_name_for(fs.field_name)
-            for col, text in enumerate(
-                [fs.field_name, display, str(fs.byte_offset), samples], start=1
-            ):
+            byte_str = NO_VALUE if fs.byte_offset is None else str(fs.byte_offset)
+            for col, text in enumerate([fs.field_name, display, byte_str, samples], start=1):
                 self._table.setItem(row, col, QTableWidgetItem(text))
 
         self._table.resizeColumnsToContents()

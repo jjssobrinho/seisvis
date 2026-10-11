@@ -258,7 +258,7 @@ def test_command_bar_lists_a_fractional_float_disabled_with_a_reason() -> None:
     from PySide6.QtCore import Qt
 
     from seisvis.models.toggle_group import ToggleGroup
-    from seisvis.ui.widgets.group_command_bar import GroupCommandBar
+    from seisvis.ui.widgets.group_command_bar import INELIGIBLE_SUFFIX, GroupCommandBar
 
     ds = fake_dataset()
     ds.populate_surange()
@@ -273,4 +273,19 @@ def test_command_bar_lists_a_fractional_float_disabled_with_a_reason() -> None:
     assert i >= 0
     assert not combo.model().item(i).isEnabled()
     assert combo.itemData(i, Qt.ItemDataRole.ToolTipRole) == NON_INTEGRAL_REASON
+    assert combo.itemText(i).endswith(INELIGIBLE_SUFFIX)  # no hover needed
+    assert INELIGIBLE_SUFFIX not in combo.itemText(combo.findData("sx"))
     assert combo.model().item(combo.findData("sx")).isEnabled()
+
+
+def test_crosshair_fields_dialog_lists_fields_without_byte_offsets() -> None:
+    """A wiz field has no byte offset: listed in its own order, byte shown as —."""
+    from seisvis.ui.dialogs.crosshair_fields_dialog import CrosshairFieldsDialog
+
+    ds = fake_dataset()
+    ds.populate_surange()
+    dlg = CrosshairFieldsDialog(ds, ("wb_twt",))
+    names = [fs.field_name for fs in dlg._sorted]
+    assert names == list(ds.header_fields_available)
+    assert dlg._table.item(0, 3).text() == NO_VALUE
+    assert dlg.selected_fields() == ("wb_twt",)

@@ -12,6 +12,12 @@
   `marm.wiz.sv` still uses an older `marm.sv` when it was written for that
   dataset (its fingerprint matches), and saves it as `marm.wiz.sv` next
   time; a `marm.sv` belonging to another file is ignored and left alone.
+- **Crosshair fields… opens on wiz datasets.** It failed with a
+  `TypeError` because wiz attributes have no byte offset; they now list in
+  the dataset's own order, with `—` in the Byte column.
+- **A field that can't be a sort key says why in the key dropdown.** Greyed
+  entries read e.g. `wb_twt (not whole numbers)`; the tooltip alone didn't
+  show over an open dropdown on Wayland.
 
 ### Trace-attribute strip (v7.5)
 

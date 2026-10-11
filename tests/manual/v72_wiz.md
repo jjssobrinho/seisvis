@@ -6,9 +6,15 @@ and an SU shot line, e.g. `line.su`.
 ## Setup
 
 1. Make two datasets:
-   - `wiz su2wiz line.su shots.wiz`. This gives `t0 = 0` and
-     `sorted_by = [fldr, tracf]` when the SU file is shot-sorted. Check with
-     `wiz info shots.wiz`.
+   - `wiz su2wiz line.su shots.wiz`. This gives `t0 = 0` but
+     `sorted_by = null`: an SU file declares no sort order, so `su2wiz` has
+     none to carry over. Declare it (the data must really be in that order):
+     ```python
+     import wiz
+     wiz.Dataset.open("shots.wiz", "r+").sorted_by = ["fldr", "tracf"]
+     ```
+     Check with `wiz info shots.wiz` (`sorted_by ['fldr', 'tracf']`). Without
+     it the dataset opens in file order, like a SEG-Y.
    - A copy whose first sample is at 100 ms, written from Python:
      ```python
      import numpy as np, wiz
@@ -24,34 +30,34 @@ and an SU shot line, e.g. `line.su`.
 
 ## Opening
 
-- [ ] **File → Load wiz dataset…**: picking the `shots.wiz` folder loads it.
+- [x] **File → Load wiz dataset…**: picking the `shots.wiz` folder loads it.
       Picking a plain folder shows "not a wiz dataset" in the status bar.
-- [ ] **File → Load data…**: navigating into `shots.wiz` and picking
+- [x] **File → Load data…**: navigating into `shots.wiz` and picking
       `meta.json` loads the dataset (not the JSON file).
-- [ ] Dragging the `shots.wiz` folder from a file manager onto the window
+- [x] Dragging the `shots.wiz` folder from a file manager onto the window
       loads it, and so does dragging its `meta.json`.
-- [ ] **Quick load**: typing `/…/shots.wiz` shows "ok" and loads it.
-- [ ] The catalog name is `shots`. There is no "(indexing…)" phase and no
+- [x] **Quick load**: typing `/…/shots.wiz` shows "ok" and loads it.
+- [x] The catalog name is `shots`. There is no "(indexing…)" phase and no
       header-cache progress in the status bar.
 
 ## Display
 
-- [ ] Open in a new group. It opens on the **first shot**, committed (★), with
+- [x] Open in a new group. It opens on the **first shot**, committed (★), with
       the primary row on `fldr`, Value, First 0. Opening `late.wiz` behaves
       the same.
-- [ ] The info track reads `Shot <n>`. The crosshair reads
+- [x] The info track reads `Shot <n>`. The crosshair reads
       `Shot <n>, Channel <c> | t = … | amp = …`.
-- [ ] `late.wiz`: the time axis starts at **100 ms**. The Time min/max boxes
+- [x] `late.wiz`: the time axis starts at **100 ms**. The Time min/max boxes
       run 100 … 100 + (nt − 1)·dt. The crosshair `t =` matches the axis.
       A selection rectangle snaps to the samples, and its FFT is the same
       as for `shots.wiz`.
-- [ ] Put `shots.wiz` and `late.wiz` in one group. Flipping between them,
+- [x] Put `shots.wiz` and `late.wiz` in one group. Flipping between them,
       events in `late.wiz` sit 100 ms lower and line up in absolute time.
-- [ ] The key dropdown lists fldr, tracf, cdp, offset, sx … `wb_twt` is
+- [x] The key dropdown lists fldr, tracf, cdp, offset, sx … `wb_twt` is
       **greyed out**, and its tooltip says it has non-integer values.
-- [ ] Commit a sort on `cdp`. It regroups with no "Indexing headers…"
+- [x] Commit a sort on `cdp`. It regroups with no "Indexing headers…"
       message.
-- [ ] Crosshair fields…: add `wb_twt` and `sx`. Hovering shows
+- [x] Crosshair fields…: add `wb_twt` and `sx`. Hovering shows
       `wb_twt 151.5` (a decimal) and `sx 250` (a whole number).
 - [ ] Attribute plot (Catalog → Open attribute plot…) of sx × gx coloured by
       `wb_twt` draws with a float colour bar. On `late.wiz`, a time slice's
