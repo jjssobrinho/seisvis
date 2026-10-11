@@ -238,3 +238,24 @@ def test_a_vector_gone_on_disk_drops_its_member_and_diff(
     # The user is told what could not be put back.
     assert len(reported) == 1
     assert "member(s) dropped" in reported[0] and "FILT − RAW" in reported[0]
+
+
+def test_opening_a_multi_vector_file_opens_its_default_vector(
+    window: MainWindow, gui_app: QApplication, tmp_path: Path
+) -> None:
+    ds = load_dataset(three_vectors(tmp_path / "multi.wiz"))
+    window.register_dataset(ds)
+    project = window.project
+    trace = project.vector_dataset(ds, "TRACE")
+
+    window._on_open_in_new_group(ds)  # double-click / Open in new toggle group
+    group = project.toggle_groups[-1]
+    assert [m.dataset for m in group.members] == [trace]
+    assert group.members[0].dataset.name == "multi · TRACE"
+    sort = group.shared_state.sort_config
+    assert sort.committed and sort.primary.field == "fldr"  # stored order still applies
+
+    window._on_datasets_dropped(group.id, [ds.id])  # dragging the dataset row
+    window._on_add_to_active_group(ds)
+    assert [m.dataset for m in group.members] == [trace, trace, trace]
+    _settle(window, gui_app)

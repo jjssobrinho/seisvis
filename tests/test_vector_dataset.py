@@ -229,3 +229,23 @@ def test_vector_dataset_is_a_qobject_with_dataset_signals(project_with_wiz) -> N
     ds.group_index_ready.emit()
     ds.surange_ready.emit()
     assert fired == ["gi", "surange"]
+
+
+def test_a_multi_vector_file_opens_as_its_default_vector(project_with_wiz) -> None:  # noqa: ANN001
+    project, ds = project_with_wiz
+    opened = project.opened_as(ds)
+    assert isinstance(opened, VectorDataset)
+    assert opened is project.vector_dataset(ds, "TRACE")
+    assert opened.name == "multi · TRACE"
+    assert project.opened_as(opened) is opened  # a vector opens as itself
+
+
+def test_a_single_vector_file_opens_as_itself(tmp_path: Path) -> None:
+    project = Project()
+    ds = load_wiz(make_wiz(tmp_path / "one.wiz"))
+    project.add(ds)
+    try:
+        assert ds.vector_names == ("TRACE",)
+        assert project.opened_as(ds) is ds
+    finally:
+        project.close_all()

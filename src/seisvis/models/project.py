@@ -89,6 +89,21 @@ class Project(QObject):
             parent.vectors_changed.connect(lambda pid=parent.id: self._on_vectors_changed(pid))
         return vec
 
+    def opened_as(self, dataset: Dataset) -> Dataset:
+        """What a group gets when *dataset* is opened into it.
+
+        A file with several vectors opens as its default vector (``"name ·
+        TRACE"``), so the member says which one it shows, as its siblings do.
+        Anything else — one vector, SEG-Y / SU, a diff, a vector — as itself.
+        """
+        if isinstance(dataset, VectorDataset) or dataset not in self._datasets:
+            return dataset
+        names = getattr(dataset, "vector_names", ())
+        default = getattr(dataset, "default_vector", None)
+        if len(names) < 2 or default is None:
+            return dataset
+        return self.vector_dataset(dataset, default) or dataset
+
     def vectors_of(self, parent_id: str) -> list[VectorDataset]:
         """Vector datasets created so far for *parent_id*."""
         return [v for v in self._vectors.values() if v.parent_dataset.id == parent_id]

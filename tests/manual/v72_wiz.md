@@ -59,13 +59,13 @@ and an SU shot line, e.g. `line.su`.
       message.
 - [x] Crosshair fields…: add `wb_twt` and `sx`. Hovering shows
       `wb_twt 151.5` (a decimal) and `sx 250` (a whole number).
-- [ ] Attribute plot (Catalog → Open attribute plot…) of sx × gx coloured by
+- [x] Attribute plot (Catalog → Open attribute plot…) of sx × gx coloured by
       `wb_twt` draws with a float colour bar. On `late.wiz`, a time slice's
       time box starts at 100 ms.
 
 ## Header inspector and sidecar
 
-- [ ] Configure Headers… lists every attribute (`wiz_id` absent), with `—` in
+- [x] Configure Headers… lists every attribute (`wiz_id` absent), with `—` in
       the byte column. The Vertical Domain panel is greyed out, and its
       tooltip says wiz datasets are time domain.
 - [ ] Renaming `fldr` to `FFID` and applying writes `shots.sv` **next to**
@@ -74,18 +74,18 @@ and an SU shot line, e.g. `line.su`.
 
 ## Live changes
 
-- [ ] With the dataset open, run `wiz attr add shots.wiz name=qc value=1 type=i32`.
+- [x] With the dataset open, run `wiz attr add shots.wiz name=qc value=1 type=i32`.
       Within a second the status bar says "shots: header fields updated" and
       `qc` appears in the key dropdown and the crosshair field list. The
       catalog row is **not** red.
-- [ ] `wiz attr delete shots.wiz names=qc` removes it from the lists again.
-- [ ] Re-running a flow that rewrites `shots.wiz` (or the Python writer
+- [x] `wiz attr delete shots.wiz names=qc` removes it from the lists again.
+- [x] Re-running a flow that rewrites `shots.wiz` (or the Python writer
       with `overwrite=True` and different samples) turns the catalog row red
       ("changed on disk"). Right-click → Reload shows the new samples.
 
 ## Sessions
 
-- [ ] Save a session with `shots.wiz` in a sorted group, quit, and reopen
+- [x] Save a session with `shots.wiz` in a sorted group, quit, and reopen
       it. The dataset, sort and time window come back.
 - [ ] Move `shots.wiz` (and `shots.sv`) to another folder, then reopen the
       session. The Missing files dialog's **Locate** picks a folder, and
@@ -93,5 +93,5 @@ and an SU shot line, e.g. `line.su`.
 
 ## Regressions
 
-- [ ] A SEG-Y and an SU file still open as before: TRACE_RANGE uncommitted,
+- [x] A SEG-Y and an SU file still open as before: TRACE_RANGE uncommitted,
       the header scan runs, and the time axis starts at 0.

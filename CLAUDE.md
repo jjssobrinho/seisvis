@@ -237,7 +237,11 @@ without importing it.
   (built like `DerivedDataset`). Id `"<parent id>::<VECTOR>"`, name
   `"<parent name> · <VECTOR>"`. Shares the parent's field source, group
   index, `.sv`, labels and time axis; `read_slice` reads its own vector.
-  The dataset row itself is unchanged (it reads the default vector).
+  The dataset row itself is unchanged (it reads the default vector), but
+  opening a dataset with ≥ 2 vectors into a group — double-click, Open /
+  Add to group, drag, multi-select, attribute plot — adds its default
+  vector's `VectorDataset` ("name · TRACE"; `Project.opened_as`). One
+  vector: the dataset itself. Diffs of a dataset row keep the dataset.
 - Created and cached by `Project.vector_dataset(parent, name)`, **not** in
   `Project.datasets` (those are files); `Project.find` resolves vector ids
   (mime drops, sessions, diffs). A vector that vanishes on disk is marked

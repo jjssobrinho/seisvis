@@ -1338,7 +1338,7 @@ class MainWindow(QMainWindow):
     def _on_open_in_new_group(self, dataset: Dataset) -> None:
         if self._route_if_depth(dataset):
             return
-        self._create_group_for(dataset)
+        self._create_group_for(self.project.opened_as(dataset))
 
     # --- depth-domain routing --------------------------------------------
 
@@ -1476,7 +1476,7 @@ class MainWindow(QMainWindow):
         if not resolved:
             self.statusBar().showMessage("Dropped datasets are no longer loaded", 4000)
             return
-        added = self._refuse_depth(resolved)
+        added = [self.project.opened_as(d) for d in self._refuse_depth(resolved)]
         for ds in added:
             group.add_member(ds)
         if not added:
@@ -1494,7 +1494,7 @@ class MainWindow(QMainWindow):
         catalog order and inherit its display settings, which is the point —
         the members are meant to be toggled against each other.
         """
-        datasets = self._refuse_depth(datasets)
+        datasets = [self.project.opened_as(d) for d in self._refuse_depth(datasets)]
         if not datasets:
             return
         group = self._create_group_for(datasets[0])
@@ -1504,7 +1504,7 @@ class MainWindow(QMainWindow):
 
     def _on_open_attribute_plot(self, datasets: list[Dataset]) -> None:
         """Ask what to plot, then open *datasets* as a new attribute plot's members."""
-        datasets = self._refuse_depth(datasets)
+        datasets = [self.project.opened_as(d) for d in self._refuse_depth(datasets)]
         if not datasets:
             return
         config = self._ask_attribute_config(datasets[0])
@@ -1539,6 +1539,7 @@ class MainWindow(QMainWindow):
     def _on_add_to_active_group(self, dataset: Dataset) -> None:
         if not self._refuse_depth([dataset]):
             return
+        dataset = self.project.opened_as(dataset)
         group = self.project.active_toggle_group()
         if group is None:
             self._create_group_for(dataset)

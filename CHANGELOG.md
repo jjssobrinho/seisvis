@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- **Opening a multi-vector wiz dataset shows which vector you're on.**
+  Double-clicking (or dragging, or opening) a dataset with several vectors
+  now adds its default vector, named e.g. `vec3 · TRACE` like its siblings,
+  instead of a member called just `vec3`. A dataset with one vector still
+  opens under its plain name.
 - **A wiz dataset no longer shares its sidecar with a same-named SU or
   SEG-Y file.** `marm.wiz` converted next to `marm.su` used to read and
   overwrite `marm.su`'s `marm.sv` (renames crossed over, and both showed
