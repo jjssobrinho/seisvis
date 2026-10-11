@@ -18,10 +18,20 @@ _TRACE_FIELDS: dict[str, int] = TRACE_FIELD_OFFSETS
 
 @dataclass
 class FieldSample:
+    """One populated header field, as the probe found it.
+
+    ``byte_offset`` is the 1-indexed SEG-Y byte, or None for a backend
+    without fixed-layout headers. ``kind`` is ``"int"`` or ``"float"``;
+    ``integral`` says whether every probed value is a whole number (always
+    True for ints), which decides whether the field can be a sort key.
+    """
+
     field_name: str
-    byte_offset: int
+    byte_offset: int | None
     unique_count: int
-    samples: list[int] = field(default_factory=list)
+    samples: list[int | float] = field(default_factory=list)
+    kind: str = "int"
+    integral: bool = True
 
 
 def scan_populated_fields(

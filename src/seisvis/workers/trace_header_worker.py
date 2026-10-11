@@ -8,9 +8,9 @@ minutes of work to answer a question about what is visible.
 
 Trace data is not read that way. The navigation bar decides which traces are
 on screen and the slice worker reads exactly those; this does the same for
-headers. Cost is O(traces on screen), and one pass pulls every requested
-field out of each 240-byte block as it goes, so adding a second field costs
-no extra seeking.
+headers. Cost is O(traces on screen); the dataset's field source reads every
+requested field for a trace in one go, so adding a second field costs no
+extra seeking.
 
 Results align to the given ``trace_indices`` element by element, so a caller
 holding those indices can look a value up by column rather than searching.
@@ -22,10 +22,10 @@ import logging
 from collections.abc import Callable
 
 import numpy as np
-import segyio
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
 from seisvis.models.dataset import Dataset
+from seisvis.models.field_source import MISSING
 
 log = logging.getLogger(__name__)
 
@@ -67,43 +67,38 @@ class TraceHeaderWorker(QRunnable):
             self.signals.failed.emit(ds.id, "dataset is closed")
             return
 
-        # Names come from the surange scan, which enumerates segyio.TraceField,
-        # so this normally resolves; skip anything unrecognised rather than
+        # Names come from the probe, which lists the source's own fields, so
+        # this normally resolves; skip anything unrecognised rather than
         # failing the whole read for one bad name.
-        offsets: dict[str, int] = {}
+        source = ds.field_source
+        known = source.known_fields()
+        names: list[str] = []
         for name in self.fields:
-            off = getattr(segyio.TraceField, name, None)
-            if off is None:
+            if name not in known:
                 log.warning("unknown header field %r requested; skipping", name)
                 continue
-            offsets[name] = int(off)
-        if not offsets:
+            names.append(name)
+        if not names:
             self.signals.failed.emit(ds.id, "no known fields to read")
             return
 
         n = int(self.trace_indices.size)
         if n == 0:
-            empty = {name: np.empty(0, dtype=np.int64) for name in offsets}
+            empty = {
+                name: np.empty(
+                    0, dtype=np.float64 if source.field_kind(name) == "float" else np.int64
+                )
+                for name in names
+            }
             self.signals.finished.emit(ds.id, empty)
             return
 
         try:
-            arrays = {name: np.empty(n, dtype=np.int64) for name in offsets}
-            headers = ds.handle.header
-            n_traces = int(ds.n_traces)
-            for row, trace in enumerate(self.trace_indices):
-                if self._cancelled():
-                    return
-                idx = int(trace)
-                if not 0 <= idx < n_traces:
-                    # Out-of-range display columns are a normal partial-view
-                    # state; mark them rather than failing the batch.
-                    for name in offsets:
-                        arrays[name][row] = np.iinfo(np.int64).min
-                    continue
-                hdr = headers[idx]
-                for name, off in offsets.items():
-                    arrays[name][row] = hdr[off]
+            # Out-of-range display columns are a normal partial-view state;
+            # the source marks them (MISSING / NaN) rather than failing.
+            arrays = source.read_at(names, self.trace_indices, is_cancelled=self._cancelled)
+            if arrays is None:
+                return
         except Exception as exc:
             log.exception("trace header read failed for %s", ds.name)
             self.signals.failed.emit(ds.id, str(exc))
@@ -112,11 +107,6 @@ class TraceHeaderWorker(QRunnable):
         if self._cancelled():
             return
         self.signals.finished.emit(ds.id, arrays)
-
-
-# Sentinel written for a trace index outside the file, so the reader can tell
-# "no such trace" from a genuine header value.
-MISSING = np.iinfo(np.int64).min
 
 
 __all__ = ["MISSING", "TraceHeaderWorker", "TraceHeaderWorkerSignals"]

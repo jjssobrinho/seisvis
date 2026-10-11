@@ -7,9 +7,8 @@ from collections.abc import Callable
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
-from seisvis.io.header_cache import HeaderCache
-from seisvis.io.header_reader import DEFAULT_CHUNK_TRACES, read_fields_cached
 from seisvis.models.dataset import Dataset
+from seisvis.models.field_source import DEFAULT_CHUNK_TRACES, HeaderCache
 
 log = logging.getLogger(__name__)
 
@@ -31,12 +30,12 @@ class HeaderScanWorkerSignals(QObject):
 
 
 class HeaderScanWorker(QRunnable):
-    """Single-pass scan of a SEG-Y file's per-trace header fields.
+    """Single-pass scan of a dataset's per-trace header fields.
 
     Reads ``FieldRecord``, ``INLINE_3D``, ``CROSSLINE_3D``, and ``TraceNumber``
-    for every trace through :func:`~seisvis.io.header_reader.read_fields_cached`:
-    from the header cache when the file is unchanged since it was last
-    scanned, otherwise by parallel block reads (then cached).
+    for every trace through the dataset's field source — for SEG-Y / SU, from
+    the header cache when the file is unchanged since it was last scanned,
+    otherwise by parallel block reads (then cached).
     """
 
     def __init__(
@@ -73,12 +72,8 @@ class HeaderScanWorker(QRunnable):
 
         t0 = time.perf_counter()
         try:
-            result = read_fields_cached(
-                ds.handle,
-                ds.source_path,
-                n,
+            result = ds.field_source.read_all(
                 _FIELDS,
-                key=ds.file_key,
                 cache=self._cache,
                 dtype=np.int32,
                 progress=self.signals.progress.emit,
@@ -96,7 +91,9 @@ class HeaderScanWorker(QRunnable):
         if result.all_cached:
             self.signals.cache_hit.emit()
         self.signals.progress.emit(100.0)
-        self.signals.finished.emit(*(result.arrays[name] for name in _FIELDS))
+        # A backend without one of the role fields sends None for it, which
+        # leaves that mode unavailable.
+        self.signals.finished.emit(*(result.arrays.get(name) for name in _FIELDS))
 
 
 __all__ = ["HeaderScanWorker", "HeaderScanWorkerSignals"]

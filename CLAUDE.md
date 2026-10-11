@@ -208,6 +208,16 @@ ui/  →  controllers/  →  services/  →  models/ ← processing/, io/
   cache of sample values per populated field (from trace 0, midpoint,
   and 29,999).
 
+### Field sources
+
+Workers and the readout reach per-trace headers only through
+`Dataset.field_source` (`models/field_source.FieldSource`): `known_fields`,
+`field_kind` (`"int"` | `"float"`), `probe` (the surange result, with
+`FieldSample.kind` / `integral`), `read_all` (every trace, cached),
+`read_at` (some traces; out of range → `MISSING` for ints, NaN for floats)
+and `read_trace`. SEG-Y / SU: `io/segy_field_source.SegyFieldSource`, which
+wraps the readers below. No worker touches `dataset.handle`.
+
 ### Reading headers
 
 Every pass over per-trace headers (fast scan, full scan, alignment
@@ -328,6 +338,11 @@ ListParams
   group_ids   tuple[int, ...]                 # explicit, possibly non-contiguous
                                               # (sorted before render per direction)
 ```
+
+Keys are integers. A float field is a key only when every value is a
+whole number (cast to int64; `GroupIndex` raises `NonIntegralFieldError`
+otherwise); other float fields show greyed out in the key dropdown with
+the reason as tooltip (`sort_config.sort_key_ineligibility`).
 
 `RowSelection` is a frozen dataclass; only one of `value`, `range_`,
 `list_` is non-None depending on `type`. Hashable for cache keying.

@@ -14,7 +14,7 @@ type.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -497,7 +497,33 @@ def sort_config_from_dict(raw: object) -> SortConfig:
     )
 
 
+# Why a non-integral float field is not offered as a sort key.
+NON_INTEGRAL_REASON = "Has non-integer values; sort keys must be whole numbers."
+
+
+def sort_key_ineligibility(
+    name: str,
+    fields_available: object,
+    non_integral: Iterable[str] = (),
+) -> str | None:
+    """Why *name* cannot be a sort key, or None when it can.
+
+    Keys are integers. An int field always qualifies; a float field only when
+    every probed value is a whole number (its full scan is cast to int64) and
+    no full scan has found a fractional one since (*non_integral*, from the
+    group index). Fields the probe did not describe — the group index's own
+    arrays, which are int64 — qualify.
+    """
+    if name in set(non_integral):
+        return NON_INTEGRAL_REASON
+    sample = fields_available.get(name) if isinstance(fields_available, dict) else None
+    if getattr(sample, "kind", "int") == "float" and not getattr(sample, "integral", True):
+        return NON_INTEGRAL_REASON
+    return None
+
+
 __all__ = [
+    "NON_INTEGRAL_REASON",
     "TRACE_RANGE_FIELD",
     "Direction",
     "RowType",
@@ -510,5 +536,6 @@ __all__ = [
     "row_from_dict",
     "row_to_dict",
     "sort_config_from_dict",
+    "sort_key_ineligibility",
     "sort_config_to_dict",
 ]

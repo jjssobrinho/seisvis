@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Internal: Field sources (v7.1)
+
+No change in behaviour: SEG-Y and SU files load, sort and read out exactly
+as before. This prepares for `.wiz` datasets, whose headers are named,
+typed columns rather than 240-byte blocks.
+
+- **Headers are read by name through the dataset** (`Dataset.field_source`):
+  list the fields with their type and whether they are filled in, read
+  named fields for every trace or for some traces, or read one trace. For
+  SEG-Y / SU it wraps the existing block reader, header cache and surange
+  probe unchanged. The header-scan, field-scan, on-screen header,
+  attribute-background and alignment workers no longer touch the segyio
+  handle.
+- **Float header fields are allowed.** The crosshair, attribute-plot
+  readout and header inspector print them (`12.5`; whole numbers without a
+  decimal point). Sort keys stay integers: a float field whose values are
+  all whole numbers can be a key, and any other float field is shown
+  greyed out in the key list, with a tooltip saying why.
+
 ### Fixed: Window wider than the screen, full display
 
 - **The window no longer grows past the screen.** The Attributes toolbar

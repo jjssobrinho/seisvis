@@ -44,6 +44,19 @@ MODE_TO_DEFAULT_FIELD: dict[GroupingMode, str] = {
 }
 
 
+class NonIntegralFieldError(ValueError):
+    """A float field with a fractional (or NaN) value was offered as a key.
+
+    Sort and group keys are integers; a float field qualifies only when every
+    value is a whole number.
+    """
+
+    def __init__(self, field_name: str = "") -> None:
+        self.field_name = field_name
+        what = repr(field_name) if field_name else "field"
+        super().__init__(f"{what} has non-integer values; it can't be a sort key")
+
+
 def _is_set(arr: np.ndarray) -> bool:
     """True when the file fills the field in: any trace carries a non-zero value.
 
@@ -126,6 +139,8 @@ class GroupIndex:
         # Fields this file structurally cannot supply — see
         # mark_fields_unavailable(). Distinct from "not scanned yet".
         self._unavailable_fields: set[str] = set()
+        # Float fields refused by set_field_array for a fractional value.
+        self._non_integral_fields: set[str] = set()
         self._rebuild()
 
     # --- construction ---
@@ -146,16 +161,19 @@ class GroupIndex:
         return gi
 
     @staticmethod
-    def _as_int_array(arr: np.ndarray | None) -> np.ndarray | None:
+    def _as_int_array(arr: np.ndarray | None, name: str = "") -> np.ndarray | None:
+        """*arr* as int64 keys; a float array must hold only whole numbers."""
         if arr is None:
             return None
         a = np.asarray(arr)
         if a.ndim != 1:
             raise ValueError("header arrays must be 1-D")
+        if a.dtype.kind == "f" and not bool(np.all(np.isfinite(a) & (a == np.round(a)))):
+            raise NonIntegralFieldError(name)
         return a.astype(np.int64, copy=False)
 
     def _store_named_field(self, name: str, arr: np.ndarray | None) -> None:
-        coerced = self._as_int_array(arr)
+        coerced = self._as_int_array(arr, name)
         if coerced is None:
             self._field_arrays.pop(name, None)
         else:
@@ -192,7 +210,11 @@ class GroupIndex:
         if trace_numbers is not None:
             a = np.asarray(trace_numbers)
             if a.ndim == 1 and a.size == self._n_traces:
-                self._store_named_field("TraceNumber", a)
+                try:
+                    self._store_named_field("TraceNumber", a)
+                except NonIntegralFieldError:
+                    self._field_arrays.pop("TraceNumber", None)
+                    self._non_integral_fields.add("TraceNumber")
         # A scan result might shrink what's available for the currently-
         # selected mode; keep TRACE_RANGE as a safe fallback.
         if self._current_mode not in self.available_modes:
@@ -228,7 +250,16 @@ class GroupIndex:
             if field_name:
                 self._field_arrays.pop(field_name, None)
             return
-        a64 = a.astype(np.int64, copy=False)
+        try:
+            a64 = self._as_int_array(a, field_name or "")
+        except NonIntegralFieldError:
+            log.warning("scan array for %s has non-integer values; not a key", mode)
+            self._mode_state[mode] = ModeState.FAILED
+            if field_name:
+                self._field_arrays.pop(field_name, None)
+                self._non_integral_fields.add(field_name)
+            return
+        assert a64 is not None
         if field_name:
             self._field_arrays[field_name] = a64
         if not _is_set(a64):
@@ -290,7 +321,10 @@ class GroupIndex:
         arrays, so any other key needs its per-trace values filled in here
         before grouping can produce anything.
 
-        Raises ``ValueError`` on a length mismatch with ``n_traces``.
+        A float array is cast to int64 when every value is a whole number;
+        otherwise the field is recorded in :attr:`non_integral_fields` and
+        :class:`NonIntegralFieldError` is raised. Raises ``ValueError`` on a
+        length mismatch with ``n_traces``.
         """
         if field_name in self._unavailable_fields:
             log.warning(
@@ -298,7 +332,12 @@ class GroupIndex:
                 field_name,
             )
             return
-        coerced = self._as_int_array(arr)
+        try:
+            coerced = self._as_int_array(arr, field_name)
+        except NonIntegralFieldError:
+            self._non_integral_fields.add(field_name)
+            self._pending_field_scans.discard(field_name)
+            raise
         if coerced is None:
             return
         if coerced.size != self._n_traces:
@@ -340,6 +379,11 @@ class GroupIndex:
             self._current_mode = self.default_mode
         self._sort_cache.clear()
         self._rebuild()
+
+    @property
+    def non_integral_fields(self) -> set[str]:
+        """Float fields whose full scan found a fractional value."""
+        return set(self._non_integral_fields)
 
     @property
     def unavailable_fields(self) -> set[str]:

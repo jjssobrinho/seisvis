@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from seisvis.models.dataset import Dataset
+from seisvis.models.field_format import NO_VALUE, format_header_value
 from seisvis.models.layer_kind import LayerKind
 from seisvis.models.sv_sidecar import build_sidecar_for
 from seisvis.models.vertical_domain import DEFAULT_SPACING, DepthGeometry
@@ -48,7 +49,12 @@ class HeaderInspectorDialog(QDialog):
             dataset.populate_surange()
 
         self._fields = dataset.header_fields_available or {}
-        self._sorted_fields = sorted(self._fields.values(), key=lambda f: f.byte_offset)
+        # SEG-Y fields in byte order; a backend without byte offsets keeps
+        # its own order, after them.
+        self._sorted_fields = sorted(
+            self._fields.values(),
+            key=lambda f: (f.byte_offset is None, f.byte_offset or 0),
+        )
         self._field_names = [fs.field_name for fs in self._sorted_fields]
 
         layout = QVBoxLayout(self)
@@ -215,10 +221,9 @@ class HeaderInspectorDialog(QDialog):
         self._name_edits: dict[str, QLineEdit] = {}
 
         for row, fs in enumerate(self._sorted_fields):
-            sample_str = ", ".join(str(s) for s in fs.samples)
-            for col, text in enumerate(
-                [fs.field_name, str(fs.byte_offset), str(fs.unique_count), sample_str]
-            ):
+            sample_str = ", ".join(format_header_value(s) for s in fs.samples)
+            byte_str = NO_VALUE if fs.byte_offset is None else str(fs.byte_offset)
+            for col, text in enumerate([fs.field_name, byte_str, str(fs.unique_count), sample_str]):
                 item = QTableWidgetItem(text)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self._table.setItem(row, col, item)
@@ -270,10 +275,11 @@ class HeaderInspectorDialog(QDialog):
             if samples:
                 ch_sample = samples[-1]
 
-        info_line = f"Info track:  {shot_name} {shot_sample}"
+        shot_str = format_header_value(shot_sample)
+        ch_str = format_header_value(ch_sample)
+        info_line = f"Info track:  {shot_name} {shot_str}"
         crosshair_line = (
-            f"Crosshair:   {shot_name} {shot_sample}, {ch_name} {ch_sample}"
-            " | t = 1820 ms | amp = 0.042"
+            f"Crosshair:   {shot_name} {shot_str}, {ch_name} {ch_str} | t = 1820 ms | amp = 0.042"
         )
         self._preview_label.setText(f"{info_line}\n{crosshair_line}")
 

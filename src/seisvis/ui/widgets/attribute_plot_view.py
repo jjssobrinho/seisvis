@@ -38,6 +38,7 @@ from seisvis.models.attribute_plot import (
     AttributePlotConfig,
     amplitude_key,
 )
+from seisvis.models.field_format import format_header_value
 from seisvis.models.toggle_group import ToggleGroup
 from seisvis.services.attribute_plot_service import (
     IDENTITY_FIELDS,
@@ -1246,7 +1247,7 @@ class AttributePlotView(QWidget):
                 continue
             values = data.raw.get(f)
             if values is not None and np.isfinite(values[pos]):
-                ident.append(f"{self._name(ds, f)} {int(values[pos])}")
+                ident.append(f"{self._name(ds, f)} {format_header_value(values[pos])}")
         trace = int(data.trace_indices[pos])
         head = f"Layer {layer_index + 1}"
         tail = " | ".join(filter(None, [", ".join(ident), f"trace {trace}"]))

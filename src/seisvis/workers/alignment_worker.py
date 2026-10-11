@@ -7,7 +7,7 @@ Runs in two steps so the common case reads nothing:
    TraceNumber, which pair a shot-sorted file with its channel-sorted
    twin).
 2. Only if that fails, read the remaining candidate fields for every
-   trace of each dataset that has a file handle and try again.
+   trace of each dataset that has a field source and try again.
 
 Building the pairing is an O(n log n) sort, off the GUI thread by the
 same rule as any other > 50 ms work.
@@ -21,7 +21,6 @@ from collections.abc import Callable, Mapping
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
-from seisvis.io.header_reader import TRACE_FIELD_OFFSETS, read_fields_cached
 from seisvis.models.trace_alignment import (
     MATCH_KEY_CANDIDATES,
     AlignmentStatus,
@@ -98,23 +97,20 @@ class AlignmentWorker(QRunnable):
     def _read_fields(self, ds: object, names: list[str]) -> dict[str, np.ndarray] | None:
         """One pass over *ds*'s trace headers for *names*.
 
-        Datasets without a readable handle (a derived A − B) contribute
+        Datasets without a field source (a derived A − B) contribute
         nothing; fields that are constant across the file are dropped, since
         they cannot tell traces apart and only lengthen the failure reason.
         """
-        handle = getattr(ds, "handle", None)
-        if handle is None or getattr(ds, "is_closed", False):
+        source = getattr(ds, "field_source", None)
+        if source is None or getattr(ds, "is_closed", False):
             return {}
         unavailable = getattr(ds, "unavailable_header_fields", frozenset())
-        wanted = [n for n in names if n in TRACE_FIELD_OFFSETS and n not in unavailable]
+        known = source.known_fields()
+        wanted = [n for n in names if n in known and n not in unavailable]
         if not wanted:
             return {}
-        result = read_fields_cached(
-            handle,
-            ds.source_path,  # type: ignore[attr-defined]
-            int(getattr(ds, "n_traces", 0)),
+        result = source.read_all(
             wanted,
-            key=getattr(ds, "file_key", None),
             progress=self.signals.progress.emit,
             is_cancelled=self._cancelled,
         )

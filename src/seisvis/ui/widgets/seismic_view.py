@@ -1667,7 +1667,7 @@ class SeismicView(QWidget):
         group_id: int,
         ch: int,
         trace: int,
-    ) -> tuple[str, int] | None:
+    ) -> tuple[str, int | float] | None:
         """The companion header that pairs with this primary, if any.
 
         Shot pairs with channel, inline with crossline, and so on. A generic
@@ -1679,11 +1679,11 @@ class SeismicView(QWidget):
         value = ds.header_value_at(partner, trace) if hasattr(ds, "header_value_at") else None
         if value is None:
             return None
-        return (self._field_name(ds, partner), int(value))
+        return (self._field_name(ds, partner), value)
 
     def _extra_header_values(
         self, ds, display_x: int, physical: int
-    ) -> list[tuple[str, int | None]]:  # noqa: ANN001
+    ) -> list[tuple[str, int | float | None]]:  # noqa: ANN001
         """Chosen extra fields at the cursor, in the group's display order.
 
         Reads the on-the-fly cache by column. Falls back to a scanned array
@@ -1694,13 +1694,16 @@ class SeismicView(QWidget):
         if not fields or ds is None:
             return []
         column = self._column_for_display_x(display_x)
-        out: list[tuple[str, int | None]] = []
+        out: list[tuple[str, int | float | None]] = []
         for field in fields:
-            value: int | None = None
+            value: int | float | None = None
             arr = self._header_values.get(field)
             if arr is not None and column is not None and 0 <= column < len(arr):
-                raw = int(arr[column])
-                value = None if raw == _MISSING_HEADER else raw
+                # Int fields mark an out-of-range trace with MISSING, float
+                # fields with NaN.
+                raw = arr[column].item()
+                missing = raw != raw if isinstance(raw, float) else raw == _MISSING_HEADER
+                value = None if missing else raw
             elif hasattr(ds, "header_value_at"):
                 value = ds.header_value_at(field, physical)
             out.append((self._field_name(ds, field), value))

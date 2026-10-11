@@ -45,6 +45,7 @@ from seisvis.io.slice_cache import SliceCache
 from seisvis.models.attribute_plot import AttributePlotConfig
 from seisvis.models.dataset import Dataset
 from seisvis.models.derived_dataset import DerivedDataset
+from seisvis.models.group_index import NonIntegralFieldError
 from seisvis.models.project import Project
 from seisvis.models.session import (
     SESSION_SUFFIX,
@@ -1186,7 +1187,17 @@ class MainWindow(QMainWindow):
             return
         try:
             for name, arr in arrays.items():
-                gi.set_field_array(name, arr)
+                try:
+                    gi.set_field_array(name, arr)
+                except NonIntegralFieldError as exc:
+                    # A float key the probe saw as whole numbers turned out
+                    # fractional further into the file. Its pending mark is
+                    # already gone; the others still apply.
+                    label = dataset.display_name_for(name)
+                    log.info("%s: %s", dataset.name, exc)
+                    self.statusBar().showMessage(
+                        f"{label} has non-integer values; it can't be a sort key", 6000
+                    )
         except ValueError:
             log.exception("field scan produced a mismatched array for %s", dataset.name)
             gi.clear_fields_scanning(worker.fields)

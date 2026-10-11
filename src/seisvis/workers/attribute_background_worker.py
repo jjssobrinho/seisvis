@@ -2,7 +2,7 @@
 
 The plot itself reads headers only for the selected traces; the background
 answers "where is everything else", so it needs every trace. The fields go
-through :func:`read_fields_cached` like a sort-key scan — read once, then
+through the dataset's field source like a sort-key scan — read once, then
 served from the header cache — and each layer is cut down to its distinct
 positions here, off the GUI thread, since a long line repeats each receiver
 station thousands of times.
@@ -16,10 +16,9 @@ from collections.abc import Callable
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
-from seisvis.io.header_cache import HeaderCache
-from seisvis.io.header_reader import read_fields_cached
 from seisvis.models.attribute_plot import AttributeLayer
 from seisvis.models.dataset import Dataset
+from seisvis.models.field_source import HeaderCache
 from seisvis.processing.attribute_plot import (
     BACKGROUND_MAX_POINTS,
     BackgroundPoints,
@@ -72,12 +71,8 @@ class AttributeBackgroundWorker(QRunnable):
             names.extend((layer.x_field, layer.y_field))
         fields = list(fields_to_read(names))
         try:
-            result = read_fields_cached(
-                ds.handle,
-                ds.source_path,
-                int(ds.n_traces),
+            result = ds.field_source.read_all(
                 fields,
-                key=ds.file_key,
                 cache=self._cache,
                 progress=self.signals.progress.emit,
                 is_cancelled=self._cancelled,

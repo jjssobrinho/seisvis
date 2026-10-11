@@ -19,20 +19,22 @@ where in the trace and how strong.
 
 from __future__ import annotations
 
+from seisvis.models.field_format import format_header_value
+
 # Shown for an extra whose value has not arrived yet. A field that simply
 # vanished while its read was in flight would read as a broken checkbox.
 PENDING = "…"
 
 
-def format_value(value: int | None) -> str:
-    return PENDING if value is None else str(value)
+def format_value(value: int | float | None) -> str:
+    return PENDING if value is None else format_header_value(value)
 
 
 def format_crosshair(
     *,
     primary: tuple[str, int] | None = None,
-    secondary: tuple[str, int] | None = None,
-    extras: list[tuple[str, int | None]] | None = None,
+    secondary: tuple[str, int | float] | None = None,
+    extras: list[tuple[str, int | float | None]] | None = None,
     trace: int,
     t_ms: float,
     amp: float | None,
@@ -52,7 +54,7 @@ def format_crosshair(
     elif secondary is None:
         head = f"{primary[0]} {primary[1]}"
     else:
-        head = f"{primary[0]} {primary[1]}, {secondary[0]} {secondary[1]}"
+        head = f"{primary[0]} {primary[1]}, {secondary[0]} {format_header_value(secondary[1])}"
 
     parts = [head]
     for name, value in extras or []:

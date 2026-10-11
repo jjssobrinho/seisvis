@@ -10,7 +10,9 @@ from PySide6.QtCore import QObject, Signal
 
 from seisvis.io.header_cache import HeaderCacheKey
 from seisvis.io.sample_reader import SampleLayout, read_samples, sample_layout
-from seisvis.io.surange import FieldSample, scan_populated_fields
+from seisvis.io.segy_field_source import SegyFieldSource
+from seisvis.io.surange import FieldSample
+from seisvis.models.field_source import FieldSource
 from seisvis.models.group_index import GroupIndex, GroupingMode, ModeState
 from seisvis.models.layer_kind import LayerKind
 from seisvis.models.sv_sidecar import SVSidecar
@@ -69,7 +71,7 @@ class Dataset(QObject):
         self,
         *,
         source_path: Path,
-        handle: segyio.SegyFile,
+        handle: segyio.SegyFile | None,
         n_traces: int,
         n_samples: int,
         sample_interval_ms: float,
@@ -81,6 +83,7 @@ class Dataset(QObject):
         depth_geometry: DepthGeometry | None = None,
         id: str | None = None,
         name: str = "",
+        field_source: FieldSource | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -125,6 +128,11 @@ class Dataset(QObject):
         # The file as the handle opened it (size, mtime, first 3600 bytes),
         # set by the loaders. Keys this file's arrays in the header cache.
         self.file_key: HeaderCacheKey | None = None
+        # Name-based header access: the only way workers and the readout
+        # reach per-trace headers. SEG-Y / SU wrap this dataset's handle.
+        self.field_source: FieldSource = (
+            field_source if field_source is not None else SegyFieldSource(self)
+        )
 
     def populate_surange(self, force: bool = False) -> None:
         """Run the surange header scan and cache the result.
@@ -134,10 +142,7 @@ class Dataset(QObject):
         """
         if self.header_fields_available is not None and not force:
             return
-        scanned = scan_populated_fields(self.handle, path=self.source_path)
-        for name in self.unavailable_header_fields:
-            scanned.pop(name, None)
-        self.header_fields_available = scanned
+        self.header_fields_available = self.field_source.probe()
         self.surange_ready.emit()
 
     @property
@@ -218,7 +223,7 @@ class Dataset(QObject):
         """Return the crossline number at ``trace_index``, or ``None``."""
         return self._header_value_at(GroupingMode.CROSSLINE, trace_index)
 
-    def header_value_at(self, field: str, trace_index: int) -> int | None:
+    def header_value_at(self, field: str, trace_index: int) -> int | float | None:
         """Return the header value for ``field`` at ``trace_index``, or ``None``.
 
         Generic counterpart to :meth:`inline_at` / :meth:`crossline_at` — reads
@@ -323,6 +328,10 @@ class Dataset(QObject):
         self.layer_kind = other.layer_kind
         self.sv_stale = other.sv_stale
         self.file_key = other.file_key
+        # A SEG-Y source reads this dataset's (now swapped) handle live; any
+        # other backend's source belongs to the freshly opened donor.
+        if not isinstance(other.field_source, SegyFieldSource):
+            self.field_source = other.field_source
         self._closed = False
         # Neutralize the donor so its close() can't shut the handle we took.
         other._closed = True
@@ -339,7 +348,8 @@ class Dataset(QObject):
         if self._closed:
             return
         try:
-            self.handle.close()
+            if self.handle is not None:
+                self.handle.close()
         except Exception:
             log.exception("error closing SEG-Y handle for %s", self.source_path)
         finally:

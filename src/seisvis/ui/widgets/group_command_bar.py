@@ -31,7 +31,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -55,6 +55,7 @@ from seisvis.models.sort_config import (
     RowType,
     SortConfig,
     ValueParams,
+    sort_key_ineligibility,
 )
 from seisvis.models.toggle_group import ToggleGroup
 from seisvis.ui.widgets.range_track_with_markers import RangeTrackWithMarkers
@@ -571,6 +572,24 @@ class GroupCommandBar(QWidget):
     # --- field-list helpers ---
 
     def _available_fields(self) -> list[str]:
+        """Fields that can be sort keys, TRACE_RANGE first."""
+        ineligible = self._ineligible_fields()
+        return [f for f in self._candidate_fields() if f not in ineligible]
+
+    def _ineligible_fields(self) -> dict[str, str]:
+        """Populated fields that cannot be keys (non-integral floats) → why."""
+        ds = self._reference_dataset()
+        surange = getattr(ds, "header_fields_available", None) if ds is not None else None
+        gi = self._reference_index()
+        non_integral = gi.non_integral_fields if gi is not None else set()
+        out: dict[str, str] = {}
+        for name in self._candidate_fields():
+            reason = sort_key_ineligibility(name, surange, non_integral)
+            if reason is not None:
+                out[name] = reason
+        return out
+
+    def _candidate_fields(self) -> list[str]:
         fields: list[str] = [TRACE_RANGE_FIELD]
         seen: set[str] = {TRACE_RANGE_FIELD, *NON_KEY_FIELDS}
         ds = self._reference_dataset()
@@ -661,6 +680,15 @@ class GroupCommandBar(QWidget):
         combo.clear()
         for f in fields:
             combo.addItem(self._field_label(f), userData=f)
+        # Populated fields that can't be keys are listed, greyed out, with
+        # the reason on hover — so a missing key is explained, not hidden.
+        for f, reason in self._ineligible_fields().items():
+            combo.addItem(self._field_label(f), userData=f)
+            i = combo.count() - 1
+            combo.setItemData(i, reason, Qt.ItemDataRole.ToolTipRole)
+            item = combo.model().item(i)  # type: ignore[attr-defined]
+            if item is not None:
+                item.setEnabled(False)
         found = False
         for i in range(combo.count()):
             if combo.itemData(i) == current:
