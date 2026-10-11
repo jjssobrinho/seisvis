@@ -9,6 +9,7 @@ dependencies = [
     "pyside6>=6.11.0",
     "scipy>=1.17.1",
     "segyio>=1.9.14",
+    "wiz",
 ]
 
 [dependency-groups]
@@ -39,3 +40,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/seisvis"]
+
+[tool.uv.sources]
+wiz = { path = "../wiz", editable = true }

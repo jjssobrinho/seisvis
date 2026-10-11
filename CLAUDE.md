@@ -88,6 +88,17 @@ data. Current capabilities:
 | v6.4  | Header Index Cache (`~/.cache/seisvis`)       | `v64-done`       |
 | v6.5  | Attribute Plot (branch `feat/attribute-plot`) | `v65-done`       |
 
+### v0.7.0 roadmap
+
+| #     | Name                                          | Tag              |
+|-------|-----------------------------------------------|------------------|
+| v7.1  | Field Sources (name-based header access)      | `v71-done`       |
+| v7.2  | Wiz Datasets                                  | `v72-done`       |
+| v7.3  | Vectors in the Catalog                        | `v73-done`       |
+| v7.4  | Time-Attribute Overlays                       | `v74-done`       |
+| v7.5  | Trace-Attribute Strip                         | `v75-done`       |
+| v7.6  | v0.7.0 Release                                | `v76-done`       |
+
 Milestones are sequential; each in its own session. Finish, commit,
 tag, stop. **Let tests run to completion** before tagging. Check
 `git tag -l` at session start.
@@ -97,8 +108,24 @@ tag, stop. **Let tests run to completion** before tagging. Check
 ## Stack (locked)
 
 Python 3.11+, PySide6, pyqtgraph (ImageItem in PlotItem), segyio,
-numpy, scipy.signal. uv for env, ruff for lint/format, pytest for
+wiz, numpy, scipy.signal. uv for env, ruff for lint/format, pytest for
 tests, pre-commit for hooks. No matplotlib in the rendering path.
+
+- `wiz` (the user's seismic trace format / processing framework,
+  `/home/jdasilva/projects/wiz`) is an editable path dependency
+  (`[tool.uv.sources]`). Like segyio, only `io/` may import it.
+
+### wiz format
+
+A `.wiz` dataset is a directory: `meta.json` (dataset description,
+vector and attribute schema), `headers/<attr>.<type>` (one column per
+attribute, length ntr) and `vectors/<NAME>.f32` (shape ntr × nt).
+Attributes are named columns — SU keyword names where the meaning
+matches (`fldr`, `tracf`, `cdp`, `offset`, `sx`, `gx`, `delrt`, …),
+custom ones otherwise (e.g. `wb_twt`) — typed int or float. Vectors
+are uppercase-named sample arrays (`TRACE`, `MODEL`, …) sharing `nt`,
+`dt` and the attributes. Times (`dt`, `t0`, time-valued attributes)
+are in ms. The authoritative spec is `docs/SPEC.md` in the wiz repo.
 
 ---
 
