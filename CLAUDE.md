@@ -215,12 +215,39 @@ without importing it.
 - **Labels**: `Dataset.default_display_names` fldr → Shot, tracf → Channel,
   cdp → CMP, offset → Offset (a `.sv` rename still wins). Crosshair pairs
   fldr ↔ tracf; alignment also tries the SU-named key tuples.
-- **Watching** (`FileWatchService`): `Dataset.content_paths` (the default
-  vector file) → a change marks the dataset stale, as for SEG-Y / SU;
-  `Dataset.schema_paths` (`meta.json`) → `dataset_schema_changed` →
-  `Dataset.refresh_fields()`: attributes added / removed refresh the field
-  lists in place (held key arrays re-read, removed ones dropped); a change
-  of ntr / nt / dt / t0 / default vector counts as stale instead.
+- **Watching** (`FileWatchService`): `Dataset.content_paths` (every
+  vector file, the default first — it anchors fingerprints) → a change
+  marks the dataset stale, as for SEG-Y / SU; `Dataset.schema_paths`
+  (`meta.json`) → `dataset_schema_changed` → `Dataset.refresh_fields()`:
+  attributes or non-default vectors added / removed refresh in place (held
+  key arrays re-read, removed ones dropped; `vectors_changed` emitted); a
+  change of ntr / nt / dt / t0 / default vector counts as stale instead.
+  The schema is checked **before** content in each recheck, so a deleted
+  vector's vanished file is not mistaken for a data change.
+
+### Vectors (`models/vector_dataset.py`)
+
+- `Dataset.vector_backend` (wiz: `WizVectors`) gives `vector_names`,
+  `default_vector` and `open_vector_source(name)`; empty for SEG-Y / SU.
+- `VectorDataset`: one per vector, same duck-typed interface as `Dataset`
+  (built like `DerivedDataset`). Id `"<parent id>::<VECTOR>"`, name
+  `"<parent name> · <VECTOR>"`. Shares the parent's field source, group
+  index, `.sv`, labels and time axis; `read_slice` reads its own vector.
+  The dataset row itself is unchanged (it reads the default vector).
+- Created and cached by `Project.vector_dataset(parent, name)`, **not** in
+  `Project.datasets` (those are files); `Project.find` resolves vector ids
+  (mime drops, sessions, diffs). A vector that vanishes on disk is marked
+  `missing` (stale), keeps drawing from its mapped file and stays in groups;
+  a parent reload reopens it.
+- Diffs need no special case: `DerivedDataset` over two `VectorDataset`s.
+- **Catalog**: three levels (group 0, dataset group+1, vector
+  `VECTOR_BASE + serial`). A dataset with ≥ 2 vectors has child rows behind
+  an expand point painted by the delegate (`POINT_W` px slot, hollow /
+  filled); no Qt branch arrow on dataset rows; Right / Left still work.
+  Hit areas: point `[left, left+POINT_W)` toggles (press consumed: never
+  selects, opens or inspects); the stale-`.sv` decoration follows it.
+  Vector rows: double-click opens that vector, draggable, context menu Open
+  / Difference with… / Configure Headers… (the parent's).
 
 ---
 
@@ -584,7 +611,11 @@ session holds what the user was looking at.
   (cached per file, see Scan cache), group indices, trace alignments, selection, transform windows,
   crosshair position.
 - Datasets are keyed `d0…` / diffs `x0…` within the file; runtime ids
-  are never written.
+  are never written. A vector is its dataset's key plus a name
+  (`MemberEntry.vector`, `DerivedEntry.a_vector` / `b_vector`);
+  `catalog_expanded` lists the dataset keys whose vector rows were open.
+  These keys are written only when set; a vector gone on disk drops its
+  member / diff with a note.
 - **Restore** (`controllers/session_controller.py`): load all files →
   wait for header scans → rebuild diffs (align B to A) → build groups,
   apply sort/ranges/zoom → Model Window tabs.
