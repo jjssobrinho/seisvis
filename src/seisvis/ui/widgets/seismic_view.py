@@ -24,6 +24,13 @@ from seisvis.models.crosshair_format import format_crosshair
 from seisvis.models.group_index import GroupIndex, GroupingMode
 from seisvis.models.selection import Selection
 from seisvis.models.sort_config import TRACE_RANGE_FIELD, RowSelection, SortConfig
+from seisvis.models.time_axis import (
+    dt_of,
+    sample_at_time,
+    t0_of,
+    time_extent,
+    time_of_sample,
+)
 from seisvis.models.toggle_group import Member, ToggleGroup
 from seisvis.models.trace_alignment import AlignmentStatus
 from seisvis.services.image_export import ExportOptions, output_path
@@ -53,6 +60,9 @@ _PRIMARY_PARTNER: dict[str, str] = {
     "TraceNumber": "FieldRecord",
     "INLINE_3D": "CROSSLINE_3D",
     "CROSSLINE_3D": "INLINE_3D",
+    # SU keyword names (wiz).
+    "fldr": "tracf",
+    "tracf": "fldr",
 }
 
 
@@ -63,6 +73,7 @@ _PRIMARY_PARTNER: dict[str, str] = {
 # ``{field} {gid}`` line keyed off the field directly.
 _PRIMARY_FIELD_TO_MODE: dict[str, GroupingMode] = {
     "FieldRecord": GroupingMode.SHOT,
+    "fldr": GroupingMode.SHOT,  # wiz: SHOT's role field
     "INLINE_3D": GroupingMode.INLINE,
     "CROSSLINE_3D": GroupingMode.CROSSLINE,
 }
@@ -528,6 +539,10 @@ class SeismicView(QWidget):
             return 1.0
         return float(ds.sample_interval_ms or 1.0)
 
+    def _active_t0_ms(self) -> float:
+        ds = self._active_dataset()
+        return t0_of(ds) if ds is not None else 0.0
+
     def _selection_trace_bounds(self) -> tuple[int, int] | None:
         """Inclusive ``(lo, hi)`` trace-column bounds for snapping."""
         state = self.group.shared_state
@@ -545,7 +560,7 @@ class SeismicView(QWidget):
         return 0, max(0, int(ds.n_samples) - 1)
 
     def _refresh_overlay_geometry(self) -> None:
-        self.selection_overlay.set_dt_ms(self._active_dt_ms())
+        self.selection_overlay.set_time_axis(self._active_t0_ms(), self._active_dt_ms())
         self.selection_overlay.set_bounds(
             self._selection_trace_bounds(), self._selection_sample_bounds()
         )
@@ -579,6 +594,7 @@ class SeismicView(QWidget):
             self._active_dt_ms(),
             trace_bounds=self._selection_trace_bounds(),
             sample_bounds=self._selection_sample_bounds(),
+            time_origin_ms=self._active_t0_ms(),
         )
         if not sel.is_valid():
             return
@@ -935,8 +951,7 @@ class SeismicView(QWidget):
                     f"{SeismicView.MAX_FIT_TRACES} (configurable cap)."
                 )
         if state.commanded_time_range_ms is None:
-            t_max_ms = ds.n_samples * ds.sample_interval_ms
-            self.group.update_shared_state(commanded_time_range_ms=(0.0, t_max_ms))
+            self.group.update_shared_state(commanded_time_range_ms=time_extent(ds))
 
     def reload_after_dataset_change(self) -> None:
         """Re-render every member after one of them was reloaded from disk.
@@ -972,9 +987,9 @@ class SeismicView(QWidget):
             state.commanded_trace_range = None
             state.zoomed_trace_range = None
             dropped = True
-        t_max_ms = ds.n_samples * ds.sample_interval_ms
+        t_min_ms, t_max_ms = time_extent(ds)
         time_range = state.commanded_time_range_ms
-        if time_range is not None and time_range[1] > t_max_ms:
+        if time_range is not None and (time_range[1] > t_max_ms or time_range[0] < t_min_ms):
             state.commanded_time_range_ms = None
             state.zoomed_time_range_ms = None
             dropped = True
@@ -1097,9 +1112,8 @@ class SeismicView(QWidget):
         if hint and "x" in hint and "y" in hint:
             return hint["x"], hint["y"]
         ds = self.group.members[index].dataset
-        dt_ms = ds.sample_interval_ms or 1.0
         x_extent = (0.0, float(min(ds.n_traces, SeismicView.MAX_FIT_TRACES)))
-        y_extent = (0.0, float(ds.n_samples * dt_ms))
+        y_extent = time_extent(ds)
         return x_extent, y_extent
 
     def _save_view_hint_for(self, index: int) -> None:
@@ -1296,9 +1310,10 @@ class SeismicView(QWidget):
         if t1 - t0 <= 0:
             return
 
-        dt_ms = ds.sample_interval_ms or 1.0
-        s0 = max(0, int(state.commanded_time_range_ms[0] / dt_ms))
-        s1 = min(ds.n_samples, int(np.ceil(state.commanded_time_range_ms[1] / dt_ms)))
+        # Commanded times are absolute; each member converts with its own
+        # origin (0 for SEG-Y / SU, so this is t / dt as it always was).
+        s0 = max(0, int(sample_at_time(ds, state.commanded_time_range_ms[0])))
+        s1 = min(ds.n_samples, int(np.ceil(sample_at_time(ds, state.commanded_time_range_ms[1]))))
         if s1 - s0 <= 0:
             return
 
@@ -1440,8 +1455,8 @@ class SeismicView(QWidget):
         *,
         show_loading: bool = False,
     ) -> None:
-        dt_ms = member.dataset.sample_interval_ms or 1.0
-        t0 = sample_range[0] * dt_ms
+        dt_ms = dt_of(member.dataset)
+        t0 = time_of_sample(member.dataset, sample_range[0])
         t_extent = (sample_range[1] - sample_range[0]) * dt_ms
         # Use actual array column count so packed multi-group layouts render
         # side-by-side without blank physical-gap space between shots.
@@ -1776,7 +1791,7 @@ class SeismicView(QWidget):
         indices = self._header_indices
         if not fields or ds is None or indices is None or len(indices) == 0:
             return
-        if getattr(ds, "handle", None) is None or ds.is_closed:
+        if getattr(ds, "field_source", None) is None or ds.is_closed:
             return
 
         generation = self._header_generation
@@ -1909,7 +1924,7 @@ class SeismicView(QWidget):
             member = self.group.members[i]
         except IndexError:
             return None
-        dt_ms = member.dataset.sample_interval_ms or 1.0
+        dt_ms = dt_of(member.dataset)
         col = int(round((t_ms - rect.y()) / dt_ms))
         row = int(round(trace - rect.x()))
         if not (0 <= row < arr.shape[0] and 0 <= col < arr.shape[1]):

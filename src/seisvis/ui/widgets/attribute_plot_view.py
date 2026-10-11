@@ -39,6 +39,7 @@ from seisvis.models.attribute_plot import (
     amplitude_key,
 )
 from seisvis.models.field_format import format_header_value
+from seisvis.models.time_axis import t0_of
 from seisvis.models.toggle_group import ToggleGroup
 from seisvis.services.attribute_plot_service import (
     IDENTITY_FIELDS,
@@ -476,7 +477,7 @@ class AttributePlotView(QWidget):
             return
         # A diff has no headers of its own; its traces sit in A's order.
         header_ds = getattr(ds, "parent_a", ds)
-        if getattr(header_ds, "handle", None) is None or header_ds.is_closed:
+        if getattr(header_ds, "field_source", None) is None or header_ds.is_closed:
             self._redraw()
             return
         generation = self._generation[index]
@@ -615,7 +616,7 @@ class AttributePlotView(QWidget):
         for key, time_ms in wanted.items():
             if key in data.raw or (index, key) in self._slice_workers:
                 continue
-            sample = sample_for_time(time_ms, ds.sample_interval_ms, ds.n_samples)
+            sample = sample_for_time(time_ms, ds.sample_interval_ms, ds.n_samples, t0_of(ds))
             cache_key = (ds.id, sample, data.trace_key)
             cached = self._slice_cache.get(cache_key)
             if cached is not None:
@@ -756,7 +757,7 @@ class AttributePlotView(QWidget):
         if ds is None:
             return None
         header_ds = getattr(ds, "parent_a", ds)
-        if getattr(header_ds, "handle", None) is None or header_ds.is_closed:
+        if getattr(header_ds, "field_source", None) is None or header_ds.is_closed:
             return None
         return header_ds
 
@@ -1004,7 +1005,8 @@ class AttributePlotView(QWidget):
         if ds is None:
             return time_ms
         dt = ds.sample_interval_ms or 1.0
-        return sample_for_time(time_ms, dt, ds.n_samples) * dt
+        t0 = t0_of(ds)
+        return t0 + sample_for_time(time_ms, dt, ds.n_samples, t0) * dt
 
     def _active_items(self) -> list[pg.GraphicsObject]:
         active = self.group.active_index

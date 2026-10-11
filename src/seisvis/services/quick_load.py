@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import unquote, urlparse
 
+from seisvis.io.dataset_paths import is_dataset_path, normalize_dataset_path
 from seisvis.io.loader import SUPPORTED_SUFFIXES
 
 PathState = Literal["empty", "ok", "not_found", "not_a_file", "unsupported"]
@@ -102,9 +103,11 @@ def check_path(text: str) -> PathCheck:
     path = resolve_path_text(text)
     if path is None:
         return PathCheck("empty", None)
+    # A wiz dataset is a directory; its meta.json stands for it too.
+    path = normalize_dataset_path(path)
     try:
         exists = path.exists()
-        is_file = path.is_file()
+        is_file = path.is_file() or is_dataset_path(path)
     except OSError:
         # Permission denied on a parent, a path too long, a dead mount:
         # indistinguishable from absent as far as loading goes.

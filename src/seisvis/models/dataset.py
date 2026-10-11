@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 from pathlib import Path
+from typing import Protocol
 
 import numpy as np
 import segyio
@@ -40,6 +41,14 @@ _DEFAULT_ROLE_FIELDS: dict[GroupingMode, str] = {
     GroupingMode.INLINE: "INLINE_3D",
     GroupingMode.CROSSLINE: "CROSSLINE_3D",
 }
+
+
+class SampleSource(Protocol):
+    """Trace samples for a backend without a segyio handle."""
+
+    def read(self, indices: np.ndarray, s0: int, s1: int) -> np.ndarray:
+        """float32 ``(len(indices), s1 - s0)``; indices already validated."""
+        ...
 
 
 class Dataset(QObject):
@@ -133,6 +142,25 @@ class Dataset(QObject):
         self.field_source: FieldSource = (
             field_source if field_source is not None else SegyFieldSource(self)
         )
+        # Trace samples from somewhere other than the segyio handle (wiz
+        # memmaps). None = the handle, with the strided fast path.
+        self.sample_source: SampleSource | None = None
+        # Time of sample 0 in ms. SEG-Y / SU ignore delrt, so 0; a wiz
+        # dataset's meta.json t0. Canvas times are absolute: t0 + s * dt.
+        self.t0_ms: float = 0.0
+        # Per-backend label defaults, consulted after the .sv and before
+        # _DEFAULT_FIELD_NAMES (wiz: fldr → Shot, …).
+        self.default_display_names: dict[str, str] = {}
+        # Files whose bytes are the data (a change marks the dataset stale;
+        # the first one anchors fingerprints) and files that only describe
+        # it (a change refreshes the field list in place).
+        self.content_paths: tuple[Path, ...] = (Path(source_path),)
+        self.schema_paths: tuple[Path, ...] = ()
+        # False where the vertical-domain override is not offered (wiz).
+        self.supports_depth: bool = True
+        # sorted_by-style stored order ("-key" = descending), when the
+        # backend records one; seeds a new group's committed sort.
+        self.stored_order: tuple[str, ...] = ()
 
     def populate_surange(self, force: bool = False) -> None:
         """Run the surange header scan and cache the result.
@@ -144,6 +172,56 @@ class Dataset(QObject):
             return
         self.header_fields_available = self.field_source.probe()
         self.surange_ready.emit()
+
+    def refresh_fields(self) -> str:
+        """Re-read the backend's field schema after it changed on disk.
+
+        Returns ``"same"``, ``"fields"`` (the field list was refreshed in
+        place: re-probed, key arrays already held re-read, removed ones
+        dropped; ``surange_ready`` emitted) or ``"data"`` (the samples or
+        their geometry changed — the dataset is marked stale instead).
+        Backends without a refreshable schema always report ``"same"``.
+        """
+        refresh = getattr(self.field_source, "refresh", None)
+        if refresh is None or self._closed:
+            return "same"
+        outcome = refresh()
+        if outcome == "data":
+            self.set_data_stale(True)
+        elif outcome == "fields":
+            known = self.field_source.known_fields()
+            gi = self.group_index
+            if gi is not None:
+                held = sorted(gi.field_names_available)
+                for name in held:
+                    if name not in known:
+                        gi.drop_field_array(name)
+                kept = [n for n in held if n in known]
+                read = self.field_source.read_all(kept) if kept else None
+                for name, arr in read.arrays.items() if read is not None else ():
+                    try:
+                        gi.set_field_array(name, arr)
+                    except ValueError:
+                        gi.drop_field_array(name)
+            self.header_fields_available = self.field_source.probe()
+            self.surange_ready.emit()
+            self.group_index_ready.emit()
+        return outcome
+
+    # --- time axis ---
+
+    def time_of_sample(self, sample: float) -> float:
+        """Absolute time (ms) of sample index *sample*."""
+        return self.t0_ms + float(sample) * self.sample_interval_ms
+
+    def sample_at_time(self, t_ms: float) -> float:
+        """Fractional sample index at absolute time *t_ms*."""
+        dt = self.sample_interval_ms or 1.0
+        return (float(t_ms) - self.t0_ms) / dt
+
+    def time_extent_ms(self) -> tuple[float, float]:
+        """Drawn time extent: sample 0 to one interval past the last sample."""
+        return self.t0_ms, self.t0_ms + self.n_samples * self.sample_interval_ms
 
     @property
     def is_3d(self) -> bool:
@@ -186,6 +264,9 @@ class Dataset(QObject):
 
         t0 = max(0, t_start - pad_samples)
         t1 = min(self.n_samples, t_stop + pad_samples)
+
+        if self.sample_source is not None:
+            return self.sample_source.read(idx_array, t0, t1)
 
         if idx_array.size >= FAST_PATH_MIN_TRACES and t1 - t0 <= FAST_PATH_MAX_SAMPLES:
             layout = self._fast_layout()
@@ -255,6 +336,8 @@ class Dataset(QObject):
         """
         if self.sv and field in self.sv.display_names:
             return self.sv.display_names[field]
+        if field in self.default_display_names:
+            return self.default_display_names[field]
         return _DEFAULT_FIELD_NAMES.get(field, field)
 
     def display_name_for_mode(self, mode: GroupingMode) -> str:
@@ -265,7 +348,9 @@ class Dataset(QObject):
         """
         if mode is GroupingMode.TRACE_RANGE:
             return "T"
-        field = _DEFAULT_ROLE_FIELDS.get(mode, "")
+        gi = self.group_index
+        roles = gi.role_fields if gi is not None else _DEFAULT_ROLE_FIELDS
+        field = roles.get(mode, "")
         if not field:
             return ""
         return self.display_name_for(field)
@@ -328,6 +413,13 @@ class Dataset(QObject):
         self.layer_kind = other.layer_kind
         self.sv_stale = other.sv_stale
         self.file_key = other.file_key
+        self.sample_source = other.sample_source
+        self.t0_ms = other.t0_ms
+        self.default_display_names = other.default_display_names
+        self.content_paths = other.content_paths
+        self.schema_paths = other.schema_paths
+        self.supports_depth = other.supports_depth
+        self.stored_order = other.stored_order
         # A SEG-Y source reads this dataset's (now swapped) handle live; any
         # other backend's source belongs to the freshly opened donor.
         if not isinstance(other.field_source, SegyFieldSource):
@@ -348,6 +440,10 @@ class Dataset(QObject):
         if self._closed:
             return
         try:
+            for source in (self.sample_source, self.field_source):
+                close = getattr(source, "close", None)
+                if close is not None:
+                    close()
             if self.handle is not None:
                 self.handle.close()
         except Exception:

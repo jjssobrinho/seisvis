@@ -18,11 +18,14 @@ def snap_trace(x: float) -> int:
     return int(round(x))
 
 
-def snap_sample(t_ms: float, dt_ms: float) -> int:
-    """Round a continuous time (ms) to the nearest sample-index multiple of ``dt_ms``."""
+def snap_sample(t_ms: float, dt_ms: float, t0_ms: float = 0.0) -> int:
+    """Round a continuous time (ms) to the nearest sample index.
+
+    Sample *s* sits at ``t0_ms + s * dt_ms`` (``t0_ms`` is 0 for SEG-Y / SU).
+    """
     if dt_ms <= 0:
-        return int(round(t_ms))
-    return int(round(t_ms / dt_ms))
+        return int(round(t_ms - t0_ms))
+    return int(round((t_ms - t0_ms) / dt_ms))
 
 
 def selection_from_points(
@@ -34,6 +37,7 @@ def selection_from_points(
     *,
     trace_bounds: tuple[int, int] | None = None,
     sample_bounds: tuple[int, int] | None = None,
+    time_origin_ms: float = 0.0,
 ) -> Selection:
     """Build a snapped, normalized :class:`Selection` from two corner points.
 
@@ -42,8 +46,8 @@ def selection_from_points(
     """
     tr_a = snap_trace(x0)
     tr_b = snap_trace(x1)
-    s_a = snap_sample(t0_ms, dt_ms)
-    s_b = snap_sample(t1_ms, dt_ms)
+    s_a = snap_sample(t0_ms, dt_ms, time_origin_ms)
+    s_b = snap_sample(t1_ms, dt_ms, time_origin_ms)
     tr_lo, tr_hi = (tr_a, tr_b) if tr_a <= tr_b else (tr_b, tr_a)
     s_lo, s_hi = (s_a, s_b) if s_a <= s_b else (s_b, s_a)
     if trace_bounds is not None:
@@ -84,6 +88,8 @@ class SelectionOverlay(pg.GraphicsObject):
         super().__init__()
         self._color: QColor = QColor("#1f77b4")
         self._dt_ms: float = 1.0
+        # Time of sample 0 (ms): the active member's origin.
+        self._t0_ms: float = 0.0
         # Inclusive integer bounds for snap clamping; None = no clamp.
         self._trace_bounds: tuple[int, int] | None = None
         self._sample_bounds: tuple[int, int] | None = None
@@ -116,6 +122,11 @@ class SelectionOverlay(pg.GraphicsObject):
 
     def set_dt_ms(self, dt_ms: float) -> None:
         self._dt_ms = max(1e-9, float(dt_ms))
+
+    def set_time_axis(self, t0_ms: float, dt_ms: float) -> None:
+        """Sample *s* is drawn at ``t0_ms + s * dt_ms``."""
+        self._t0_ms = float(t0_ms)
+        self.set_dt_ms(dt_ms)
 
     def set_bounds(
         self,
@@ -202,8 +213,8 @@ class SelectionOverlay(pg.GraphicsObject):
         # The image draws each trace as one column with width 1 starting at
         # the integer x; cover the inclusive end column by extending by 1.
         x_hi = float(sel.trace_end) + 1.0
-        t_lo = float(sel.sample_start) * self._dt_ms
-        t_hi = float(sel.sample_end + 1) * self._dt_ms
+        t_lo = self._t0_ms + float(sel.sample_start) * self._dt_ms
+        t_hi = self._t0_ms + float(sel.sample_end + 1) * self._dt_ms
         return QRectF(x_lo, t_lo, x_hi - x_lo, t_hi - t_lo)
 
     def _pixel_size_in_data(self) -> tuple[float, float]:
@@ -320,7 +331,9 @@ class SelectionOverlay(pg.GraphicsObject):
 
         if self._drag_kind == "move":
             dx_traces = snap_trace(cur_x) - snap_trace(anchor_x)
-            ds_samples = snap_sample(cur_y, dt) - snap_sample(anchor_y, dt)
+            ds_samples = snap_sample(cur_y, dt, self._t0_ms) - snap_sample(
+                anchor_y, dt, self._t0_ms
+            )
             return self._clamp(
                 Selection(
                     trace_start=initial.trace_start + dx_traces,
@@ -340,10 +353,10 @@ class SelectionOverlay(pg.GraphicsObject):
             moving_trace = snap_trace(cur_x)
         if self._drag_kind in ("nw", "ne"):
             pinned_sample = initial.sample_end
-            moving_sample = snap_sample(cur_y, dt)
+            moving_sample = snap_sample(cur_y, dt, self._t0_ms)
         else:
             pinned_sample = initial.sample_start
-            moving_sample = snap_sample(cur_y, dt)
+            moving_sample = snap_sample(cur_y, dt, self._t0_ms)
 
         tr_lo, tr_hi = sorted((pinned_trace, moving_trace))
         s_lo, s_hi = sorted((pinned_sample, moving_sample))

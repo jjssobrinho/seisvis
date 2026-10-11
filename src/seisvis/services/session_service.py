@@ -23,6 +23,7 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from seisvis.io.dataset_paths import content_anchor, is_dataset_path, normalize_dataset_path
 from seisvis.models.dataset import Dataset
 from seisvis.models.derived_dataset import DerivedDataset
 from seisvis.models.layer_kind import LayerStyle
@@ -39,6 +40,7 @@ from seisvis.models.session import (
 )
 from seisvis.models.sort_config import SortConfig, default_sort_config
 from seisvis.models.sv_sidecar import compute_sha1_prefix
+from seisvis.models.time_axis import time_extent
 from seisvis.models.toggle_group import ToggleGroup
 
 log = logging.getLogger(__name__)
@@ -52,9 +54,10 @@ FlickerState = tuple[float, tuple[int, ...]]
 
 
 def _fingerprint(path: Path) -> tuple[str, float]:
+    """sha1 prefix + mtime of the dataset's content (a wiz: its default vector)."""
     try:
-        return compute_sha1_prefix(path), path.stat().st_mtime
-    except OSError:
+        return compute_sha1_prefix(path), content_anchor(path).stat().st_mtime
+    except (OSError, ValueError):
         return "", 0.0
 
 
@@ -227,10 +230,10 @@ def fingerprint_matches(entry: DatasetEntry, path: Path) -> bool:
     if not entry.sha1_prefix:
         return True
     try:
-        if abs(path.stat().st_mtime - entry.mtime) <= 1.0:
+        if abs(content_anchor(path).stat().st_mtime - entry.mtime) <= 1.0:
             return True
         return compute_sha1_prefix(path) == entry.sha1_prefix
-    except OSError:
+    except (OSError, ValueError):
         return False
 
 
@@ -284,13 +287,13 @@ class RestorePlan:
         A data folder is usually moved or renamed as a whole, so each other
         missing file is looked for under its own name beside *new_path*.
         """
-        new_path = Path(new_path)
+        new_path = normalize_dataset_path(Path(new_path))
         check = self.check_for(key)
         self._resolve(check, new_path)
         resolved = [key]
         for other in self.missing:
             candidate = new_path.parent / Path(other.entry.path).name
-            if candidate.is_file():
+            if is_dataset_path(candidate):
                 self._resolve(other, candidate)
                 resolved.append(other.entry.key)
         return resolved
@@ -338,7 +341,7 @@ def check_session(session: SessionFile, session_path: Path | None) -> RestorePla
         if entry.rel_path and folder is not None:
             candidates.append(folder / entry.rel_path)
         for candidate in candidates:
-            if candidate.is_file():
+            if is_dataset_path(candidate):
                 RestorePlan._resolve(check, candidate)
                 break
         checks.append(check)
@@ -533,9 +536,9 @@ def _restore_time_window(group: ToggleGroup, entry: GroupEntry, ref: Dataset) ->
     time_range = entry.commanded_time_range_ms
     if time_range is None:
         return
-    t_max = float(ref.n_samples) * float(ref.sample_interval_ms)
-    lo_t = max(0.0, min(t_max, float(time_range[0])))
-    hi_t = max(0.0, min(t_max, float(time_range[1])))
+    t_min, t_max = time_extent(ref)
+    lo_t = max(t_min, min(t_max, float(time_range[0])))
+    hi_t = max(t_min, min(t_max, float(time_range[1])))
     if hi_t > lo_t:
         group.update_shared_state(commanded_time_range_ms=(lo_t, hi_t))
 

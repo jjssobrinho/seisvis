@@ -36,6 +36,12 @@ MATCH_KEY_CANDIDATES: tuple[tuple[str, ...], ...] = (
     ("INLINE_3D", "CROSSLINE_3D"),
     ("CDP", "TraceNumber"),
     ("CDP",),
+    # The same identities under SU keyword names (wiz attributes).
+    ("fldr", "tracf"),
+    ("sx", "sy", "gx", "gy"),
+    ("fldr", "offset"),
+    ("cdp", "offset"),
+    ("cdp",),
 )
 
 

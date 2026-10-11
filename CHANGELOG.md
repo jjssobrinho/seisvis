@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Wiz datasets (v7.2)
+
+- **Open wiz datasets** (`*.wiz` folders): File → **Load wiz dataset…**,
+  pick a dataset's `meta.json` in File → Load data…, drag the folder (or
+  its `meta.json`) onto the window, or type its path in Quick load. They
+  open read-only, are listed in the catalog like any file and are saved in
+  sessions; Locate in the missing-files dialog picks a folder.
+- **No indexing wait.** Header values come straight from the dataset's
+  columns: no header scan, no header cache. Every attribute is a header
+  field with its real type (`wiz_id` stays hidden); `wb_twt` reads
+  `151.5`, coordinates read in metres.
+- **Opens on the first gather.** A dataset with a stored order
+  (`sorted_by`) opens committed on the first gather of its first key —
+  the first shot of a shot-sorted line — instead of in file order.
+  Labels default to Shot (fldr), Channel (tracf), CMP (cdp) and Offset;
+  rename them in Configure Headers as before.
+- **Time starts at t0.** A dataset whose first sample is at 100 ms is
+  drawn from 100 ms: axis, crosshair, time window, selection and time
+  slices all use absolute times, and members with different start times
+  line up. When `t0` is null (`delrt` varies per trace) the axis starts
+  at 0, as for SU and SEG-Y files, which never used `delrt`.
+- **Live attribute edits.** `wiz attr add / delete` (or a flow adding a
+  column) while the dataset is open updates its field lists within a
+  second, without marking it changed. Rewriting its samples marks it
+  changed on disk, as for SEG-Y and SU; reload as usual.
+- **Sidecar beside the folder.** Renames for `line.wiz` are saved in
+  `line.sv` next to it; nothing is written inside a wiz dataset. Attribute
+  edits don't make the sidecar stale.
+- Wiz datasets are time domain: the Vertical Domain panel is disabled for
+  them.
+
 ### Internal: Field sources (v7.1)
 
 No change in behaviour: SEG-Y and SU files load, sort and read out exactly

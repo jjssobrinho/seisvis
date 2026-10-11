@@ -94,6 +94,9 @@ class GroupIndex:
         if n_traces < 0:
             raise ValueError("n_traces must be non-negative")
         self._n_traces = int(n_traces)
+        # Which field keys each grouping mode. SEG-Y names by default; a
+        # backend with other names (wiz: SHOT → fldr) uses from_columns().
+        self._role_fields: dict[GroupingMode, str] = dict(MODE_TO_DEFAULT_FIELD)
         self._field_arrays: dict[str, np.ndarray] = {}
         self._store_named_field("FieldRecord", field_records)
         self._store_named_field("INLINE_3D", inlines)
@@ -159,6 +162,54 @@ class GroupIndex:
             gi._mode_state[GroupingMode.INLINE] = ModeState.UNSCANNED
             gi._mode_state[GroupingMode.CROSSLINE] = ModeState.UNSCANNED
         return gi
+
+    @classmethod
+    def from_columns(
+        cls,
+        n_traces: int,
+        columns: dict[str, np.ndarray],
+        role_fields: dict[GroupingMode, str],
+    ) -> GroupIndex:
+        """Build a ready index straight from per-trace key columns.
+
+        For backends whose header values are already in memory (or memmapped)
+        — no scan runs. A mode is READY when its role field is among
+        *columns* and set; modes without a role field don't apply. Columns
+        that are not whole numbers are left out (recorded in
+        :attr:`non_integral_fields`).
+        """
+        gi = cls(n_traces=n_traces)
+        gi._role_fields = dict(role_fields)
+        for name, arr in columns.items():
+            try:
+                gi._store_named_field(name, arr)
+            except NonIntegralFieldError:
+                gi._non_integral_fields.add(name)
+        for mode, field in gi._role_fields.items():
+            arr = gi._field_arrays.get(field)
+            if arr is not None and arr.size == gi._n_traces and _is_set(arr):
+                gi._mode_state[mode] = ModeState.READY
+        gi._current_mode = gi.default_mode
+        gi._rebuild()
+        return gi
+
+    @property
+    def role_fields(self) -> dict[GroupingMode, str]:
+        """The field each grouping mode keys on."""
+        return dict(self._role_fields)
+
+    def drop_field_array(self, field_name: str) -> None:
+        """Forget a materialised field (its column went away)."""
+        if self._field_arrays.pop(field_name, None) is None:
+            return
+        for mode, field in self._role_fields.items():
+            if field == field_name and mode in self._mode_state:
+                self._mode_state[mode] = ModeState.FAILED
+        if self._current_mode not in self.available_modes:
+            self._current_mode = self.default_mode
+        self._field_groups_cache.pop(field_name, None)
+        self._sort_cache.clear()
+        self._rebuild()
 
     @staticmethod
     def _as_int_array(arr: np.ndarray | None, name: str = "") -> np.ndarray | None:
@@ -232,7 +283,7 @@ class GroupIndex:
         # Mode wasn't applicable for this dataset (e.g. INLINE on 2D).
         if mode not in self._mode_state:
             return
-        field_name = MODE_TO_DEFAULT_FIELD.get(mode)
+        field_name = self._role_fields.get(mode)
         if arr is None:
             self._mode_state[mode] = ModeState.FAILED
             if field_name:
@@ -372,7 +423,7 @@ class GroupIndex:
             self._field_arrays.pop(name, None)
             self._field_groups_cache.pop(name, None)
         self._pending_field_scans.difference_update(names)
-        for mode, field_name in MODE_TO_DEFAULT_FIELD.items():
+        for mode, field_name in self._role_fields.items():
             if field_name in names:
                 self._mode_state.pop(mode, None)
         if self._current_mode not in self._mode_state:
@@ -792,7 +843,7 @@ class GroupIndex:
         return self._resolve_primary_groups(row)
 
     def _field_array_for(self, mode: GroupingMode) -> np.ndarray | None:
-        name = MODE_TO_DEFAULT_FIELD.get(mode)
+        name = self._role_fields.get(mode)
         if name is None:
             return None
         return self._field_arrays.get(name)
@@ -807,12 +858,12 @@ class GroupIndex:
 
     def _rebuild(self) -> None:
         mode = self._current_mode
-        if mode is GroupingMode.SHOT:
-            self._groups, self._group_ids = self._groups_for_field("FieldRecord")
-        elif mode is GroupingMode.INLINE:
-            self._groups, self._group_ids = self._groups_for_field("INLINE_3D")
-        elif mode is GroupingMode.CROSSLINE:
-            self._groups, self._group_ids = self._groups_for_field("CROSSLINE_3D")
+        if mode in (GroupingMode.SHOT, GroupingMode.INLINE, GroupingMode.CROSSLINE):
+            field = self._role_fields.get(mode)
+            if field is None:
+                self._groups, self._group_ids = {}, []
+            else:
+                self._groups, self._group_ids = self._groups_for_field(field)
         elif mode is GroupingMode.TRACE_RANGE:
             self._groups, self._group_ids = self._build_trace_range(self._trace_range_size)
         else:  # pragma: no cover - enum is exhaustive

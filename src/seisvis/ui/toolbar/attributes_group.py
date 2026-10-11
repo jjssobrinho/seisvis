@@ -236,8 +236,10 @@ class AttributesGroup(QGroupBox):
                 [(None, NO_COLOR_LABEL), (AMPLITUDE, AMPLITUDE_LABEL), *offered],
                 layer.color_field,
             )
-            dt, t_max = time_axis if time_axis is not None else (1.0, 100_000.0)
-            self.time_spin.setRange(0.0, max(0.0, t_max))
+            # (dt, last sample time[, first sample time]); absolute ms.
+            dt, t_max, *first = time_axis if time_axis is not None else (1.0, 100_000.0)
+            t_min = float(first[0]) if first else 0.0
+            self.time_spin.setRange(t_min, max(t_min, t_max))
             self.time_spin.setSingleStep(dt if dt > 0 else 1.0)
             self.time_spin.setValue(layer.time_ms)
             self.time_spin.setEnabled(layer.is_amplitude)

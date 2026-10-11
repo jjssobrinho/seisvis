@@ -252,8 +252,8 @@ class QuickLoadDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(
             QLabel(
-                "Full paths to SEG-Y (.segy, .sgy) or Seismic Unix (.su) files"
-                " — one per line, Enter opens the next:"
+                "Full paths to SEG-Y (.segy, .sgy) or Seismic Unix (.su) files,"
+                " or wiz datasets (.wiz folders) — one per line, Enter opens the next:"
             )
         )
         layout.addWidget(self._scroll, 1)

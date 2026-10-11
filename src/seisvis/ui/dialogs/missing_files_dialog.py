@@ -25,8 +25,8 @@ from seisvis.services.session_service import DatasetCheck, RestorePlan
 _KEY_ROLE = Qt.ItemDataRole.UserRole
 
 _FILE_FILTER = (
-    "Seismic files (*.segy *.sgy *.su);;SEG-Y files (*.segy *.sgy);;"
-    "Seismic Unix files (*.su);;All files (*)"
+    "Seismic files (*.segy *.sgy *.su meta.json);;SEG-Y files (*.segy *.sgy);;"
+    "Seismic Unix files (*.su);;wiz datasets (meta.json);;All files (*)"
 )
 
 
@@ -114,7 +114,11 @@ class MissingFilesDialog(QDialog):
         check = self._plan.check_for(key)
         saved = Path(check.entry.path)
         start = str(saved.parent) if saved.parent.is_dir() else ""
-        path, _ = QFileDialog.getOpenFileName(self, f"Locate {saved.name}", start, _FILE_FILTER)
+        if saved.suffix.lower() == ".wiz":
+            # A wiz dataset is a directory.
+            path = QFileDialog.getExistingDirectory(self, f"Locate {saved.name}", start)
+        else:
+            path, _ = QFileDialog.getOpenFileName(self, f"Locate {saved.name}", start, _FILE_FILTER)
         if not path:
             return
         self._plan.relink(key, Path(path))

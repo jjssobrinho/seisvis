@@ -217,10 +217,11 @@ def attribute_field_label(dataset: object, field: str) -> str:
     return name if name == field else f"{name} ({field})"
 
 
-def _time_axis(dataset: object) -> tuple[float, float] | None:
-    """(sample interval, last sample time) in ms, or None if unknown."""
+def _time_axis(dataset: object) -> tuple[float, float, float] | None:
+    """(sample interval, last sample time, first sample time) in ms, or None."""
     dt = getattr(dataset, "sample_interval_ms", None)
     n = getattr(dataset, "n_samples", None)
     if not dt or not n:
         return None
-    return float(dt), float((int(n) - 1) * dt)
+    t0 = float(getattr(dataset, "t0_ms", 0.0) or 0.0)
+    return float(dt), t0 + float((int(n) - 1) * dt), t0

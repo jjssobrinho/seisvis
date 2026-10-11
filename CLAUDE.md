@@ -10,7 +10,8 @@ Flag any user prompt that conflicts with what's here before acting.
 Desktop app for viewing and comparing 2D/3D SEG-Y reflection seismic
 data. Current capabilities:
 
-- Lazy SEG-Y loading (O(1) regardless of file size).
+- Lazy SEG-Y loading (O(1) regardless of file size); SU files; wiz
+  datasets (`*.wiz` directories, memmapped, see Wiz Datasets).
 - Multi-member toggle groups in tabbed viewports.
 - Lazy A−B difference datasets, selected from the Viewport Manager.
 - Two-key lexicographic trace sorting (primary/secondary) with
@@ -131,8 +132,10 @@ are in ms. The authoritative spec is `docs/SPEC.md` in the wiz repo.
 
 ## Conventions (non-negotiable)
 
-- **Time axis** (Display Canvas, seismic tabs): milliseconds, time-down
-  (t=0 at top). This binds the Display Canvas and everything
+- **Time axis** (Display Canvas, seismic tabs): milliseconds, time-down,
+  absolute: sample *s* sits at `t0 + s·dt` (`Dataset.t0_ms`; 0 for SEG-Y
+  and SU, which ignore `delrt`; a wiz dataset's `meta.json` `t0`, 0 when
+  null). Convert through `models/time_axis`. This binds the Display Canvas and everything
   feeding it. Depth-domain data does not render there — it is
   routed to the Model Window, whose axes are metres, depth-down.
   An attribute-plot tab has no time axis: its axes are header fields
@@ -180,8 +183,44 @@ ui/  →  controllers/  →  services/  →  models/ ← processing/, io/
   binary header and a few probes. No per-trace header reads on the
   load path.
 - Per-mode group indexing runs in background workers. See Header
-  Scanning.
+  Scanning. (Wiz: built from the columns at load — see Wiz Datasets.)
 - `Project.close_all()` on app exit (wired to `aboutToQuit`).
+
+---
+
+## Wiz Datasets
+
+`io/wiz_loader.py` is the **only** module importing `wiz` (spec:
+`docs/SPEC.md` in the wiz repo). `io/dataset_paths.py` knows the rest
+without importing it.
+
+- **Paths**: a dataset is a `*.wiz` directory holding `meta.json`
+  (`is_dataset_path`); `X.wiz/meta.json` normalises to `X.wiz`
+  (`normalize_dataset_path`) — that is how the file chooser, drag-and-drop,
+  quick load and session Locate pick one; File → Load wiz dataset… picks
+  the folder.
+- **Opened** read-only with `wiz.Dataset.open`: `handle=None`,
+  `byte_format=5`, `t0_ms = t0 or 0`, always time domain (a `.sv` depth
+  declaration is ignored with a warning; the inspector's domain panel is
+  disabled — `Dataset.supports_depth`).
+- **Samples**: `Dataset.sample_source` = the default vector (`TRACE`, else
+  the first listed) memmap; `read_slice` validates then delegates.
+- **Fields**: the non-hidden attributes (`wiz_id` excluded), all listed by
+  `probe` (no surange, no 240-byte scan, no header cache; `file_key` is
+  None), real dtypes; `integral` / samples from the first 30,000 values.
+- **Group index**: `GroupIndex.from_columns` at load with
+  `role_fields = {SHOT: "fldr"}`, materialising `fldr`, `tracf` and the
+  `sorted_by` keys — no header scan is dispatched. Other keys go through
+  the usual on-demand `FieldScanWorker` (a column copy).
+- **Labels**: `Dataset.default_display_names` fldr → Shot, tracf → Channel,
+  cdp → CMP, offset → Offset (a `.sv` rename still wins). Crosshair pairs
+  fldr ↔ tracf; alignment also tries the SU-named key tuples.
+- **Watching** (`FileWatchService`): `Dataset.content_paths` (the default
+  vector file) → a change marks the dataset stale, as for SEG-Y / SU;
+  `Dataset.schema_paths` (`meta.json`) → `dataset_schema_changed` →
+  `Dataset.refresh_fields()`: attributes added / removed refresh the field
+  lists in place (held key arrays re-read, removed ones dropped); a change
+  of ntr / nt / dt / t0 / default vector counts as stale instead.
 
 ---
 
@@ -216,7 +255,9 @@ Workers and the readout reach per-trace headers only through
 `FieldSample.kind` / `integral`), `read_all` (every trace, cached),
 `read_at` (some traces; out of range → `MISSING` for ints, NaN for floats)
 and `read_trace`. SEG-Y / SU: `io/segy_field_source.SegyFieldSource`, which
-wraps the readers below. No worker touches `dataset.handle`.
+wraps the readers below. Wiz: `io/wiz_loader.WizFieldSource` (memmapped
+columns). No worker touches `dataset.handle`; "has headers of its own" is
+`field_source` being present (a diff has none).
 
 ### Reading headers
 
@@ -408,8 +449,12 @@ When the user adds a secondary row via `+`, the default is type
 `Range` covering the full domain (full coverage; no display change
 until the user narrows or flips).
 
-TRACE_RANGE is always the default primary key — consistent across
-all file types. The user explicitly switches to a different key.
+TRACE_RANGE is the default primary key for every file type — with one
+exception: a dataset that records its stored order (a wiz `sorted_by`)
+opens on its first gather, **committed**: primary = the first key
+(`-key` → desc), Value, First 0, Count/Skip from the user defaults
+(`sort_config.stored_order_sort_config`). Not when that key isn't an
+offered sort key (absent, or not whole numbers).
 
 ### Compatibility (loose, per-row)
 
@@ -508,8 +553,12 @@ JSON file `<segy_name>.sv` next to the SEG-Y:
 - **Sort is not persisted in the `.sv`.** A dataset loaded into a
   toggle group starts uncommitted / natural file order. Sort is
   workspace state and is saved in a session file (see Sessions).
-- Staleness: `sha1_prefix` (first 3600 bytes of the SEG-Y) + mtime
-  must match. Stale `.sv` is loaded with a warning, not refused.
+- A wiz dataset's sidecar is `X.sv` **beside** `X.wiz/`
+  (`source_path.with_suffix(".sv")`); nothing is ever written inside the
+  directory.
+- Staleness: `sha1_prefix` (first 3600 bytes of the SEG-Y — for a wiz,
+  of its default vector file, `io/dataset_paths.content_anchor`) + mtime
+  must match. Attribute edits therefore don't make a wiz `.sv` stale. Stale `.sv` is loaded with a warning, not refused.
 - No trace header arrays in the `.sv`. Full scan results are kept
   in the header cache instead (see Header Scanning → Scan cache).
 
@@ -1109,7 +1158,8 @@ contiguous range. Used by Range-type rows in either position.
 ## Out of Scope
 
 Variable-area (filled) wiggle rendering; 3D volume slicing views; horizon/
-event picking; CSV export of trace data; non-SEG-Y formats; view
+event picking; CSV export of trace data; formats other than SEG-Y, SU
+and wiz; depth-domain wiz; writing to wiz datasets; view
 presets (deferred to a later version); auto-
 resampling; whole-trace AGC; diff scale factors; diffs between
 group members; keyboard bindings for members 10+; non-uniform group

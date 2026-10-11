@@ -74,6 +74,7 @@ class NewAttributePlotDialog(QDialog):
         sample_interval_ms: float,
         n_samples: int,
         n_traces: int,
+        t0_ms: float = 0.0,
         title: str = "New attribute plot",
         parent: QWidget | None = None,
     ) -> None:
@@ -107,9 +108,10 @@ class NewAttributePlotDialog(QDialog):
         self.time_spin = QDoubleSpinBox(self)
         self.time_spin.setDecimals(1)
         self.time_spin.setSuffix(" ms")
-        self.time_spin.setRange(0.0, max(0.0, (n_samples - 1) * dt))
+        # Absolute sample times: t0 is the first sample (0 for SEG-Y / SU).
+        self.time_spin.setRange(t0_ms, t0_ms + max(0.0, (n_samples - 1) * dt))
         self.time_spin.setSingleStep(dt)
-        self.time_spin.setValue((n_samples // 2) * dt)
+        self.time_spin.setValue(t0_ms + (n_samples // 2) * dt)
         self.time_spin.setToolTip("Snaps to the nearest sample")
         form.addRow("X", self.x_combo)
         form.addRow("Y", self.y_combo)

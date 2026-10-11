@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from seisvis.io.dataset_paths import content_anchor
 from seisvis.models.layer_kind import LayerKind
 from seisvis.models.vertical_domain import DepthGeometry
 
@@ -15,9 +16,12 @@ CURRENT_SCHEMA_VERSION = 4
 
 
 def compute_sha1_prefix(path: Path, n_bytes: int = 3600) -> str:
-    """Return SHA-1 hex digest of the first *n_bytes* of *path*."""
+    """Return SHA-1 hex digest of the first *n_bytes* of *path*.
+
+    For a wiz directory, of its content anchor (the default vector file).
+    """
     h = hashlib.sha1()
-    with open(path, "rb") as fh:
+    with open(content_anchor(path), "rb") as fh:
         h.update(fh.read(n_bytes))
     return h.hexdigest()
 
@@ -168,8 +172,8 @@ class SVSidecar:
     def is_stale(self, segy_path: Path) -> bool:
         """Return ``True`` when the sidecar no longer matches the SEG-Y on disk."""
         try:
-            actual_mtime = segy_path.stat().st_mtime
-        except OSError:
+            actual_mtime = content_anchor(segy_path).stat().st_mtime
+        except (OSError, ValueError):
             return True
         if abs(actual_mtime - self.mtime) > 1.0:
             return True
@@ -189,7 +193,7 @@ def build_sidecar_for(
     from it: this builds a fresh record, so omitting it silently drops a
     depth declaration the user made earlier.
     """
-    stat = segy_path.stat()
+    stat = content_anchor(segy_path).stat()
     return SVSidecar(
         schema_version=CURRENT_SCHEMA_VERSION,
         segy_path=str(segy_path),

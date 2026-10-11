@@ -136,6 +136,7 @@ class DerivedDataset(QObject):
         self.n_traces: int = a.n_traces
         self.n_samples: int = a.n_samples
         self.sample_interval_ms: float = a.sample_interval_ms
+        self.t0_ms: float = float(getattr(a, "t0_ms", 0.0) or 0.0)
         self.byte_format: int = a.byte_format
         self.inline_range = a.inline_range
         self.xline_range = a.xline_range

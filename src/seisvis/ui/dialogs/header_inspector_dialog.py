@@ -133,6 +133,9 @@ class HeaderInspectorDialog(QDialog):
         grid.addWidget(self._domain_error, 4, 0, 1, 6)
 
         self._seed_domain_panel()
+        if not getattr(self._dataset, "supports_depth", True):
+            box.setEnabled(False)
+            box.setToolTip("wiz datasets are time domain in this release")
         return box
 
     @staticmethod
@@ -251,7 +254,10 @@ class HeaderInspectorDialog(QDialog):
     # --- live preview ---
 
     def _update_preview(self) -> None:
-        shot_field = "FieldRecord"
+        # SEG-Y names by default; a backend with SU names (wiz) uses fldr/tracf.
+        su_names = "fldr" in self._fields and "FieldRecord" not in self._fields
+        shot_field = "fldr" if su_names else "FieldRecord"
+        ch_field = "tracf" if su_names else "TraceNumber"
         shot_name = "Shot"
         edit = self._name_edits.get(shot_field)
         if edit and edit.text().strip():
@@ -264,14 +270,14 @@ class HeaderInspectorDialog(QDialog):
             if samples:
                 shot_sample = samples[-1]
 
-        # Pick a channel sample value (TraceNumber if populated).
+        # Pick a channel sample value (the channel field if populated).
         ch_name = "Channel"
-        if "TraceNumber" in self._name_edits:
-            ch_edit = self._name_edits["TraceNumber"]
+        if ch_field in self._name_edits:
+            ch_edit = self._name_edits[ch_field]
             ch_name = ch_edit.text().strip() or "Channel"
         ch_sample = 38
-        if "TraceNumber" in self._fields:
-            samples = self._fields["TraceNumber"].samples
+        if ch_field in self._fields:
+            samples = self._fields[ch_field].samples
             if samples:
                 ch_sample = samples[-1]
 

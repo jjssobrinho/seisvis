@@ -17,6 +17,7 @@ from seisvis.models.display_state import DisplayState
 from seisvis.models.processing_chain import ProcessingChain
 from seisvis.models.selection import Selection
 from seisvis.models.sort_config import TRACE_RANGE_FIELD, SortConfig, default_sort_config
+from seisvis.models.time_axis import t0_of
 from seisvis.models.trace_alignment import AlignmentStatus, TraceAlignment
 
 log = logging.getLogger(__name__)
@@ -777,15 +778,16 @@ class ToggleGroup(QObject):
         return float(ds.sample_interval_ms) or 1.0
 
     def time_bounds_ms(self) -> tuple[float, float] | None:
-        """The sample times a user may choose: 0 to the reference's last sample.
+        """The sample times a user may choose: the reference's first to last sample.
 
-        ``None`` for an empty group. The upper bound is ``(n_samples - 1) * dt``,
-        the time of the last sample in the reference member.
+        ``None`` for an empty group. Times are absolute: ``t0`` (0 for SEG-Y /
+        SU) to ``t0 + (n_samples - 1) * dt`` of the reference member.
         """
         if not self._members:
             return None
         ds = self._members[self._reference_index].dataset
-        return 0.0, float(max(ds.n_samples - 1, 0)) * self._reference_dt_ms()
+        t0 = t0_of(ds)
+        return t0, t0 + float(max(ds.n_samples - 1, 0)) * self._reference_dt_ms()
 
     def time_window_ms(self) -> tuple[float, float] | None:
         """The commanded time range as (first, last) sample times.

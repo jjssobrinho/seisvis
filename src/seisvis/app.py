@@ -39,6 +39,7 @@ from seisvis.controllers.attribute_controller import (
 )
 from seisvis.controllers.session_controller import SessionRestorer
 from seisvis.controllers.transforms_coordinator import TransformsCoordinator
+from seisvis.io.dataset_paths import is_dataset_path, is_wiz_path, normalize_dataset_path
 from seisvis.io.header_cache import HeaderCache
 from seisvis.io.loader import SUPPORTED_SUFFIXES
 from seisvis.io.slice_cache import SliceCache
@@ -53,7 +54,12 @@ from seisvis.models.session import (
     SessionFile,
     SessionFormatError,
 )
-from seisvis.models.sort_config import TRACE_RANGE_FIELD, RowSelection, SortConfig
+from seisvis.models.sort_config import (
+    TRACE_RANGE_FIELD,
+    RowSelection,
+    SortConfig,
+    stored_order_sort_config,
+)
 from seisvis.models.toggle_group import ToggleGroup, ViewKind
 from seisvis.models.trace_alignment import AlignmentStatus, TraceAlignment
 from seisvis.services.dataset_reload import ReloadError, reload_dataset
@@ -250,6 +256,7 @@ class MainWindow(QMainWindow):
         project.dataset_added.connect(self._on_dataset_added_for_watch)
         project.dataset_removed.connect(self._file_watch.unwatch)
         self._file_watch.dataset_changed_on_disk.connect(self._on_dataset_changed_on_disk)
+        self._file_watch.dataset_schema_changed.connect(self._on_dataset_schema_changed)
         # Materialize non-default sort-key fields (e.g. CDP) on commit.
         project.toggle_group_added.connect(self._wire_sort_field_scanning)
         project.toggle_group_removed.connect(self._on_toggle_group_removed_for_scan)
@@ -289,6 +296,8 @@ class MainWindow(QMainWindow):
         open_action = file_menu.addAction("&Load data…")
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self._on_open_files)
+        open_wiz = file_menu.addAction("Load &wiz dataset…")
+        open_wiz.triggered.connect(self._on_open_wiz)
         file_menu.addSeparator()
         clear_cache = file_menu.addAction("Clear &Header Cache…")
         clear_cache.triggered.connect(self._on_clear_header_cache)
@@ -429,6 +438,27 @@ class MainWindow(QMainWindow):
             f"{dataset.name} changed on disk — right-click it in the catalog to reload from disk",
             8000,
         )
+
+    def _on_dataset_schema_changed(self, dataset_id: str) -> None:
+        """A dataset's schema file changed (wiz meta.json): refresh its fields.
+
+        An attribute or vector added or removed (``wiz attr``, a flow) shows
+        up in the field lists without a reload; a change to the samples or
+        their geometry marks the dataset stale instead, as for any file.
+        """
+        dataset = self.project.find(dataset_id)
+        if not isinstance(dataset, Dataset):
+            return
+        try:
+            outcome = dataset.refresh_fields()
+        except Exception:  # noqa: BLE001 - a refresh must never take the app down
+            log.exception("refreshing fields of %s failed", dataset.name)
+            return
+        if outcome == "fields":
+            self._file_watch.refresh_paths(dataset)
+            self.statusBar().showMessage(f"{dataset.name}: header fields updated", 4000)
+        elif outcome == "data":
+            self._on_dataset_changed_on_disk(dataset_id)
 
     def _on_reload_dataset(self, dataset: Dataset) -> None:
         """Re-open a changed file and rebuild everything derived from it."""
@@ -879,14 +909,30 @@ class MainWindow(QMainWindow):
             self,
             "Load data",
             start_dir,
-            "Seismic files (*.segy *.sgy *.su);;SEG-Y files (*.segy *.sgy);;"
-            "Seismic Unix files (*.su);;All files (*)",
+            "Seismic files (*.segy *.sgy *.su meta.json);;SEG-Y files (*.segy *.sgy);;"
+            "Seismic Unix files (*.su);;wiz datasets (meta.json);;All files (*)",
         )
         # The chooser may hand back click order; list them by name instead.
+        # A wiz dataset is a directory: picking its meta.json opens it.
         for p in sorted(paths, key=lambda s: Path(s).name.lower()):
-            path = Path(p)
+            path = normalize_dataset_path(Path(p))
             self._last_opened_folder = path.parent
             self._submit_load(path)
+
+    def _on_open_wiz(self) -> None:
+        """Pick a ``*.wiz`` directory (file choosers can't select directories)."""
+        start_dir = str(self._last_opened_folder) if self._last_opened_folder else ""
+        chosen = QFileDialog.getExistingDirectory(self, "Load wiz dataset", start_dir)
+        if not chosen:
+            return
+        path = normalize_dataset_path(Path(chosen))
+        if not is_dataset_path(path) or not is_wiz_path(path):
+            self.statusBar().showMessage(
+                f"{path.name} is not a wiz dataset (a *.wiz folder with meta.json)", 6000
+            )
+            return
+        self._last_opened_folder = path.parent
+        self._submit_load(path)
 
     def _on_quick_load(self, paths: list[Path]) -> None:
         """Load the paths typed into the catalog's quick-load dialog.
@@ -901,6 +947,7 @@ class MainWindow(QMainWindow):
             self._submit_load(path)
 
     def _submit_load(self, path: Path) -> None:
+        path = normalize_dataset_path(Path(path))
         if path.suffix.lower() not in _SUPPORTED_SUFFIXES:
             log.warning("ignoring unsupported path: %s", path)
             return
@@ -1120,8 +1167,8 @@ class MainWindow(QMainWindow):
             if ds is None:
                 continue
             gi = getattr(ds, "group_index", None)
-            # Only datasets that own a readable header handle can be scanned.
-            if gi is None or getattr(ds, "handle", None) is None or ds.is_closed:
+            # Only datasets with headers of their own (a field source) can be scanned.
+            if gi is None or getattr(ds, "field_source", None) is None or ds.is_closed:
                 continue
             missing = {
                 f
@@ -1470,6 +1517,7 @@ class MainWindow(QMainWindow):
             sample_interval_ms=float(dataset.sample_interval_ms or 1.0),
             n_samples=int(dataset.n_samples),
             n_traces=int(dataset.n_traces),
+            t0_ms=float(getattr(dataset, "t0_ms", 0.0) or 0.0),
             title=f"New attribute plot — {dataset.name}",
             parent=self,
         )
@@ -1521,6 +1569,18 @@ class MainWindow(QMainWindow):
                     committed=sc.committed,
                 )
         self.project.add_toggle_group(group)
+        # A dataset that records its stored order (wiz sorted_by) opens on
+        # its first gather, committed, instead of in natural file order.
+        gi = getattr(dataset, "group_index", None)
+        stored = stored_order_sort_config(
+            getattr(dataset, "stored_order", ()),
+            getattr(dataset, "header_fields_available", None),
+            gi.non_integral_fields if gi is not None else (),
+            count=self._default_groups_per_view,
+            skip=self._default_group_skip,
+        )
+        if stored is not None:
+            group.update_sort_config(stored)
         return group
 
     def _on_close_group_requested(self, group_id: str) -> None:
@@ -1559,7 +1619,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Open a dataset first", 4000)
             return
         dataset = group.members[group.active_index].dataset
-        if getattr(dataset, "handle", None) is None:
+        if getattr(dataset, "field_source", None) is None:
             self.statusBar().showMessage(f"{dataset.name} has no header of its own to read", 4000)
             return
         dlg = CrosshairFieldsDialog(dataset, group.crosshair_fields, parent=self)
@@ -1795,7 +1855,8 @@ class MainWindow(QMainWindow):
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls() and any(
-            Path(u.toLocalFile()).suffix.lower() in _SUPPORTED_SUFFIXES | {SESSION_SUFFIX}
+            normalize_dataset_path(Path(u.toLocalFile())).suffix.lower()
+            in _SUPPORTED_SUFFIXES | {SESSION_SUFFIX}
             for u in event.mimeData().urls()
         ):
             event.acceptProposedAction()
@@ -1816,7 +1877,7 @@ class MainWindow(QMainWindow):
         for url in event.mimeData().urls():
             local = url.toLocalFile()
             if local:
-                path = Path(local)
+                path = normalize_dataset_path(Path(local))
                 self._last_opened_folder = path.parent
                 self._submit_load(path)
         event.acceptProposedAction()

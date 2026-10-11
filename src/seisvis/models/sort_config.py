@@ -522,6 +522,40 @@ def sort_key_ineligibility(
     return None
 
 
+def stored_order_sort_config(
+    stored_order: Sequence[str],
+    fields_available: object,
+    non_integral: Iterable[str] = (),
+    *,
+    count: int = 1,
+    skip: int = 1,
+) -> SortConfig | None:
+    """A committed gather on the first key of a dataset's stored order.
+
+    *stored_order* is a wiz ``sorted_by`` (``"-key"`` = descending). The
+    group opens on the first gather (Value, First 0) rather than in natural
+    file order — the one exception to "a new group starts on TRACE_RANGE,
+    uncommitted". None when there is no stored order or its first key is
+    not offered as a sort key (absent, or not whole numbers).
+    """
+    if not stored_order:
+        return None
+    key = str(stored_order[0])
+    field = key.lstrip("-")
+    if not isinstance(fields_available, dict) or field not in fields_available:
+        return None
+    if sort_key_ineligibility(field, fields_available, non_integral) is not None:
+        return None
+    primary = RowSelection.value_default(
+        field,
+        "desc" if key.startswith("-") else "asc",
+        first=0,
+        count=max(1, int(count)),
+        skip=max(1, int(skip)),
+    )
+    return SortConfig(primary=primary, secondary=None, committed=True)
+
+
 __all__ = [
     "NON_INTEGRAL_REASON",
     "TRACE_RANGE_FIELD",
@@ -537,5 +571,6 @@ __all__ = [
     "row_to_dict",
     "sort_config_from_dict",
     "sort_key_ineligibility",
+    "stored_order_sort_config",
     "sort_config_to_dict",
 ]
