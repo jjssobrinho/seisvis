@@ -43,6 +43,9 @@ class FakeFieldSource:
     def field_kind(self, name: str) -> str:
         return "float" if self.columns[name].dtype.kind == "f" else "int"
 
+    def field_unit(self, name: str) -> str | None:
+        return "ms" if name == "wb_twt" else None
+
     def probe(self, max_traces: int = 30_000) -> dict[str, FieldSample]:
         n = min(max_traces, self.n_traces)
         out: dict[str, FieldSample] = {}

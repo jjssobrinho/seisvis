@@ -493,6 +493,32 @@ class ToggleGroup(QObject):
             return alignment.map_indices(slice(t0, t1)), (t0, t1)
         return slice(t0, t1), (t0, t1)
 
+    def member_gather_keys(self, index: int) -> np.ndarray | None:
+        """Primary-key group id of each column member *index* draws.
+
+        Aligned to :meth:`resolve_member_trace_indices`' columns; ``None`` in
+        natural order (no gathers) or while the key is not scanned. A member
+        remapped onto the reference is laid out in the reference's gathers.
+        Time overlays break their curves where the id changes.
+        """
+        state = self.shared_state
+        if not state.sort_config.committed:
+            return None
+        try:
+            member = self._members[index]
+        except IndexError:
+            return None
+        alignment = member.alignment
+        if alignment is not None and alignment.is_mapped:
+            layout_ds = self._members[self._reference_index].dataset
+        else:
+            layout_ds = member.dataset
+        gi = getattr(layout_ds, "group_index", None)
+        if gi is None:
+            return None
+        indices = gi.get_trace_indices(state.sort_config)
+        return gi.primary_keys_at(state.sort_config.primary.field, indices)
+
     def member_trace_index(self, index: int, ref_trace: int) -> int:
         """The member's own trace index for reference trace *ref_trace*."""
         alignment = self.member_alignment(index)

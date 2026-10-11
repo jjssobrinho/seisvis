@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Time-attribute overlays (v7.4)
+
+- **Draw header times on the seismic.** Toolbar → **Overlays**: `+` draws a
+  header field whose values are times in ms (a wiz `wb_twt`, `delrt`, mute
+  times, picks) as a curve over the traces, one point per trace. Wiz fields
+  with units `ms` are offered first; **Other field…** offers any field, SEG-Y
+  and SU included.
+- Each overlay has a colour, line style (solid / dash / dot / dash-dot), a
+  constant shift in ms (`wb_twt − 50`) and a Show switch. Overlays are per
+  member and follow the edit target and **All**, like processing.
+- Curves follow the command-bar selection, sort and zoom, break between
+  gathers and at missing (NaN) values, and are saved in sessions.
+
 ### Vectors in the catalog (v7.3)
 
 - A wiz dataset with two or more vectors shows a point left of its name;

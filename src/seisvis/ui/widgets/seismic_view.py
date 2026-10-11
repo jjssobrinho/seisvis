@@ -40,6 +40,7 @@ from seisvis.ui.widgets.info_track import GroupXPositions, InfoTrack, default_di
 from seisvis.ui.widgets.plot_export import axes_hidden, camera_button, make_exporter
 from seisvis.ui.widgets.scale_bar import ScaleBar
 from seisvis.ui.widgets.selection_overlay import SelectionOverlay, selection_from_points
+from seisvis.ui.widgets.time_overlay_layer import TimeOverlayLayer
 from seisvis.ui.widgets.toggle_bar import ToggleBar
 from seisvis.ui.widgets.trace_image_item import TraceImageItem
 from seisvis.utils import qsettings
@@ -274,6 +275,8 @@ class SeismicView(QWidget):
         self.setAcceptDrops(True)
 
         self._build_ui()
+        # Time-attribute overlay curves (v7.4), one set per member.
+        self._time_overlays = TimeOverlayLayer(self.plot_item, group, pool, parent=self)
         self._wire_group_signals()
         # Build ImageItems for any pre-existing members (created-with-member path).
         for i in range(group.n_members):
@@ -645,6 +648,7 @@ class SeismicView(QWidget):
     # --- Member management ---
 
     def _on_member_added(self, index: int) -> None:
+        self._time_overlays.member_added(index)
         item = TraceImageItem(axisOrder="col-major")
         item.setZValue(-1)
         try:
@@ -693,6 +697,7 @@ class SeismicView(QWidget):
                     pass
         except IndexError:
             pass
+        self._time_overlays.member_removed(index)
         if 0 <= index < len(self._image_items):
             item = self._image_items.pop(index)
             self.plot_item.removeItem(item)
@@ -728,6 +733,7 @@ class SeismicView(QWidget):
             self._read_modes,
         ):
             per_member.insert(to_index, per_member.pop(from_index))
+        self._time_overlays.member_moved(from_index, to_index)
 
         order = list(range(n))
         order.insert(to_index, order.pop(from_index))
@@ -809,6 +815,7 @@ class SeismicView(QWidget):
             self._image_items[index].clear()
             self._last_arrays[index] = None
             self._last_rects[index] = None
+            self._time_overlays.refresh_member(index)
         else:
             self._request_slice(index)
         if index == self.group.active_index:
@@ -846,6 +853,7 @@ class SeismicView(QWidget):
         active = self.group.active_index
         for i, item in enumerate(self._image_items):
             item.setVisible(i == active)
+        self._time_overlays.set_active(active)
 
     # --- image export -------------------------------------------------
 
@@ -971,6 +979,7 @@ class SeismicView(QWidget):
         self._refresh_info_track()
         self._refresh_scale_bar()
         self._refresh_overlays()
+        self._time_overlays.invalidate()
         for i in range(len(self._image_items)):
             self._request_slice(i)
 
@@ -1287,6 +1296,7 @@ class SeismicView(QWidget):
         # fetched one does.
         if member_index == self.group.active_index:
             self._refresh_header_values()
+        self._time_overlays.refresh_member(member_index)
         state = self.group.shared_state
         if state.commanded_time_range_ms is None:
             return
@@ -1501,6 +1511,7 @@ class SeismicView(QWidget):
         """Re-apply LUT + levels for the affected member — no re-slice."""
         if not 0 <= member_index < len(self._image_items):
             return
+        self._time_overlays.refresh_member(member_index)
         try:
             member = self.group.members[member_index]
         except IndexError:

@@ -15,20 +15,22 @@ from seisvis.ui.toolbar.analysis_group import AnalysisGroup
 from seisvis.ui.toolbar.appearance_group import AppearanceGroup
 from seisvis.ui.toolbar.attributes_group import AttributesGroup
 from seisvis.ui.toolbar.edit_target_selector import EditTargetSelector
+from seisvis.ui.toolbar.overlays_group import OverlaysGroup
 from seisvis.ui.toolbar.processing_group import ProcessingGroup
 
 
 class GlobalToolbar(QWidget):
-    """Pinned top toolbar: Appearance/Analysis/Processing/Attributes tabs + Edit Target.
+    """Pinned top toolbar: Appearance/Analysis/Processing/Overlays/Attributes tabs + Edit Target.
 
     Always visible: the tab bar, the active tab's body, the Edit Target
     selector and the Reset button are all shown at all times. Which
     sections are usable depends on the active group's view kind: a seismic
-    group uses the first three, an attribute plot only Attributes.
+    group uses the first four, an attribute plot only Attributes.
     """
 
     APPEARANCE_TAB = 0
-    ATTRIBUTES_TAB = 3
+    OVERLAYS_TAB = 3
+    ATTRIBUTES_TAB = 4
 
     reset_requested = Signal()
 
@@ -44,6 +46,7 @@ class GlobalToolbar(QWidget):
         self._tab_bar.addTab("Appearance")
         self._tab_bar.addTab("Analysis")
         self._tab_bar.addTab("Processing")
+        self._tab_bar.addTab("Overlays")
         self._tab_bar.addTab("Attributes")
         self._tab_bar.setDrawBase(False)
         self._tab_bar.setExpanding(False)
@@ -65,6 +68,10 @@ class GlobalToolbar(QWidget):
         self.processing.setTitle("")
         self.processing.setFlat(True)
 
+        self.overlays = OverlaysGroup(self._content)
+        self.overlays.setTitle("")
+        self.overlays.setFlat(True)
+
         self.attributes = AttributesGroup(self._content)
         self.attributes.setTitle("")
         self.attributes.setFlat(True)
@@ -73,6 +80,7 @@ class GlobalToolbar(QWidget):
         self._stack.addWidget(self.appearance)
         self._stack.addWidget(self.analysis)
         self._stack.addWidget(self.processing)
+        self._stack.addWidget(self.overlays)
         self._stack.addWidget(self.attributes)
 
         self.edit_target = EditTargetSelector(self._content)
@@ -115,6 +123,7 @@ class GlobalToolbar(QWidget):
             self.appearance,
             self.analysis,
             self.processing,
+            self.overlays,
             self.edit_target,
             self._reset_button,
         ):

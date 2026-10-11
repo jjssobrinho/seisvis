@@ -126,6 +126,11 @@ class WizFieldSource:
         spec = self._schema().get(name)
         return _kind(spec["type"]) if spec is not None else "int"
 
+    def field_unit(self, name: str) -> str | None:
+        spec = self._schema().get(name)
+        units = spec.get("units") if spec is not None else None
+        return units if isinstance(units, str) and units else None
+
     def probe(self, max_traces: int = _PROBE_TRACES) -> dict[str, FieldSample]:
         """Every attribute, in schema order; values from the first *max_traces*."""
         out: dict[str, FieldSample] = {}

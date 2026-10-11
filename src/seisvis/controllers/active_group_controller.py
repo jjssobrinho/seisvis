@@ -7,6 +7,15 @@ from PySide6.QtCore import QObject
 from seisvis.models.display_state import DisplayState
 from seisvis.models.processing_chain import ProcessingChain
 from seisvis.models.project import Project
+from seisvis.models.time_overlay import (
+    TimeOverlay,
+    header_owner,
+    next_overlay_color,
+    overlay_fields,
+    time_fields,
+    with_overlay,
+    without_overlay,
+)
 from seisvis.models.toggle_group import ToggleGroup
 from seisvis.ui.toolbar.global_toolbar import GlobalToolbar
 
@@ -33,6 +42,8 @@ class ActiveGroupController(QObject):
         self._project = project
         self._toolbar = toolbar
         self._group: ToggleGroup | None = None
+        # Which of the edit target's overlays the Overlays section edits.
+        self._overlay_index = 0
 
         toolbar.appearance.colormap_changed.connect(self._on_colormap_changed)
         toolbar.appearance.render_mode_changed.connect(self._on_render_mode_changed)
@@ -43,6 +54,10 @@ class ActiveGroupController(QObject):
         toolbar.appearance.time_window_changed.connect(self._on_time_window_changed)
         toolbar.processing.bandpass_changed.connect(self._on_bandpass_changed)
         toolbar.processing.agc_changed.connect(self._on_agc_changed)
+        toolbar.overlays.overlay_selected.connect(self._on_overlay_selected)
+        toolbar.overlays.overlay_add_requested.connect(self._on_overlay_add)
+        toolbar.overlays.overlay_remove_requested.connect(self._on_overlay_remove)
+        toolbar.overlays.overlay_edited.connect(self._on_overlay_edited)
         toolbar.edit_target.target_changed.connect(self._on_edit_target_changed)
         toolbar.reset_requested.connect(self._on_reset_requested)
 
@@ -210,6 +225,24 @@ class ActiveGroupController(QObject):
             agc_enabled=chain.agc.enabled,
             agc_window_ms=chain.agc.window_ms,
         )
+        self._rebind_overlays(member)
+
+    def _rebind_overlays(self, member: object) -> None:
+        overlays = member.display_state.overlays
+        self._overlay_index = max(0, min(self._overlay_index, len(overlays) - 1))
+        dataset = member.dataset
+        owner = header_owner(dataset)
+        known = owner.field_source.known_fields() if owner is not None else frozenset()
+        fields = overlay_fields(dataset)
+        labels = {f: str(dataset.display_name_for(f)) for f in fields}
+        self._toolbar.overlays.set_state(
+            overlays,
+            self._overlay_index,
+            time_fields=time_fields(dataset),
+            all_fields=fields,
+            labels=labels,
+            known=known,
+        )
 
     # ------------------------------------------------------------------
     # Target resolution
@@ -305,6 +338,59 @@ class ActiveGroupController(QObject):
             group.update_member_processing_chain(
                 idx, agc={"enabled": bool(enabled), "window_ms": float(window_ms)}
             )
+
+    # --- overlays ---------------------------------------------------------
+
+    def _target_member(self):  # noqa: ANN202
+        group = self._group
+        if group is None or group.n_members == 0:
+            return None
+        idx = 0 if group.link_all else group.edit_target_index
+        return group.members[max(0, min(idx, group.n_members - 1))]
+
+    def _on_overlay_selected(self, index: int) -> None:
+        self._overlay_index = int(index)
+        self._rebind_toolbar_values()
+
+    def _on_overlay_add(self) -> None:
+        group = self._group
+        member = self._target_member()
+        if group is None or member is None:
+            return
+        overlays = member.display_state.overlays
+        used = {o.field for o in overlays}
+        field = next((f for f in time_fields(member.dataset) if f not in used), None)
+        if field is None:
+            field = self._toolbar.overlays.pick_other_field()
+        if field is None:
+            return
+        new = TimeOverlay(field=field, color=next_overlay_color(overlays))
+        for idx in self._target_indices():
+            current = group.members[idx].display_state.overlays
+            group.update_member_display_state(idx, overlays=(*current, new))
+        self._overlay_index = len(overlays)
+        self._rebind_toolbar_values()
+
+    def _on_overlay_remove(self) -> None:
+        group = self._group
+        if group is None:
+            return
+        index = self._overlay_index
+        for idx in self._target_indices():
+            current = group.members[idx].display_state.overlays
+            group.update_member_display_state(idx, overlays=without_overlay(current, index))
+        self._overlay_index = max(0, index - 1)
+        self._rebind_toolbar_values()
+
+    def _on_overlay_edited(self, overlay: object) -> None:
+        group = self._group
+        if group is None or not isinstance(overlay, TimeOverlay):
+            return
+        index = self._overlay_index
+        for idx in self._target_indices():
+            current = group.members[idx].display_state.overlays
+            group.update_member_display_state(idx, overlays=with_overlay(current, index, overlay))
+        self._rebind_toolbar_values()
 
     def _on_edit_target_changed(self, index: int, link_all: bool) -> None:
         group = self._group

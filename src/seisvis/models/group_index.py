@@ -482,6 +482,20 @@ class GroupIndex:
         groups, ids = self._groups_for_field(field)
         return groups, sorted(ids)
 
+    def primary_keys_at(self, field: str, indices: np.ndarray) -> np.ndarray | None:
+        """The group id of each trace in *indices* under primary key *field*.
+
+        ``TRACE_RANGE`` gives its synthetic block ids; a field not scanned yet
+        gives ``None``. Overlays break their curves where this changes.
+        """
+        idx = np.asarray(indices, dtype=np.int64)
+        if field == TRACE_RANGE_FIELD:
+            return idx // max(1, int(self._trace_range_size))
+        arr = self._field_arrays.get(field)
+        if arr is None:
+            return None
+        return arr[idx]
+
     def field_value_range(self, field_name: str) -> tuple[int, int] | None:
         """Return ``(min, max)`` of the per-trace values for *field_name*.
 

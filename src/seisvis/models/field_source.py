@@ -35,6 +35,10 @@ class FieldSource(Protocol):
         """``"int"`` or ``"float"``."""
         ...
 
+    def field_unit(self, name: str) -> str | None:
+        """The field's unit (``"ms"``, ``"m"``, …) when the backend records one."""
+        ...
+
     def probe(self, max_traces: int = 30_000) -> dict[str, FieldSample]:
         """Populated fields (any non-zero value) among the first *max_traces*."""
         ...

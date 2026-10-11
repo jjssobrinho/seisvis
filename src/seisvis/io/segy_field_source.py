@@ -50,6 +50,9 @@ class SegyFieldSource:
     def field_kind(self, name: str) -> str:
         return "int"
 
+    def field_unit(self, name: str) -> str | None:
+        return None  # 240-byte headers record no units
+
     def probe(self, max_traces: int = 30_000) -> dict[str, FieldSample]:
         owner = self._owner
         scanned = scan_populated_fields(owner.handle, max_traces, path=owner.source_path)

@@ -33,6 +33,8 @@ data. Current capabilities:
   field (receiver X/Y coloured by shot, stacking charts, …) for the
   traces the command bar selects, with a whole-file background and
   2D-line regularity statistics.
+- Time-attribute overlays: header fields holding times in ms (`wb_twt`,
+  `delrt`, mute times) drawn as curves over a member's traces.
 
 ---
 
@@ -278,7 +280,8 @@ without importing it.
 
 Workers and the readout reach per-trace headers only through
 `Dataset.field_source` (`models/field_source.FieldSource`): `known_fields`,
-`field_kind` (`"int"` | `"float"`), `probe` (the surange result, with
+`field_kind` (`"int"` | `"float"`), `field_unit` (wiz `meta.json` `units`;
+None for SEG-Y / SU), `probe` (the surange result, with
 `FieldSample.kind` / `integral`), `read_all` (every trace, cached),
 `read_at` (some traces; out of range → `MISSING` for ints, NaN for floats)
 and `read_trace`. SEG-Y / SU: `io/segy_field_source.SegyFieldSource`, which
@@ -601,7 +604,8 @@ session holds what the user was looking at.
 - **Saved**: every loaded file (absolute path, path relative to the
   session file, sha1_prefix + mtime), A − B diffs (parents by key,
   direction, name), toggle groups (name, members, active / reference /
-  edit target, link_all, per-member display state and processing
+  edit target, link_all, per-member display state (incl. time overlays,
+  `display.overlays`, written only when set) and processing
   chain, `SortConfig`, commanded and zoomed ranges (incl. the time window, restored
   under any sort), colour scale,
   crosshair fields, flicker rate and excluded members, view kind and
@@ -976,6 +980,8 @@ buttons (`ui/widgets/render_mode_buttons.py`, icons painted in code).
     a change refetches and clears the selection).
   - **Analysis**: rectangle-selection button, FFT button, f-k button.
   - **Processing**: bandpass, AGC.
+  - **Overlays**: the edit target's time-attribute overlays (see Time
+    Overlays).
   - **Attributes**: the active attribute plot's layers and switches
     (see Attribute Plots). Enabled only on an attribute tab, which in
     turn disables the three sections above, the edit target and Reset;
@@ -991,6 +997,42 @@ buttons (`ui/widgets/render_mode_buttons.py`, icons painted in code).
   panel) / group command bar.
 - **Transform Window** (one per toggle group, opened on demand):
   separate `QMainWindow` with a tab system. See Selection & Transforms.
+
+---
+
+## Time Overlays
+
+A header field whose values are times in ms drawn over a member's traces
+as a curve (`models/time_overlay`, curves `processing/time_overlay`
+via `services/time_overlay_service`, drawn by
+`ui/widgets/time_overlay_layer.TimeOverlayLayer`).
+
+```
+TimeOverlay (frozen)   field, color "#rrggbb", style solid|dash|dot|dashdot,
+                       shift_ms (drawn at value + shift), visible
+DisplayState.overlays  tuple[TimeOverlay, ...], per member
+```
+
+- **Points**: one per column the member draws
+  (`resolve_member_trace_indices`), at `x0 + c + 0.5`, absolute ms like the
+  axis. Int `MISSING` / NaN values break the curve (`connect="finite"`); a
+  lone point between breaks is drawn as a dot.
+- **Gathers**: under a committed sort the curve breaks where the primary
+  key's group id changes between columns (`ToggleGroup.member_gather_keys`
+  → `GroupIndex.primary_keys_at`; `TRACE_RANGE` = its blocks; a remapped
+  member takes the reference's layout). Natural order: one curve.
+- **Reads**: values for the frame's traces only, off-thread
+  (`TraceHeaderWorker`), kept until the frame changes — a colour / style /
+  shift edit doesn't re-read. A diff reads parent A's headers
+  (`header_owner`). `surange_ready` (fields refreshed) and a reload re-read.
+  A field the dataset lacks draws nothing ("(missing)" in the toolbar).
+- **Fields offered**: units `ms` (`time_fields`; wiz only), then "Other
+  field…" with every (populated) field — SEG-Y / SU always go through it.
+- **Editing**: Overlays toolbar section, `Overlay [1][2]…[+][−]` · Field ·
+  Colour · Style · Shift · Show, routed by `ActiveGroupController` to the
+  edit target or All. With All each member's own list is edited
+  (`with_overlay` / `without_overlay`), never replaced. Reset target clears
+  them. Curves show with the active member's image only.
 
 ---
 
