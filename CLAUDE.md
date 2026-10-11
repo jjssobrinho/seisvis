@@ -35,6 +35,8 @@ data. Current capabilities:
   2D-line regularity statistics.
 - Time-attribute overlays: header fields holding times in ms (`wb_twt`,
   `delrt`, mute times) drawn as curves over a member's traces.
+- Trace-attribute strip: header fields (rms, offset, …) plotted in lanes
+  above the canvas, sharing its trace axis.
 
 ---
 
@@ -608,7 +610,8 @@ session holds what the user was looking at.
   `display.overlays`, written only when set) and processing
   chain, `SortConfig`, commanded and zoomed ranges (incl. the time window, restored
   under any sort), colour scale,
-  crosshair fields, flicker rate and excluded members, view kind and
+  crosshair fields, trace strip (`trace_strip`, written only when not the
+  default), flicker rate and excluded members, view kind and
   attribute-plot config), Model Window
   tabs (members, per-kind style, overlay, flicker, render mode), active tabs.
 - **Not saved**: `.sv` content (it loads with its file), header scans
@@ -1033,6 +1036,39 @@ DisplayState.overlays  tuple[TimeOverlay, ...], per member
   edit target or All. With All each member's own list is edited
   (`with_overlay` / `without_overlay`), never replaced. Reset target clears
   them. Curves show with the active member's image only.
+
+---
+
+## Trace Strip
+
+An optional strip above a seismic canvas plotting header fields against the
+displayed traces (`models/trace_strip`, data `processing/trace_strip` via
+`services/trace_strip_service`, widget `ui/widgets/trace_strip_view`).
+
+```
+TraceStripConfig (frozen, on ToggleGroup, saved in sessions)
+  visible, fields: tuple[StripField, ...], height (px; 0 = 70 per lane)
+StripField  field, color, y_auto, y_min, y_max, log_y
+```
+
+- **One lane per field**, stacked, each a `PlotItem` x-linked to the canvas
+  plot (pyqtgraph aligns linked views on screen); lanes and canvas share a
+  fixed left-axis width (`LEFT_AXIS_WIDTH`) so data areas span the same
+  pixels. No mouse zoom in lanes; the canvas drives x, the config y.
+- **Points / breaks** as time overlays (column centres, gather starts from
+  `member_gather_keys`, NaN / `MISSING`). Log lanes draw log10 values
+  themselves (`strip_series`; a `PlotCurveItem` ignores `setLogMode`), ≤ 0 →
+  gaps; ranges (`lane_range`) are in drawn units; decade ticks only.
+- **Values**: the active member's frame, one `FrameFieldReader` per member
+  (shared with time overlays: per-frame values, off-thread reads, dropped on
+  frame change, re-read on `surange_ready` / reload).
+- **Readout**: hovering the canvas appends the lanes' values to the crosshair
+  extras (crosshair fields not repeated); hovering a lane emits the readout
+  without t / amp (`format_crosshair(t_ms=None)`).
+- **Editing**: toggle-bar **Strip** button (visible); right-click menu Add
+  field ▸ (populated fields, `overlay_fields`), and per lane Colour…, Y range
+  ▸ Auto / Set range…, Log Y, Move up / down, Remove. Splitter drag →
+  `height`; adding / removing a lane resets it.
 
 ---
 

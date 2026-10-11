@@ -206,6 +206,7 @@ def _capture_group(
         flicker_excluded=tuple(flicker[1]) if flicker is not None else (),
         view_kind=group.view_kind,
         attribute_config=group.attribute_config,
+        trace_strip=group.trace_strip,
     )
     # Members backed by a difference that can no longer be rebuilt.
     kept, _notes = filter_group(entry, {m.dataset for m in members if m.dataset})
@@ -547,6 +548,7 @@ def build_toggle_group(
     edit_target = entry.edit_target_index if 0 <= entry.edit_target_index < n else 0
     group.set_edit_target(edit_target, entry.link_all)
     group.set_crosshair_fields(entry.crosshair_fields)
+    group.set_trace_strip(entry.trace_strip)
     group.set_color_scale(entry.color_scale)
     return group
 

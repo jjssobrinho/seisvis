@@ -19,6 +19,7 @@ from seisvis.models.selection import Selection
 from seisvis.models.sort_config import TRACE_RANGE_FIELD, SortConfig, default_sort_config
 from seisvis.models.time_axis import t0_of
 from seisvis.models.trace_alignment import AlignmentStatus, TraceAlignment
+from seisvis.models.trace_strip import TraceStripConfig
 
 log = logging.getLogger(__name__)
 
@@ -104,6 +105,7 @@ class ToggleGroup(QObject):
     selection_changed = Signal(object)  # Selection | None
     member_alignment_changed = Signal(int)  # member index
     attribute_config_changed = Signal(object)  # AttributePlotConfig
+    trace_strip_changed = Signal(object)  # TraceStripConfig
 
     def __init__(
         self, name: str, parent: QObject | None = None, *, view_kind: ViewKind = "seismic"
@@ -124,6 +126,9 @@ class ToggleGroup(QObject):
         # about the file; like sort, it is what the user currently wants to
         # look at, so it is saved in a session file instead.
         self._crosshair_fields: tuple[str, ...] = ()
+        # The trace-attribute strip above the canvas (v7.5): one per
+        # viewport, saved in sessions like the crosshair fields.
+        self._trace_strip = TraceStripConfig()
         self._active_index: int = 0
         self._reference_index: int = 0
         self._edit_target_index: int = 0
@@ -241,6 +246,7 @@ class ToggleGroup(QObject):
         dup._edit_target_index = self._edit_target_index
         dup._link_all = self._link_all
         dup._crosshair_fields = self._crosshair_fields
+        dup._trace_strip = self._trace_strip
         dup.shared_state = deepcopy(self.shared_state)
         return dup
 
@@ -729,6 +735,16 @@ class ToggleGroup(QObject):
         if config.committed:
             self.set_selection(None)
             self.sort_config_committed.emit(config)
+
+    @property
+    def trace_strip(self) -> TraceStripConfig:
+        return self._trace_strip
+
+    def set_trace_strip(self, config: TraceStripConfig) -> None:
+        if config == self._trace_strip:
+            return
+        self._trace_strip = config
+        self.trace_strip_changed.emit(config)
 
     def request_sort_fields(self, fields: Iterable[str]) -> None:
         """Ask for *fields* to be indexed on every member ahead of a commit."""

@@ -36,7 +36,7 @@ def format_crosshair(
     secondary: tuple[str, int | float] | None = None,
     extras: list[tuple[str, int | float | None]] | None = None,
     trace: int,
-    t_ms: float,
+    t_ms: float | None,
     amp: float | None,
 ) -> str:
     """Build the readout line.
@@ -44,10 +44,10 @@ def format_crosshair(
     ``primary`` and ``secondary`` are ``(display name, value)``; with no
     committed sort both are None and the line falls back to the raw trace
     index. ``extras`` are ``(display name, value)`` where a None value means
-    the read is still in flight.
+    the read is still in flight. ``t_ms`` None (hovering the trace strip,
+    which has no time axis) leaves out the time and amplitude.
     """
     amp_str = f"{amp:.4g}" if amp is not None else "—"
-    t_str = f"{t_ms:.2f}"
 
     if primary is None:
         head = f"Trace {trace}"
@@ -59,8 +59,9 @@ def format_crosshair(
     parts = [head]
     for name, value in extras or []:
         parts.append(f"{name} {format_value(value)}")
-    parts.append(f"t = {t_str} ms")
-    parts.append(f"amp = {amp_str}")
+    if t_ms is not None:
+        parts.append(f"t = {t_ms:.2f} ms")
+        parts.append(f"amp = {amp_str}")
     return " | ".join(parts)
 
 

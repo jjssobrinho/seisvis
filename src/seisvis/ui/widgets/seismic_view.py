@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QSplitter,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -43,6 +46,7 @@ from seisvis.ui.widgets.selection_overlay import SelectionOverlay, selection_fro
 from seisvis.ui.widgets.time_overlay_layer import TimeOverlayLayer
 from seisvis.ui.widgets.toggle_bar import ToggleBar
 from seisvis.ui.widgets.trace_image_item import TraceImageItem
+from seisvis.ui.widgets.trace_strip_view import LEFT_AXIS_WIDTH, TraceStripView
 from seisvis.utils import qsettings
 from seisvis.utils.colormaps import get_colormap
 from seisvis.utils.member_colors import member_color
@@ -247,7 +251,7 @@ class SeismicView(QWidget):
         self._header_generation: int = 0
         # Last hovered (display x, t_ms), so values landing after the cursor
         # stopped still reach the readout. None while off the plot.
-        self._last_cursor: tuple[int, float] | None = None
+        self._last_cursor: tuple[int, float | None] | None = None
         self._active_workers: list[SliceWorker] = []
         self._last_arrays: list[np.ndarray | None] = []
         self._last_rects: list[QRectF | None] = []
@@ -331,6 +335,8 @@ class SeismicView(QWidget):
         self.plot_item = self.plot_widget.getPlotItem()
         self.plot_item.setLabel("left", "Time (ms)")
         self.plot_item.setLabel("bottom", "Trace #")
+        # Fixed, so the trace strip's lanes (same width) span the same pixels.
+        self.plot_item.getAxis("left").setWidth(LEFT_AXIS_WIDTH)
         self.plot_item.showGrid(x=False, y=False)
         view_box = self.plot_item.getViewBox()
         view_box.invertY(True)
@@ -436,7 +442,40 @@ class SeismicView(QWidget):
         plot_row_layout.setSpacing(0)
         plot_row_layout.addWidget(self.plot_widget, stretch=1)
         plot_row_layout.addWidget(self.scale_bar)
-        root.addWidget(plot_row, stretch=1)
+
+        # Trace-attribute strip (v7.5): lanes of header fields above the
+        # plot, x-linked to it; the splitter sets its height.
+        self.trace_strip = TraceStripView(self.group, self._pool, self.plot_item, parent=self)
+        strip_row = QWidget(self)
+        strip_row_layout = QHBoxLayout(strip_row)
+        strip_row_layout.setContentsMargins(0, 0, 0, 0)
+        strip_row_layout.setSpacing(0)
+        strip_row_layout.addWidget(self.trace_strip, stretch=1)
+        strip_spacer = QWidget(strip_row)
+        strip_spacer.setFixedWidth(scale_bar_width)
+        strip_row_layout.addWidget(strip_spacer)
+        self._strip_row = strip_row
+        self._splitter = QSplitter(Qt.Orientation.Vertical, self)
+        self._splitter.setChildrenCollapsible(False)
+        self._splitter.addWidget(strip_row)
+        self._splitter.addWidget(plot_row)
+        self._splitter.setStretchFactor(1, 1)
+        self._splitter.splitterMoved.connect(self._on_strip_resized)
+        root.addWidget(self._splitter, stretch=1)
+        self.trace_strip.hovered.connect(self._on_strip_hovered)
+        self.trace_strip.values_changed.connect(self._reemit_readout)
+
+        self.strip_button = QToolButton(self.toggle_bar)
+        self.strip_button.setText("Strip")
+        self.strip_button.setCheckable(True)
+        self.strip_button.setToolTip(
+            "Show header fields (rms, offset, …) plotted against the traces above the "
+            "canvas. Right-click the strip to add fields."
+        )
+        self.strip_button.toggled.connect(self._on_strip_button_toggled)
+        self.toggle_bar.add_trailing_widget(self.strip_button)
+        self.group.trace_strip_changed.connect(self._on_trace_strip_changed)
+        self._on_trace_strip_changed(self.group.trace_strip)
         self.plot_widget.installEventFilter(self)
 
         # Group command bar (M4) — drives reference-member group navigation.
@@ -649,6 +688,7 @@ class SeismicView(QWidget):
 
     def _on_member_added(self, index: int) -> None:
         self._time_overlays.member_added(index)
+        self.trace_strip.member_added(index)
         item = TraceImageItem(axisOrder="col-major")
         item.setZValue(-1)
         try:
@@ -698,6 +738,7 @@ class SeismicView(QWidget):
         except IndexError:
             pass
         self._time_overlays.member_removed(index)
+        self.trace_strip.member_removed(index)
         if 0 <= index < len(self._image_items):
             item = self._image_items.pop(index)
             self.plot_item.removeItem(item)
@@ -734,6 +775,7 @@ class SeismicView(QWidget):
         ):
             per_member.insert(to_index, per_member.pop(from_index))
         self._time_overlays.member_moved(from_index, to_index)
+        self.trace_strip.member_moved(from_index, to_index)
 
         order = list(range(n))
         order.insert(to_index, order.pop(from_index))
@@ -816,6 +858,8 @@ class SeismicView(QWidget):
             self._last_arrays[index] = None
             self._last_rects[index] = None
             self._time_overlays.refresh_member(index)
+            if index == self.group.active_index:
+                self.trace_strip.refresh()
         else:
             self._request_slice(index)
         if index == self.group.active_index:
@@ -980,6 +1024,7 @@ class SeismicView(QWidget):
         self._refresh_scale_bar()
         self._refresh_overlays()
         self._time_overlays.invalidate()
+        self.trace_strip.invalidate()
         for i in range(len(self._image_items)):
             self._request_slice(i)
 
@@ -1297,6 +1342,8 @@ class SeismicView(QWidget):
         if member_index == self.group.active_index:
             self._refresh_header_values()
         self._time_overlays.refresh_member(member_index)
+        if member_index == self.group.active_index:
+            self.trace_strip.refresh()
         state = self.group.shared_state
         if state.commanded_time_range_ms is None:
             return
@@ -1628,6 +1675,7 @@ class SeismicView(QWidget):
             self._v_line.setVisible(False)
             self._h_line.setVisible(False)
             self._last_cursor = None
+            self.trace_strip.set_cursor_x(None)
             self.cursor_readout.emit(None, None, None)
             return
         data_pt = vb.mapSceneToView(scene_pos)
@@ -1637,12 +1685,13 @@ class SeismicView(QWidget):
         self._h_line.setPos(t_ms)
         self._v_line.setVisible(self._crosshair_enabled)
         self._h_line.setVisible(self._crosshair_enabled)
+        self.trace_strip.set_cursor_x(trace)
 
         amp = self._amplitude_at(trace, t_ms)
         self.cursor_readout.emit(trace, t_ms, amp)
         self._emit_status_for_cursor(trace, t_ms, amp)
 
-    def _emit_status_for_cursor(self, trace: int, t_ms: float, amp: float | None) -> None:
+    def _emit_status_for_cursor(self, trace: int, t_ms: float | None, amp: float | None) -> None:
         self._last_cursor = (trace, t_ms)
         ds = self._active_dataset()
         state = self.group.shared_state
@@ -1667,6 +1716,13 @@ class SeismicView(QWidget):
                     secondary = self._secondary_for(ds, primary_field, group_id, ch, physical)
 
         extras = self._extra_header_values(ds, trace, physical)
+        chosen = set(self.group.crosshair_fields)
+        strip_fields = self.group.trace_strip.field_names()
+        extras += [
+            pair
+            for f, pair in zip(strip_fields, self.trace_strip.values_at(trace), strict=False)
+            if f not in chosen
+        ]
         self.crosshair_readout.emit(
             format_crosshair(
                 primary=primary,
@@ -1837,7 +1893,43 @@ class SeismicView(QWidget):
         if self._last_cursor is None:
             return
         trace, t_ms = self._last_cursor
-        self._emit_status_for_cursor(trace, t_ms, self._amplitude_at(trace, t_ms))
+        amp = self._amplitude_at(trace, t_ms) if t_ms is not None else None
+        self._emit_status_for_cursor(trace, t_ms, amp)
+
+    # --- trace-attribute strip ------------------------------------------------
+
+    def _on_strip_button_toggled(self, checked: bool) -> None:
+        cfg = self.group.trace_strip
+        if cfg.visible != checked:
+            self.group.set_trace_strip(replace(cfg, visible=bool(checked)))
+
+    def _on_trace_strip_changed(self, _config: object) -> None:
+        cfg = self.group.trace_strip
+        self.strip_button.blockSignals(True)
+        self.strip_button.setChecked(cfg.visible)
+        self.strip_button.blockSignals(False)
+        self._strip_row.setVisible(cfg.visible)
+        if cfg.visible:
+            total = sum(self._splitter.sizes()) or self.height()
+            strip_h = self.trace_strip.preferred_height()
+            self._splitter.setSizes([strip_h, max(1, total - strip_h)])
+        elif self._last_cursor is not None and self._last_cursor[1] is None:
+            self._last_cursor = None
+
+    def _on_strip_resized(self, _pos: int, _index: int) -> None:
+        height = int(self._splitter.sizes()[0])
+        cfg = self.group.trace_strip
+        if cfg.visible and height > 0 and height != cfg.height:
+            self.group.set_trace_strip(replace(cfg, height=height))
+
+    def _on_strip_hovered(self, x: object) -> None:
+        """The cursor is over the strip at display x *x* (None: it left)."""
+        if x is None:
+            self._last_cursor = None
+            self.cursor_readout.emit(None, None, None)
+            return
+        self._v_line.setPos(int(x))
+        self._emit_status_for_cursor(int(x), None, None)
 
     def _build_group_x_positions(
         self, gi: GroupIndex | None, primary_field: str | None

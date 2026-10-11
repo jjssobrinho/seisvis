@@ -38,6 +38,7 @@ from seisvis.models.sort_config import (
     sort_config_from_dict,
     sort_config_to_dict,
 )
+from seisvis.models.trace_strip import TraceStripConfig
 
 SESSION_SCHEMA_VERSION = 1
 SESSION_SUFFIX = ".svsession"
@@ -114,6 +115,7 @@ class GroupEntry:
     # have no key and read as seismic.
     view_kind: str = "seismic"
     attribute_config: AttributePlotConfig | None = None
+    trace_strip: TraceStripConfig = field(default_factory=TraceStripConfig)
 
 
 @dataclass
@@ -353,6 +355,7 @@ def _group_to_dict(g: GroupEntry) -> dict[str, object]:
         "attribute": (
             attribute_config_to_dict(g.attribute_config) if g.attribute_config is not None else None
         ),
+        **({} if g.trace_strip.is_default else {"trace_strip": g.trace_strip.to_dict()}),
     }
 
 
@@ -389,6 +392,7 @@ def _group_from_dict(raw: dict) -> GroupEntry:
         flicker_excluded=tuple(int(i) for i in raw.get("flicker_excluded", [])),
         view_kind="attribute" if is_attribute else "seismic",
         attribute_config=attribute_config_from_dict(raw.get("attribute")) if is_attribute else None,
+        trace_strip=TraceStripConfig.from_dict(raw.get("trace_strip")),
     )
 
 

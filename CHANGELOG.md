@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Trace-attribute strip (v7.5)
+
+- **Header fields above the traces.** The **Strip** button in a canvas's
+  toggle bar opens a strip above the seismic plotting header fields —
+  a wiz QC flow's `rms_in` / `rms_out`, `offset`, fold — one lane per field,
+  against the displayed traces. Lanes share the canvas x axis: same trace
+  columns, zoom and pan, and they break between gathers and at missing
+  values.
+- Right-click the strip to add fields; on a lane: colour, y range (auto or
+  a fixed range), log y, move up / down, remove. Drag the splitter to size it.
+- Hovering the canvas or a lane adds the lanes' values for that trace to the
+  crosshair readout.
+- One strip per viewport, copied by Duplicate group and saved in sessions.
+
 ### Time-attribute overlays (v7.4)
 
 - **Draw header times on the seismic.** Toolbar → **Overlays**: `+` draws a
