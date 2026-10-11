@@ -12,7 +12,7 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QColor, QFont, QPalette
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 from seisvis.models.dataset import Dataset
 from seisvis.models.derived_dataset import DerivedDataset
 from seisvis.models.project import Project
+from seisvis.models.vector_dataset import VectorDataset
 from seisvis.utils.mime import DATASET_MIME_TYPE, encode_dataset_ids
 
 log = logging.getLogger(__name__)
@@ -35,6 +36,17 @@ log = logging.getLogger(__name__)
 GROUP_LOADED = 0
 GROUP_DERIVED = 1
 _GROUP_LABELS = ("Loaded", "Derived")
+
+# internalId of a vector row: VECTOR_BASE + its dataset's serial. Group rows
+# are 0, dataset rows group + 1. Serials never change, so a vector row's id
+# stays valid when rows above its dataset are removed.
+VECTOR_BASE = 1000
+
+# Width of the expand point's slot at the left of a multi-vector dataset row.
+POINT_W = 14
+_POINT_D = 6
+# Hit width of the decoration (stale-.sv) icon after it.
+DECORATION_W = 24
 
 
 def _is_depth(ds: Dataset) -> bool:
@@ -60,6 +72,11 @@ class CatalogModel(QAbstractItemModel):
         # Dataset ids whose header scan is still in flight. Rows in this set
         # render with an "(indexing…)" suffix and italic font.
         self._scanning: set[str] = set()
+        # Per-dataset serial (stable id for its vector rows) and the vector
+        # names currently shown under it (empty: no children).
+        self._serials: dict[str, int] = {}
+        self._next_serial = 0
+        self._shown_vectors: dict[str, tuple[str, ...]] = {}
         project.dataset_added.connect(self._on_dataset_added)
         project.dataset_removed.connect(self._on_dataset_removed)
 
@@ -75,9 +92,16 @@ class CatalogModel(QAbstractItemModel):
             group_row = GROUP_LOADED
         group_index = self.index(group_row, 0, QModelIndex())
         row = len(bucket)
+        self._serials[dataset.id] = self._next_serial
+        self._next_serial += 1
+        self._shown_vectors[dataset.id] = self._vectors_to_show(dataset)
         self.beginInsertRows(group_index, row, row)
         bucket.append(dataset)
         self.endInsertRows()
+        if hasattr(dataset, "vectors_changed"):
+            dataset.vectors_changed.connect(
+                lambda ds_id=dataset.id: self._on_vectors_changed(ds_id)
+            )
         # Track indexing badge state based on the dataset's current GroupIndex.
         gi = dataset.group_index
         if gi is not None and gi.has_pending_scan:
@@ -94,6 +118,33 @@ class CatalogModel(QAbstractItemModel):
                 lambda ds_id=dataset.id: self._emit_data_changed_for(ds_id)
             )
 
+    @staticmethod
+    def _vectors_to_show(dataset: object) -> tuple[str, ...]:
+        """Vector rows under *dataset*: only when it has two or more."""
+        names = tuple(getattr(dataset, "vector_names", ()) or ())
+        return names if len(names) >= 2 else ()
+
+    def _on_vectors_changed(self, dataset_id: str) -> None:
+        """Vectors added or removed on disk: rebuild that dataset's rows."""
+        parent = self.index_for_dataset_id(dataset_id)
+        if not parent.isValid():
+            return
+        ds = self.dataset_for_index(parent)
+        new = self._vectors_to_show(ds)
+        old = self._shown_vectors.get(dataset_id, ())
+        if new == old:
+            self.dataChanged.emit(parent, parent)
+            return
+        if old:
+            self.beginRemoveRows(parent, 0, len(old) - 1)
+            self._shown_vectors[dataset_id] = ()
+            self.endRemoveRows()
+        if new:
+            self.beginInsertRows(parent, 0, len(new) - 1)
+            self._shown_vectors[dataset_id] = new
+            self.endInsertRows()
+        self.dataChanged.emit(parent, parent)
+
     def _on_dataset_removed(self, dataset_id: str) -> None:
         self._scanning.discard(dataset_id)
         for group in (GROUP_LOADED, GROUP_DERIVED):
@@ -103,6 +154,7 @@ class CatalogModel(QAbstractItemModel):
                     group_index = self.index(group, 0, QModelIndex())
                     self.beginRemoveRows(group_index, row, row)
                     bucket.pop(row)
+                    self._shown_vectors.pop(dataset_id, None)
                     self.endRemoveRows()
                     return
 
@@ -123,6 +175,9 @@ class CatalogModel(QAbstractItemModel):
                     parent = self.index(group, 0, QModelIndex())
                     idx = self.index(row, 0, parent)
                     self.dataChanged.emit(idx, idx)
+                    n = self.rowCount(idx)
+                    if n:  # vector rows share the dataset's state (stale red)
+                        self.dataChanged.emit(self.index(0, 0, idx), self.index(n - 1, 0, idx))
                     return
 
     # --- QAbstractItemModel API ---
@@ -130,12 +185,27 @@ class CatalogModel(QAbstractItemModel):
     def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
         return 1
 
+    # Row kinds, from internalId.
+    @staticmethod
+    def is_group_row(index: QModelIndex) -> bool:
+        return index.isValid() and index.internalId() == 0
+
+    @staticmethod
+    def is_dataset_row(index: QModelIndex) -> bool:
+        return index.isValid() and index.internalId() in (GROUP_LOADED + 1, GROUP_DERIVED + 1)
+
+    @staticmethod
+    def is_vector_row(index: QModelIndex) -> bool:
+        return index.isValid() and index.internalId() >= VECTOR_BASE
+
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
         if not parent.isValid():
             return len(_GROUP_LABELS)
-        # Group rows have children; dataset rows do not.
-        if parent.internalId() == 0:
+        if self.is_group_row(parent):
             return len(self._bucket(parent.row()))
+        if self.is_dataset_row(parent):
+            ds = self.dataset_for_index(parent)
+            return len(self._shown_vectors.get(ds.id, ())) if ds is not None else 0
         return 0
 
     def index(self, row: int, column: int, parent: QModelIndex = QModelIndex()) -> QModelIndex:
@@ -144,8 +214,14 @@ class CatalogModel(QAbstractItemModel):
         if not parent.isValid():
             # Group row: encode id=0.
             return self.createIndex(row, column, 0)
-        # Dataset row under a group: encode id = group+1.
-        return self.createIndex(row, column, parent.row() + 1)
+        if self.is_group_row(parent):
+            # Dataset row under a group: encode id = group+1.
+            return self.createIndex(row, column, parent.row() + 1)
+        ds = self.dataset_for_index(parent)
+        if ds is None:
+            return QModelIndex()
+        # Vector row under a dataset: encode id = VECTOR_BASE + serial.
+        return self.createIndex(row, column, VECTOR_BASE + self._serials[ds.id])
 
     def parent(self, index: QModelIndex) -> QModelIndex:
         if not index.isValid():
@@ -153,8 +229,45 @@ class CatalogModel(QAbstractItemModel):
         internal = index.internalId()
         if internal == 0:
             return QModelIndex()
+        if internal >= VECTOR_BASE:
+            ds_id = self._dataset_id_for_serial(internal - VECTOR_BASE)
+            return self.index_for_dataset_id(ds_id) if ds_id is not None else QModelIndex()
         group = internal - 1
         return self.createIndex(group, 0, 0)
+
+    def _dataset_id_for_serial(self, serial: int) -> str | None:
+        for ds_id, s in self._serials.items():
+            if s == serial:
+                return ds_id
+        return None
+
+    def index_for_dataset_id(self, dataset_id: str) -> QModelIndex:
+        """The dataset row for *dataset_id* (invalid if not listed)."""
+        for group in (GROUP_LOADED, GROUP_DERIVED):
+            for row, ds in enumerate(self._bucket(group)):
+                if ds.id == dataset_id:
+                    return self.createIndex(row, 0, group + 1)
+        return QModelIndex()
+
+    def has_vector_point(self, index: QModelIndex) -> bool:
+        """True for a dataset row with vector rows under it (shows the point)."""
+        if not self.is_dataset_row(index):
+            return False
+        ds = self.dataset_for_index(index)
+        return ds is not None and bool(self._shown_vectors.get(ds.id))
+
+    def vector_for_index(self, index: QModelIndex) -> tuple[Dataset, str] | None:
+        """(parent dataset, vector name) for a vector row, else None."""
+        if not self.is_vector_row(index):
+            return None
+        parent = self.parent(index)
+        ds = self.dataset_for_index(parent)
+        if ds is None:
+            return None
+        names = self._shown_vectors.get(ds.id, ())
+        if not 0 <= index.row() < len(names):
+            return None
+        return ds, names[index.row()]
 
     def flags(self, index: QModelIndex) -> Qt.ItemFlag:
         if not index.isValid():
@@ -162,6 +275,7 @@ class CatalogModel(QAbstractItemModel):
         if index.internalId() == 0:
             # Group row — selectable off, only expandable.
             return Qt.ItemFlag.ItemIsEnabled
+        # Dataset and vector rows: selectable and draggable alike.
         return (
             Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsDragEnabled
         )
@@ -173,6 +287,8 @@ class CatalogModel(QAbstractItemModel):
             if role == Qt.ItemDataRole.DisplayRole:
                 return _GROUP_LABELS[index.row()]
             return None
+        if self.is_vector_row(index):
+            return self._vector_data(index, role)
         group = index.internalId() - 1
         bucket = self._bucket(group)
         if index.row() >= len(bucket):
@@ -223,6 +339,28 @@ class CatalogModel(QAbstractItemModel):
             return str(ds.source_path)
         return None
 
+    def _vector_data(self, index: QModelIndex, role: int):  # noqa: ANN202
+        found = self.vector_for_index(index)
+        if found is None:
+            return None
+        ds, name = found
+        is_default = name == getattr(ds, "default_vector", None)
+        stale = bool(getattr(ds, "data_stale", False))
+        if role == Qt.ItemDataRole.DisplayRole:
+            return f"{name}  (default)" if is_default else name
+        if role == Qt.ItemDataRole.FontRole and is_default:
+            font = QFont()
+            font.setBold(True)
+            return font
+        if role == CatalogModel.KEEP_FOREGROUND_ROLE:
+            return stale
+        if role == Qt.ItemDataRole.ForegroundRole and stale:
+            return QColor("#DC2626")
+        if role == Qt.ItemDataRole.ToolTipRole:
+            what = "Default vector — what the dataset row opens." if is_default else "Vector"
+            return f"{what}\n{name} of {ds.source_path}"
+        return None
+
     def headerData(
         self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole
     ):  # noqa: ANN201
@@ -260,8 +398,14 @@ class CatalogModel(QAbstractItemModel):
         return data
 
     def dataset_for_index(self, index: QModelIndex) -> Dataset | None:
+        """The dataset a row stands for: a file, a diff, or a vector of a file."""
         if not index.isValid() or index.internalId() == 0:
             return None
+        if self.is_vector_row(index):
+            found = self.vector_for_index(index)
+            if found is None:
+                return None
+            return self._project.vector_dataset(*found)
         group = index.internalId() - 1
         bucket = self._bucket(group)
         if index.row() >= len(bucket):
@@ -297,6 +441,47 @@ class _ForegroundKeepingDelegate(QStyledItemDelegate):
 
     _SELECTED_LIGHTEN = 0.45
 
+    def __init__(self, view: QTreeView | None = None) -> None:
+        super().__init__(view)
+        self._tree = view
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
+        """A multi-vector dataset row: the expand point, then the usual cell.
+
+        The point sits in its own ``POINT_W`` slot at the left edge — hollow
+        when the vector rows are collapsed, filled when expanded — and the
+        cell (decoration icon, then text) is drawn after it.
+        """
+        model = index.model()
+        if (
+            self._tree is None
+            or not isinstance(model, CatalogModel)
+            or not model.has_vector_point(index)
+        ):
+            super().paint(painter, option, index)
+            return
+        if option.state & QStyle.StateFlag.State_Selected:
+            painter.fillRect(option.rect, option.palette.highlight())
+        slot = option.rect.adjusted(0, 0, 0, 0)
+        slot.setWidth(POINT_W)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        color = option.palette.color(
+            QPalette.ColorRole.HighlightedText if selected else QPalette.ColorRole.Text
+        )
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(QPen(color, 1.2))
+        expanded = self._tree.isExpanded(index)
+        painter.setBrush(QBrush(color) if expanded else Qt.BrushStyle.NoBrush)
+        cx = slot.left() + POINT_W / 2.0
+        cy = slot.top() + slot.height() / 2.0
+        r = _POINT_D / 2.0
+        painter.drawEllipse(int(round(cx - r)), int(round(cy - r)), _POINT_D, _POINT_D)
+        painter.restore()
+        shifted = QStyleOptionViewItem(option)
+        shifted.rect = option.rect.adjusted(POINT_W, 0, 0, 0)
+        super().paint(painter, shifted, index)
+
     def initStyleOption(self, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         super().initStyleOption(option, index)
         if not index.data(CatalogModel.KEEP_FOREGROUND_ROLE):
@@ -308,6 +493,20 @@ class _ForegroundKeepingDelegate(QStyledItemDelegate):
         option.palette.setColor(
             QPalette.ColorRole.HighlightedText, _lighten(color, self._SELECTED_LIGHTEN)
         )
+
+
+class _CatalogTreeView(QTreeView):
+    """Tree view whose dataset rows have no branch arrow.
+
+    A multi-vector dataset row expands through its own point (see the
+    delegate), so Qt's arrow would be a second control for the same thing.
+    Keyboard expansion (Right / Left) is Qt's and still works.
+    """
+
+    def drawBranches(self, painter: QPainter, rect, index: QModelIndex) -> None:  # noqa: ANN001
+        if CatalogModel.is_dataset_row(index):
+            return
+        super().drawBranches(painter, rect, index)
 
 
 class CatalogPanel(QWidget):
@@ -332,7 +531,7 @@ class CatalogPanel(QWidget):
         self._project = project
         self._model = CatalogModel(project, self)
 
-        self._view = QTreeView(self)
+        self._view = _CatalogTreeView(self)
         self._view.setModel(self._model)
         self._view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._view.setDragEnabled(True)
@@ -342,6 +541,10 @@ class CatalogPanel(QWidget):
         self._view.setRootIsDecorated(True)
         self._view.setUniformRowHeights(True)
         self._view.setItemDelegate(_ForegroundKeepingDelegate(self._view))
+        # Repaint the point when a dataset row expands or collapses (keyboard
+        # included).
+        self._view.expanded.connect(lambda idx: self._view.viewport().update())
+        self._view.collapsed.connect(lambda idx: self._view.viewport().update())
         self._view.expandAll()
         self._view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._view.customContextMenuRequested.connect(self._show_context_menu)
@@ -469,6 +672,8 @@ class CatalogPanel(QWidget):
         Split out from :meth:`_show_context_menu` so the menu's contents can
         be asserted without entering ``QMenu.exec``'s modal loop.
         """
+        if len(datasets) == 1 and isinstance(datasets[0], VectorDataset):
+            return self.build_vector_context_menu(datasets[0])
         menu = QMenu(self._view)
         if len(datasets) == 1:
             ds = datasets[0]
@@ -574,6 +779,60 @@ class CatalogPanel(QWidget):
             return None
         return menu
 
+    def build_vector_context_menu(self, vec: VectorDataset) -> QMenu:
+        """Menu for one vector row: open it, difference it, its headers."""
+        from seisvis.models.compatibility import are_toggle_compatible
+
+        menu = QMenu(self._view)
+        open_group = menu.addAction("Open in new toggle group")
+        open_group.triggered.connect(
+            lambda checked=False, v=vec: self.open_in_new_group_requested.emit(v)
+        )
+
+        # Parented explicitly: a submenu from addMenu(title) is owned by the
+        # Python wrapper and dies with this function's scope.
+        diff_menu = QMenu("Difference with…", menu)
+        menu.addMenu(diff_menu)
+        parent = vec.parent_dataset
+        siblings = [
+            self._project.vector_dataset(parent, name)
+            for name in getattr(parent, "vector_names", ())
+            if name != vec.vector
+        ]
+        others = [
+            ds
+            for ds in self._project.datasets
+            if ds is not parent and not isinstance(ds, DerivedDataset) and not _is_depth(ds)
+        ]
+
+        def add_target(other: Dataset | None, label: str) -> None:
+            if other is None:
+                return
+            action = diff_menu.addAction(label)
+            compat = are_toggle_compatible(vec, other)
+            action.setEnabled(compat.ok)
+            if compat.ok:
+                action.setToolTip(f"{vec.name} − {other.name}")
+                action.triggered.connect(
+                    lambda checked=False, a=vec, b=other: self.diff_requested.emit(a, b)
+                )
+            else:
+                action.setToolTip(f"Incompatible: {compat.reason}")
+
+        for sib in siblings:
+            add_target(sib, sib.vector if sib is not None else "")
+        if siblings and others:
+            diff_menu.addSeparator()
+        for other in others:
+            add_target(other, other.name)
+        diff_menu.setEnabled(bool(siblings or others))
+
+        menu.addSeparator()
+        inspect = menu.addAction("Configure Headers…")
+        inspect.setToolTip(f"Headers of {parent.name} — every vector shares them.")
+        inspect.triggered.connect(lambda checked=False, d=parent: self._open_header_inspector(d))
+        return menu
+
     def _inspector_tooltip(self) -> str:
         from PySide6.QtCore import QSettings
 
@@ -617,25 +876,81 @@ class CatalogPanel(QWidget):
             self.open_in_new_group_requested.emit(ds)
 
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001
-        # A click on the row's decoration icon (stale-sv warning) opens the
-        # header inspector. Keeps the icon discoverable as an actionable
-        # affordance, not just decoration.
-        if obj is self._view.viewport() and event.type() == QEvent.Type.MouseButtonRelease:
-            if event.button() == Qt.MouseButton.LeftButton:
-                index = self._view.indexAt(event.position().toPoint())
+        if obj is not self._view.viewport():
+            return super().eventFilter(obj, event)
+        kind = event.type()
+        mouse = (
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.MouseButtonRelease,
+            QEvent.Type.MouseButtonDblClick,
+        )
+        if kind in mouse and event.button() == Qt.MouseButton.LeftButton:
+            pos = event.position().toPoint()
+            index = self._view.indexAt(pos)
+            # The expand point toggles the vector rows — on press, consumed
+            # with its release and double-click so it never selects, opens
+            # or inspects.
+            if self._click_on_vector_point(index, pos):
+                if kind == QEvent.Type.MouseButtonPress:
+                    self.toggle_vectors(index)
+                return True
+            # A click on the row's decoration icon (stale-sv warning) opens
+            # the header inspector. Keeps the icon discoverable as an
+            # actionable affordance, not just decoration.
+            if kind == QEvent.Type.MouseButtonRelease:
                 ds = self._model.dataset_for_index(index)
-                if ds is not None and self._click_on_decoration(index, event.position().toPoint()):
+                if ds is not None and self._click_on_decoration(index, pos):
                     if getattr(ds, "sv_stale", False):
                         self._open_header_inspector(ds)
                         return True
         return super().eventFilter(obj, event)
 
+    def toggle_vectors(self, index: QModelIndex) -> None:
+        """Expand or collapse a multi-vector dataset's vector rows."""
+        if self._model.has_vector_point(index):
+            self._view.setExpanded(index, not self._view.isExpanded(index))
+
+    def _click_on_vector_point(self, index: QModelIndex, pos) -> bool:  # noqa: ANN001
+        """True when *pos* is on the expand point of a multi-vector dataset row."""
+        if not self._model.has_vector_point(index):
+            return False
+        rect = self._view.visualRect(index)
+        if not rect.isValid():
+            return False
+        return rect.left() <= pos.x() < rect.left() + POINT_W
+
     def _click_on_decoration(self, index: QModelIndex, pos) -> bool:  # noqa: ANN001
         rect = self._view.visualRect(index)
         if not rect.isValid():
             return False
-        # The decoration icon is rendered at the leftmost edge of the cell,
-        # immediately after Qt's tree-branch indentation. Default icon size is
-        # ~16 px; a 24-px window catches the icon plus small padding without
-        # bleeding into the text label.
-        return rect.left() <= pos.x() <= rect.left() + 24
+        # The decoration icon is rendered at the left of the cell,
+        # immediately after Qt's tree-branch indentation — and after the
+        # expand point when the row has one, so the two hit areas never
+        # overlap. Default icon size is ~16 px; a 24-px window catches the
+        # icon plus small padding without bleeding into the text label.
+        left = rect.left() + (POINT_W if self._model.has_vector_point(index) else 0)
+        return left <= pos.x() <= left + DECORATION_W
+
+    # --- expand state (saved in sessions) ---
+
+    def expanded_dataset_ids(self) -> list[str]:
+        """Datasets whose vector rows are expanded, in catalog order."""
+        out: list[str] = []
+        group = self._model.index(GROUP_LOADED, 0, QModelIndex())
+        for row in range(self._model.rowCount(group)):
+            idx = self._model.index(row, 0, group)
+            if self._model.has_vector_point(idx) and self._view.isExpanded(idx):
+                ds = self._model.dataset_for_index(idx)
+                if ds is not None:
+                    out.append(ds.id)
+        return out
+
+    def set_expanded_dataset_ids(self, ids) -> None:  # noqa: ANN001 - Iterable[str]
+        """Expand exactly these datasets' vector rows (others collapse)."""
+        wanted = set(ids)
+        group = self._model.index(GROUP_LOADED, 0, QModelIndex())
+        for row in range(self._model.rowCount(group)):
+            idx = self._model.index(row, 0, group)
+            if self._model.has_vector_point(idx):
+                ds = self._model.dataset_for_index(idx)
+                self._view.setExpanded(idx, ds is not None and ds.id in wanted)

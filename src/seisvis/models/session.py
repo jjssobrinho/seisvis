@@ -74,6 +74,10 @@ class DerivedEntry:
     b: str
     direction: str = "a_minus_b"
     name: str = ""
+    # A parent that is one vector of a multi-vector dataset (wiz): the
+    # dataset's key in ``a`` / ``b`` plus the vector name. None = the dataset.
+    a_vector: str | None = None
+    b_vector: str | None = None
 
 
 @dataclass
@@ -81,6 +85,9 @@ class MemberEntry:
     dataset: str
     display_state: DisplayState = field(default_factory=DisplayState)
     processing_chain: ProcessingChain = field(default_factory=ProcessingChain)
+    # Set when the member is one vector of a multi-vector dataset (wiz):
+    # ``dataset`` is then the dataset's key.
+    vector: str | None = None
 
 
 @dataclass
@@ -141,6 +148,8 @@ class SessionFile:
     active_group: int | None = None
     model_groups: list[ModelGroupEntry] = field(default_factory=list)
     active_model_group: int | None = None
+    # Dataset keys whose vector rows are expanded in the catalog.
+    catalog_expanded: list[str] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
@@ -155,14 +164,12 @@ class SessionFile:
         return {
             "schema_version": SESSION_SCHEMA_VERSION,
             "datasets": [_dataset_to_dict(d) for d in self.datasets],
-            "derived": [
-                {"key": d.key, "a": d.a, "b": d.b, "direction": d.direction, "name": d.name}
-                for d in self.derived
-            ],
+            "derived": [_derived_to_dict(d) for d in self.derived],
             "toggle_groups": [_group_to_dict(g) for g in self.groups],
             "active_group": self.active_group,
             "model_groups": [_model_group_to_dict(g) for g in self.model_groups],
             "active_model_group": self.active_model_group,
+            **({"catalog_expanded": list(self.catalog_expanded)} if self.catalog_expanded else {}),
         }
 
     def dumps(self) -> str:
@@ -198,6 +205,8 @@ class SessionFile:
                     b=str(d["b"]),
                     direction=str(d.get("direction", "a_minus_b")),
                     name=str(d.get("name", "")),
+                    a_vector=_opt_str(d.get("a_vector")),
+                    b_vector=_opt_str(d.get("b_vector")),
                 )
                 for d in _list(raw, "derived")
             ]
@@ -215,6 +224,7 @@ class SessionFile:
             active_group=_opt_int(raw.get("active_group")),
             model_groups=model_groups,
             active_model_group=_opt_int(raw.get("active_model_group")),
+            catalog_expanded=[str(k) for k in raw.get("catalog_expanded") or [] if k],
         )
 
     @classmethod
@@ -295,12 +305,32 @@ def _dataset_from_dict(raw: dict) -> DatasetEntry:
     )
 
 
+def _derived_to_dict(d: DerivedEntry) -> dict[str, object]:
+    out: dict[str, object] = {
+        "key": d.key,
+        "a": d.a,
+        "b": d.b,
+        "direction": d.direction,
+        "name": d.name,
+    }
+    if d.a_vector:
+        out["a_vector"] = d.a_vector
+    if d.b_vector:
+        out["b_vector"] = d.b_vector
+    return out
+
+
+def _opt_str(value: object) -> str | None:
+    return str(value) if value not in (None, "") else None
+
+
 def _group_to_dict(g: GroupEntry) -> dict[str, object]:
     return {
         "name": g.name,
         "members": [
             {
                 "dataset": m.dataset,
+                **({"vector": m.vector} if m.vector else {}),
                 "display": m.display_state.to_dict(),
                 "processing": m.processing_chain.to_dict(),
             }
@@ -330,6 +360,7 @@ def _group_from_dict(raw: dict) -> GroupEntry:
     members = [
         MemberEntry(
             dataset=str(m["dataset"]),
+            vector=_opt_str(m.get("vector")),
             display_state=DisplayState.from_dict(m.get("display")),
             processing_chain=ProcessingChain.from_dict(m.get("processing")),
         )

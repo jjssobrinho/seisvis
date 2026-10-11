@@ -32,6 +32,7 @@ from seisvis.services.session_service import (
     build_toggle_group,
     filter_group,
     prune,
+    resolve_ref,
     restore_group_view,
 )
 from seisvis.workers.load_worker import LoadWorker
@@ -56,6 +57,9 @@ class SessionHost(Protocol):
         """Open a Model Window tab holding *datasets*, styled as *entry*."""
 
     def set_active_model_group(self, index: int) -> None: ...
+
+    # Optional: ``set_catalog_expanded(dataset_ids: list[str])`` expands those
+    # datasets' vector rows in the catalog (looked up with getattr).
 
 
 class SessionRestorer(QObject):
@@ -203,8 +207,9 @@ class SessionRestorer(QObject):
             self._build_views()
             return
         entry = self._derived_queue.pop(0)
-        a = self._loaded.get(entry.a)
-        b = self._loaded.get(entry.b)
+        vector_of = self._project.vector_dataset
+        a = resolve_ref(self._loaded, entry.a, entry.a_vector, vector_of)
+        b = resolve_ref(self._loaded, entry.b, entry.b_vector, vector_of)
         if a is None or b is None or a.is_closed or b.is_closed:
             self._notes.append(f"Difference “{entry.name}” was dropped: a parent is gone")
             self._next_derived()
@@ -246,7 +251,19 @@ class SessionRestorer(QObject):
             self._notes.extend(more)
             if entry is None:
                 continue
-            group = build_toggle_group(entry, self._loaded)
+            # A vector member whose vector left the dataset goes like a
+            # missing file.
+            entry, more = filter_group(
+                entry,
+                lambda m: (
+                    resolve_ref(self._loaded, m.dataset, m.vector, self._project.vector_dataset)
+                    is not None
+                ),
+            )
+            self._notes.extend(more)
+            if entry is None:
+                continue
+            group = build_toggle_group(entry, self._loaded, vector_of=self._project.vector_dataset)
             self._project.add_toggle_group(group)
             self._notes.extend(restore_group_view(group, entry))
             self._host.apply_flicker(group, entry.flicker_hz, entry.flicker_excluded)
@@ -275,6 +292,11 @@ class SessionRestorer(QObject):
             restored += 1
         if active_model is not None:
             self._host.set_active_model_group(active_model)
+
+        expand = getattr(self._host, "set_catalog_expanded", None)
+        if expand is not None:
+            loaded = self._loaded
+            expand([loaded[k].id for k in self._session.catalog_expanded if k in loaded])
 
         self._keys_by_seq.clear()
         log.info("session restored (%d note(s))", len(self._notes))

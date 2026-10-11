@@ -218,8 +218,9 @@ class WizFieldSource:
 
         ``"data"`` when the trace count, samples, interval, origin or default
         vector changed — the dataset no longer describes what was loaded.
-        ``"fields"`` when only the attribute schema did (``wiz attr``, a flow
-        adding a column). History-only edits are ``"same"``.
+        ``"fields"`` when only the attribute schema or the set of other
+        vectors did (``wiz attr``, a flow adding a column or a vector).
+        History-only edits are ``"same"``.
         """
         try:
             fresh = wiz.Dataset.open(self._wz.path, "r")
@@ -228,14 +229,22 @@ class WizFieldSource:
             return "data"
         if _geometry(fresh) != _geometry(self._wz):
             return "data"
-        if fresh.attributes(hidden=True) == self._wz.attributes(hidden=True):
+        same_attrs = fresh.attributes(hidden=True) == self._wz.attributes(hidden=True)
+        same_vectors = fresh.vectors() == self._wz.vectors()
+        if same_attrs and same_vectors:
             self._wz = fresh
             return "same"
         with self._lock:
             self._wz = fresh
-            self._columns.clear()
-        log.info("attribute schema of %s changed", self._wz.path)
+            if not same_attrs:
+                self._columns.clear()
+        log.info("schema of %s changed (attributes or vectors)", self._wz.path)
         return "fields"
+
+    @property
+    def wz(self) -> wiz.Dataset:
+        """The dataset as last read (refresh() swaps it)."""
+        return self._wz
 
     def close(self) -> None:
         with self._lock:
@@ -257,6 +266,29 @@ class WizSampleSource:
 
     def close(self) -> None:
         self._mm = None
+
+
+class WizVectors:
+    """Every vector of a wiz dataset, as of the field source's last refresh."""
+
+    def __init__(self, fields: WizFieldSource) -> None:
+        self._fields = fields
+
+    def names(self) -> tuple[str, ...]:
+        return tuple(self._fields.wz.vectors())
+
+    def default(self) -> str:
+        return default_vector(self._fields.wz)
+
+    def open(self, name: str) -> WizSampleSource:
+        return WizSampleSource(self._fields.wz, name)
+
+    def paths(self) -> tuple[Path, ...]:
+        """Every vector's file, the default one first (it anchors fingerprints)."""
+        wz = self._fields.wz
+        first = default_vector(wz)
+        order = [first, *(n for n in wz.vectors() if n != first)]
+        return tuple(_vector_file(Path(wz.path), wz.meta, n) for n in order)
 
 
 def _stored_order(wz: wiz.Dataset) -> tuple[str, ...]:
@@ -294,7 +326,10 @@ def load_wiz(path: Path) -> Dataset:
     ds.sample_source = WizSampleSource(wz, vector)
     ds.t0_ms = float(wz.t0) if wz.t0 is not None else 0.0
     ds.default_display_names = dict(WIZ_DISPLAY_NAMES)
-    ds.content_paths = (_vector_file(path, wz.meta, vector),)
+    ds.vector_backend = WizVectors(fields)
+    # Every vector's file is content: a change to any marks the dataset (and
+    # its vectors) stale. The default one comes first and anchors fingerprints.
+    ds.content_paths = ds.vector_backend.paths()
     ds.schema_paths = (path / META_FILE,)
     ds.supports_depth = False
     ds.stored_order = order
@@ -324,6 +359,7 @@ __all__ = [
     "WIZ_ROLE_FIELDS",
     "WizFieldSource",
     "WizSampleSource",
+    "WizVectors",
     "default_vector",
     "load_wiz",
     "wiz_anchor_file",

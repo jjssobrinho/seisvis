@@ -7,6 +7,7 @@ from PySide6.QtCore import QObject, Signal
 from seisvis.models.dataset import Dataset
 from seisvis.models.diff_selection import DiffSelection
 from seisvis.models.toggle_group import ToggleGroup
+from seisvis.models.vector_dataset import VectorDataset, split_vector_id, vector_id
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +24,10 @@ class Project(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._datasets: list[Dataset] = []
+        # Vectors of multi-vector datasets, created on first use. Not in
+        # _datasets: those are the files (sessions, watching, reloads).
+        self._vectors: dict[str, VectorDataset] = {}
+        self._vector_parents: set[str] = set()
         self._toggle_groups: list[ToggleGroup] = []
         self._active_toggle_group_id: str | None = None
         self.diff_selection = DiffSelection(self)
@@ -43,6 +48,8 @@ class Project(QObject):
         for i, ds in enumerate(self._datasets):
             if ds.id == dataset_id:
                 self._datasets.pop(i)
+                for vec in self.vectors_of(dataset_id):
+                    vec.close()
                 ds.close()
                 log.info("project remove: %s (%s)", ds.name, ds.id)
                 self.dataset_removed.emit(dataset_id)
@@ -50,10 +57,52 @@ class Project(QObject):
         return None
 
     def find(self, dataset_id: str) -> Dataset | None:
+        """A loaded or derived dataset by id, or a vector (``"<parent>::<NAME>"``)."""
         for ds in self._datasets:
             if ds.id == dataset_id:
                 return ds
+        parts = split_vector_id(dataset_id)
+        if parts is not None:
+            parent = self.find(parts[0])
+            if parent is not None:
+                return self.vector_dataset(parent, parts[1])
         return None
+
+    # --- Vectors ---
+
+    def vector_dataset(self, parent: Dataset, name: str) -> VectorDataset | None:
+        """The (cached) dataset for vector *name* of *parent*, or None.
+
+        A vector once handed out stays resolvable after it vanishes on disk
+        (it is marked missing), so groups and diffs holding it keep working.
+        """
+        key = vector_id(parent.id, name)
+        cached = self._vectors.get(key)
+        if cached is not None:
+            return cached
+        if name not in getattr(parent, "vector_names", ()):
+            return None
+        vec = VectorDataset(parent, name, parent=self)
+        self._vectors[key] = vec
+        if parent.id not in self._vector_parents:
+            self._vector_parents.add(parent.id)
+            parent.vectors_changed.connect(lambda pid=parent.id: self._on_vectors_changed(pid))
+        return vec
+
+    def vectors_of(self, parent_id: str) -> list[VectorDataset]:
+        """Vector datasets created so far for *parent_id*."""
+        return [v for v in self._vectors.values() if v.parent_dataset.id == parent_id]
+
+    def _on_vectors_changed(self, parent_id: str) -> None:
+        """Vectors added / removed on disk, or the parent reloaded."""
+        for vec in self.vectors_of(parent_id):
+            present = vec.vector in vec.parent_dataset.vector_names
+            if present:
+                vec.mark_missing(False)
+                vec.reopen()
+            else:
+                log.info("vector %s left %s on disk", vec.vector, vec.parent_dataset.name)
+                vec.mark_missing(True)
 
     # --- Toggle groups ---
 
@@ -113,6 +162,9 @@ class Project(QObject):
     def close_all(self) -> None:
         self._toggle_groups.clear()
         self._active_toggle_group_id = None
+        for vec in self._vectors.values():
+            vec.close()
+        self._vectors.clear()
         for ds in self._datasets:
             ds.close()
         self._datasets.clear()

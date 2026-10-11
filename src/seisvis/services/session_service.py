@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -42,6 +42,7 @@ from seisvis.models.sort_config import SortConfig, default_sort_config
 from seisvis.models.sv_sidecar import compute_sha1_prefix
 from seisvis.models.time_axis import time_extent
 from seisvis.models.toggle_group import ToggleGroup
+from seisvis.models.vector_dataset import VectorDataset
 
 log = logging.getLogger(__name__)
 
@@ -84,6 +85,7 @@ def capture(
     model_groups: list[ModelGroup] | None = None,
     active_model_group: int | None = None,
     fingerprints: bool = True,
+    catalog_expanded: Iterable[str] = (),
 ) -> SessionFile:
     """Describe the live project as a :class:`SessionFile`.
 
@@ -100,12 +102,22 @@ def capture(
     derived: list[DerivedEntry] = []
     for ds in project.datasets:
         if isinstance(ds, DerivedDataset):
-            a = keys.get(ds.parent_a.id)
-            b = keys.get(ds.parent_b.id)
-            if ds.parents_missing or a is None or b is None:
+            a, a_vector = _ref(ds.parent_a, keys)
+            b, b_vector = _ref(ds.parent_b, keys)
+            if ds.parents_missing or not a or not b:
                 continue
             key = f"x{len(derived)}"
-            derived.append(DerivedEntry(key=key, a=a, b=b, direction=ds.direction, name=ds.name))
+            derived.append(
+                DerivedEntry(
+                    key=key,
+                    a=a,
+                    b=b,
+                    direction=ds.direction,
+                    name=ds.name,
+                    a_vector=a_vector,
+                    b_vector=b_vector,
+                )
+            )
         else:
             path = Path(ds.source_path).resolve()
             sha, mtime = _fingerprint(path) if fingerprints else ("", 0.0)
@@ -150,20 +162,31 @@ def capture(
         active_group=active_group,
         model_groups=model_entries,
         active_model_group=new_active_model,
+        catalog_expanded=[keys[i] for i in catalog_expanded if i in keys],
     )
+
+
+def _ref(ds: object, keys: Mapping[str, str]) -> tuple[str, str | None]:
+    """(session key, vector) for a dataset; a vector is its dataset's key + name."""
+    if isinstance(ds, VectorDataset):
+        return keys.get(ds.parent_dataset.id, ""), ds.vector
+    return keys.get(getattr(ds, "id", ""), ""), None
 
 
 def _capture_group(
     group: ToggleGroup, keys: Mapping[str, str], flicker: FlickerState | None
 ) -> GroupEntry | None:
-    members = [
-        MemberEntry(
-            dataset=keys.get(m.dataset.id, ""),
-            display_state=deepcopy(m.display_state),
-            processing_chain=deepcopy(m.processing_chain),
+    members = []
+    for m in group.members:
+        key, vector = _ref(m.dataset, keys)
+        members.append(
+            MemberEntry(
+                dataset=key,
+                vector=vector,
+                display_state=deepcopy(m.display_state),
+                processing_chain=deepcopy(m.processing_chain),
+            )
         )
-        for m in group.members
-    ]
     ss = group.shared_state
     entry = GroupEntry(
         name=group.name,
@@ -355,14 +378,19 @@ def _remap(old: int, mapping: Mapping[int, int]) -> int:
     return mapping.get(old, 0)
 
 
-def filter_group(entry: GroupEntry, keep: Collection[str]) -> tuple[GroupEntry | None, list[str]]:
+def filter_group(
+    entry: GroupEntry, keep: Collection[str] | Callable[[MemberEntry], bool]
+) -> tuple[GroupEntry | None, list[str]]:
     """*entry* with only the members whose dataset is in *keep*.
 
-    Cursors follow the dataset they pointed at, or go to the first member
-    when it is gone. Losing the reference loses the layout: sort, ranges and
-    zoom were all in its coordinates, so they go back to the defaults.
+    *keep* is a set of session keys, or a predicate on the member (used for
+    vector members, whose vector may no longer exist). Cursors follow the
+    dataset they pointed at, or go to the first member when it is gone.
+    Losing the reference loses the layout: sort, ranges and zoom were all in
+    its coordinates, so they go back to the defaults.
     """
-    old = [i for i, m in enumerate(entry.members) if m.dataset in keep]
+    kept = keep if callable(keep) else (lambda m, k=keep: m.dataset in k)
+    old = [i for i, m in enumerate(entry.members) if kept(m)]
     label = entry.name or "Unnamed group"
     if not old:
         return None, [f"Group “{label}” was dropped: none of its datasets are available"]
@@ -450,6 +478,7 @@ def prune(
         active_group=active_group,
         model_groups=model_groups,
         active_model_group=active_model,
+        catalog_expanded=[k for k in session.catalog_expanded if k in keep],
     )
     return pruned, notes
 
@@ -465,19 +494,50 @@ def sort_is_usable(config: SortConfig, fields: Collection[str] | None) -> bool:
     return fields is not None and required <= set(fields)
 
 
-def build_toggle_group(entry: GroupEntry, datasets: Mapping[str, Dataset]) -> ToggleGroup:
+VectorLookup = Callable[[Dataset, str], object | None]
+
+
+def resolve_ref(
+    datasets: Mapping[str, Dataset],
+    key: str,
+    vector: str | None,
+    vector_of: VectorLookup | None = None,
+) -> object | None:
+    """The dataset a saved reference names: ``datasets[key]``, or its *vector*.
+
+    None when the key is not loaded, or the vector no longer exists (or
+    there is no *vector_of* to build it with).
+    """
+    ds = datasets.get(key)
+    if ds is None or vector is None:
+        return ds
+    if vector_of is None or vector not in getattr(ds, "vector_names", ()):
+        return None
+    return vector_of(ds, vector)
+
+
+def build_toggle_group(
+    entry: GroupEntry,
+    datasets: Mapping[str, Dataset],
+    *,
+    vector_of: VectorLookup | None = None,
+) -> ToggleGroup:
     """A toggle group holding *entry*'s members, set up as saved.
 
     Sort and ranges are left at their defaults: they only make sense once
     the group is on a canvas and its datasets are indexed — see
-    :func:`restore_group_view`. Every member key must be in *datasets*.
+    :func:`restore_group_view`. Every member must resolve (key in
+    *datasets*; a vector member through *vector_of*).
     """
     view_kind = "attribute" if entry.view_kind == "attribute" else "seismic"
     group = ToggleGroup(name=entry.name or "Group", view_kind=view_kind)
     if view_kind == "attribute" and entry.attribute_config is not None:
         group.set_attribute_config(entry.attribute_config)
     for m in entry.members:
-        group.add_member(datasets[m.dataset])
+        ds = resolve_ref(datasets, m.dataset, m.vector, vector_of)
+        if ds is None:
+            raise KeyError(f"member {m.dataset}{'::' + m.vector if m.vector else ''} not available")
+        group.add_member(ds)
     for member, saved in zip(group.members, entry.members, strict=True):
         member.display_state = deepcopy(saved.display_state)
         member.processing_chain = deepcopy(saved.processing_chain)

@@ -43,11 +43,62 @@ _DEFAULT_ROLE_FIELDS: dict[GroupingMode, str] = {
 }
 
 
+def resolve_slice_request(
+    n_traces: int,
+    n_samples: int,
+    trace_indices: slice | np.ndarray,
+    time_slice: slice,
+    pad_samples: int,
+) -> tuple[np.ndarray, int, int]:
+    """Validate a ``read_slice`` request: (int64 trace indices, s0, s1).
+
+    The sample window is widened by *pad_samples* on each side, clamped to
+    the trace.
+    """
+    if pad_samples < 0:
+        raise ValueError("pad_samples must be non-negative")
+
+    if isinstance(trace_indices, slice):
+        idx_array = np.arange(*trace_indices.indices(n_traces), dtype=np.int64)
+    elif isinstance(trace_indices, np.ndarray):
+        if trace_indices.ndim != 1:
+            raise ValueError("trace_indices array must be 1-D")
+        idx_array = trace_indices.astype(np.int64, copy=False)
+    else:
+        raise TypeError(
+            f"trace_indices must be slice or np.ndarray, got {type(trace_indices).__name__}"
+        )
+
+    if idx_array.size and (idx_array.min() < 0 or idx_array.max() >= n_traces):
+        raise IndexError("trace_indices out of range")
+
+    t_start = 0 if time_slice.start is None else int(time_slice.start)
+    t_stop = n_samples if time_slice.stop is None else int(time_slice.stop)
+    if t_start < 0 or t_stop > n_samples or t_start > t_stop:
+        raise ValueError(f"time_slice {time_slice} invalid for n_samples={n_samples}")
+
+    return idx_array, max(0, t_start - pad_samples), min(n_samples, t_stop + pad_samples)
+
+
 class SampleSource(Protocol):
     """Trace samples for a backend without a segyio handle."""
 
     def read(self, indices: np.ndarray, s0: int, s1: int) -> np.ndarray:
         """float32 ``(len(indices), s1 - s0)``; indices already validated."""
+        ...
+
+
+class VectorBackend(Protocol):
+    """The sample vectors of a multi-vector backend (wiz)."""
+
+    def names(self) -> tuple[str, ...]: ...
+
+    def default(self) -> str: ...
+
+    def open(self, name: str) -> SampleSource: ...
+
+    def paths(self) -> tuple[Path, ...]:
+        """Every vector's file (watched as content)."""
         ...
 
 
@@ -70,6 +121,10 @@ class Dataset(QObject):
 
     # Fired after persist_sv() writes a new .sv to disk.
     sv_changed = Signal()
+
+    # Fired when the set of sample vectors may have changed (a schema
+    # refresh found vectors added or removed, or a reload).
+    vectors_changed = Signal()
 
     # Fired when the file backing this dataset is seen to have changed on
     # disk (True) or after a successful reload (False). The catalog renders
@@ -145,6 +200,9 @@ class Dataset(QObject):
         # Trace samples from somewhere other than the segyio handle (wiz
         # memmaps). None = the handle, with the strided fast path.
         self.sample_source: SampleSource | None = None
+        # Every sample vector, for backends with more than one (wiz). None:
+        # the dataset is its one vector.
+        self.vector_backend: VectorBackend | None = None
         # Time of sample 0 in ms. SEG-Y / SU ignore delrt, so 0; a wiz
         # dataset's meta.json t0. Canvas times are absolute: t0 + s * dt.
         self.t0_ms: float = 0.0
@@ -173,6 +231,26 @@ class Dataset(QObject):
         self.header_fields_available = self.field_source.probe()
         self.surange_ready.emit()
 
+    # --- vectors ---
+
+    @property
+    def vector_names(self) -> tuple[str, ...]:
+        """Names of the dataset's sample vectors (empty for SEG-Y / SU)."""
+        backend = self.vector_backend
+        return tuple(backend.names()) if backend is not None else ()
+
+    @property
+    def default_vector(self) -> str | None:
+        """The vector ``read_slice`` reads (TRACE, or the first)."""
+        backend = self.vector_backend
+        return backend.default() if backend is not None else None
+
+    def open_vector_source(self, name: str) -> SampleSource:
+        """A sample source for vector *name* (see VectorDataset)."""
+        if self.vector_backend is None or name not in self.vector_names:
+            raise KeyError(f"{self.name}: no vector {name!r}")
+        return self.vector_backend.open(name)
+
     def refresh_fields(self) -> str:
         """Re-read the backend's field schema after it changed on disk.
 
@@ -185,6 +263,7 @@ class Dataset(QObject):
         refresh = getattr(self.field_source, "refresh", None)
         if refresh is None or self._closed:
             return "same"
+        vectors_before = self.vector_names
         outcome = refresh()
         if outcome == "data":
             self.set_data_stale(True)
@@ -206,6 +285,10 @@ class Dataset(QObject):
             self.header_fields_available = self.field_source.probe()
             self.surange_ready.emit()
             self.group_index_ready.emit()
+            if self.vector_names != vectors_before:
+                if self.vector_backend is not None:
+                    self.content_paths = tuple(self.vector_backend.paths())
+                self.vectors_changed.emit()
         return outcome
 
     # --- time axis ---
@@ -240,30 +323,9 @@ class Dataset(QObject):
         """
         if self._closed:
             raise RuntimeError(f"Dataset {self.name!r} is closed")
-        if pad_samples < 0:
-            raise ValueError("pad_samples must be non-negative")
-
-        if isinstance(trace_indices, slice):
-            idx_array = np.arange(*trace_indices.indices(self.n_traces), dtype=np.int64)
-        elif isinstance(trace_indices, np.ndarray):
-            if trace_indices.ndim != 1:
-                raise ValueError("trace_indices array must be 1-D")
-            idx_array = trace_indices.astype(np.int64, copy=False)
-        else:
-            raise TypeError(
-                f"trace_indices must be slice or np.ndarray, got {type(trace_indices).__name__}"
-            )
-
-        if idx_array.size and (idx_array.min() < 0 or idx_array.max() >= self.n_traces):
-            raise IndexError("trace_indices out of range")
-
-        t_start = 0 if time_slice.start is None else int(time_slice.start)
-        t_stop = self.n_samples if time_slice.stop is None else int(time_slice.stop)
-        if t_start < 0 or t_stop > self.n_samples or t_start > t_stop:
-            raise ValueError(f"time_slice {time_slice} invalid for n_samples={self.n_samples}")
-
-        t0 = max(0, t_start - pad_samples)
-        t1 = min(self.n_samples, t_stop + pad_samples)
+        idx_array, t0, t1 = resolve_slice_request(
+            self.n_traces, self.n_samples, trace_indices, time_slice, pad_samples
+        )
 
         if self.sample_source is not None:
             return self.sample_source.read(idx_array, t0, t1)
@@ -414,6 +476,7 @@ class Dataset(QObject):
         self.sv_stale = other.sv_stale
         self.file_key = other.file_key
         self.sample_source = other.sample_source
+        self.vector_backend = other.vector_backend
         self.t0_ms = other.t0_ms
         self.default_display_names = other.default_display_names
         self.content_paths = other.content_paths
@@ -435,6 +498,7 @@ class Dataset(QObject):
         self.set_data_stale(False)
         self.surange_ready.emit()
         self.group_index_ready.emit()
+        self.vectors_changed.emit()
 
     def close(self) -> None:
         if self._closed:

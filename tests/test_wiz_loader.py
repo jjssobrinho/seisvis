@@ -134,7 +134,9 @@ def test_default_vector_is_trace_else_the_first(tmp_path: Path) -> None:
             np.testing.assert_array_equal(
                 ds.read_slice(slice(0, 2), slice(None)), samples(scale=scale)[:2]
             )
-            assert ds.content_paths == (path / "vectors" / f"{vector}.f32",)
+            # Every vector is watched; the default one comes first (the anchor).
+            assert ds.content_paths[0] == path / "vectors" / f"{vector}.f32"
+            assert len(ds.content_paths) == 2
         finally:
             ds.close()
 

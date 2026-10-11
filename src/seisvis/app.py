@@ -62,6 +62,7 @@ from seisvis.models.sort_config import (
 )
 from seisvis.models.toggle_group import ToggleGroup, ViewKind
 from seisvis.models.trace_alignment import AlignmentStatus, TraceAlignment
+from seisvis.models.vector_dataset import VectorDataset
 from seisvis.services.dataset_reload import ReloadError, reload_dataset
 from seisvis.services.file_watch_service import FileWatchService
 from seisvis.services.session_service import apply_model_group_entry, capture, check_session
@@ -121,7 +122,10 @@ def _index_owner(dataset: object) -> object | None:
     it needs has to be read from A — which need not be in any group.
     """
     if isinstance(dataset, DerivedDataset):
-        return None if dataset.parents_missing else dataset.parent_a
+        return None if dataset.parents_missing else _index_owner(dataset.parent_a)
+    if isinstance(dataset, VectorDataset):
+        # A vector shares its dataset's index: scan through the dataset.
+        return dataset.parent_dataset
     return dataset
 
 
@@ -1316,11 +1320,18 @@ class MainWindow(QMainWindow):
         self.project.remove(dataset_id)
 
     def _mark_derived_parents_missing(self, removed_id: str) -> None:
+        def gone(parent: object) -> bool:
+            # A vector goes with its dataset.
+            owner = getattr(parent, "parent_dataset", None)
+            return getattr(parent, "id", None) == removed_id or (
+                owner is not None and owner.id == removed_id
+            )
+
         for ds in self.project.datasets:
             if (
                 isinstance(ds, DerivedDataset)
                 and not ds.parents_missing
-                and (ds.parent_a.id == removed_id or ds.parent_b.id == removed_id)
+                and (gone(ds.parent_a) or gone(ds.parent_b))
             ):
                 ds.mark_parents_missing()
 
@@ -1644,6 +1655,7 @@ class MainWindow(QMainWindow):
             model_groups=mw.groups() if mw is not None else [],
             active_model_group=mw.current_group_index if mw is not None else None,
             fingerprints=fingerprints,
+            catalog_expanded=self.catalog_panel.expanded_dataset_ids(),
         )
 
     def _mark_session_saved(self) -> None:
@@ -1844,6 +1856,10 @@ class MainWindow(QMainWindow):
     def set_active_model_group(self, index: int) -> None:
         if self._model_window is not None:
             self._model_window.set_current_group_index(index)
+
+    def set_catalog_expanded(self, dataset_ids: list[str]) -> None:
+        """Expand those datasets' vector rows in the catalog (session restore)."""
+        self.catalog_panel.set_expanded_dataset_ids(dataset_ids)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt override
         if not self._confirm_discard_session():

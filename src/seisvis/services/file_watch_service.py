@@ -185,35 +185,40 @@ class FileWatchService(QObject):
         against the handful of datasets a session has open.
         """
         for ds_id, dataset in list(self._datasets.items()):
-            paths = self._paths.get(ds_id)
-            if paths is None:
+            if ds_id not in self._paths:
                 continue
-            content, schema = paths
             # Re-arm first: an atomic replace removes the old path from the
             # watcher, so without this the next change goes unnoticed.
             self._arm_dataset(ds_id)
             known = self._fingerprints.setdefault(ds_id, {})
-            content_changed = False
-            for path in content:
-                current = fingerprint_of(path)
-                if current != known.get(path):
-                    known[path] = current
-                    content_changed = True
+            # Schema first: a vector added or removed changes the content
+            # file list too (a deleted vector's file is gone). The handler
+            # refreshes the dataset and calls refresh_paths, which re-reads
+            # the lists and re-baselines them, so the content check below
+            # only sees what really changed under the current schema.
             schema_changed = False
-            for path in schema:
+            for path in self._paths[ds_id][1]:
                 current = fingerprint_of(path)
                 if current != known.get(path):
                     known[path] = current
                     schema_changed = True
-            if content_changed:
-                if dataset.data_stale:
-                    continue
-                log.info("source changed on disk for %s (%s)", dataset.name, content[0])
-                dataset.set_data_stale(True)
-                self.dataset_changed_on_disk.emit(ds_id)
-            elif schema_changed and not dataset.data_stale:
+            if schema_changed and not dataset.data_stale:
                 log.info("schema changed on disk for %s", dataset.name)
                 self.dataset_schema_changed.emit(ds_id)
+            paths = self._paths.get(ds_id)
+            if paths is None:  # unwatched by the handler
+                continue
+            known = self._fingerprints.setdefault(ds_id, {})
+            content_changed = False
+            for path in paths[0]:
+                current = fingerprint_of(path)
+                if current != known.get(path):
+                    known[path] = current
+                    content_changed = True
+            if content_changed and not dataset.data_stale:
+                log.info("source changed on disk for %s (%s)", dataset.name, paths[0][0])
+                dataset.set_data_stale(True)
+                self.dataset_changed_on_disk.emit(ds_id)
 
 
 __all__ = ["FileWatchService", "Fingerprint", "fingerprint_of"]

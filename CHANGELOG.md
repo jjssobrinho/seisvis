@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Vectors in the catalog (v7.3)
+
+- A wiz dataset with two or more vectors shows a point left of its name;
+  click it (or Right/Left) to list its vectors. The default one is marked.
+- Each vector opens, drags into a canvas and diffs like a dataset
+  (double-click, drag, right-click → Difference with…). Vectors share the
+  dataset's headers, sort and `.sv`.
+- Vectors added or removed on disk add or remove rows; a vector in use that
+  disappears stays on screen, flagged as changed.
+- Sessions save vector members, vector differences and which datasets are
+  expanded; older sessions open as before.
+
 ### Wiz datasets (v7.2)
 
 - **Open wiz datasets** (`*.wiz` folders): File → **Load wiz dataset…**,
