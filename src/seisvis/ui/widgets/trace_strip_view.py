@@ -44,6 +44,7 @@ from seisvis.services.trace_strip_service import (
     values_at_column,
 )
 from seisvis.ui.widgets.frame_field_reader import FrameFieldReader
+from seisvis.ui.widgets.trace_axis import column_at, column_centre
 
 LANE_HEIGHT = 70  # default px per lane
 EMPTY_HEIGHT = 40
@@ -275,11 +276,12 @@ class TraceStripView(QWidget):
         labels = self._labels()
         return [(label, value) for label, (_f, value) in zip(labels, pairs, strict=True)]
 
-    def set_cursor_x(self, x: float | None) -> None:
+    def set_cursor_x(self, x: int | None) -> None:
+        """Mark the trace drawn at display x *x* (its column's centre); None hides."""
         for lane in self._lanes:
             lane.cursor.setVisible(x is not None)
             if x is not None:
-                lane.cursor.setPos(x)
+                lane.cursor.setPos(column_centre(x))
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001, D401 - Qt override
         super().resizeEvent(event)
@@ -299,7 +301,7 @@ class TraceStripView(QWidget):
             self.set_cursor_x(None)
             self.hovered.emit(None)
             return
-        x = int(round(self._lanes[i].plot.vb.mapSceneToView(scene_pos).x()))
+        x = column_at(self._lanes[i].plot.vb.mapSceneToView(scene_pos).x())
         self.set_cursor_x(x)
         self.hovered.emit(x)
 

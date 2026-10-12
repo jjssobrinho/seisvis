@@ -226,6 +226,7 @@ def test_strip_follows_the_canvas(qapp, canvas) -> None:  # noqa: ANN001
     lines: list[str] = []
     view.crosshair_readout.connect(lines.append)
     view._on_strip_hovered(x0 + 1)
+    assert view._v_line.value() == x0 + 1.5  # the column's centre, over the points
     assert "rms_in 6" in lines[-1] and "fldr 11" in lines[-1].replace("Shot", "fldr")
     assert "t =" not in lines[-1]
     view._emit_status_for_cursor(x0 + 5, 10.0, None)
@@ -270,3 +271,60 @@ def test_context_menu_offers_unshown_fields(qapp, canvas) -> None:  # noqa: ANN0
     texts = [a.text() for a in lane_menu.actions()]
     assert {"Colour…", "Y range", "Log Y", "Move up", "Move down", "Remove"} <= set(texts)
     assert FLDR.size == TRACF.size == N
+
+
+# --- trace axis: columns, centres, ticks ----------------------------------------------
+
+
+def test_column_geometry() -> None:
+    from seisvis.ui.widgets.trace_axis import column_at, column_centre
+
+    # Column c spans [c, c + 1): its right half is still column c.
+    assert [column_at(x) for x in (12.0, 12.4, 12.6, 12.999, 13.0)] == [12, 12, 12, 12, 13]
+    assert column_centre(12) == 12.5
+
+
+def test_trace_axis_ticks_sit_on_trace_centres(qapp) -> None:  # noqa: ANN001
+    from seisvis.ui.widgets.trace_axis import TraceAxisItem
+
+    axis = TraceAxisItem(orientation="bottom")
+    for lo, hi, size in ((0.0, 1000.0, 800.0), (12.0, 20.0, 800.0), (13.0, 14.0, 800.0)):
+        levels = axis.tickValues(lo, hi, size)
+        values = [v for _spacing, vs in levels for v in vs]
+        assert values, (lo, hi)
+        assert all(v % 1 == 0.5 and lo <= v <= hi for v in values)
+        assert all(spacing >= 1 for spacing, _ in levels)
+    assert axis.tickStrings([12.5, 13.5], 1.0, 1.0) == ["12", "13"]
+
+
+def test_hover_marks_the_column_under_the_mouse(qapp, canvas) -> None:  # noqa: ANN001
+    from PySide6.QtCore import QPointF
+
+    view, group, pool = canvas
+    view.strip_button.setChecked(True)
+    view.trace_strip.add_field("rms_in")
+    _settle(qapp, pool)
+    view.resize(900, 700)
+    view.show()
+    _settle(qapp, pool)
+    vb = view.plot_item.getViewBox()
+    x0 = group.shared_state.commanded_trace_range[0]
+    traces: list = []
+    view.cursor_readout.connect(lambda trace, _t, _a: traces.append(trace))
+    # The right half of column x0 + 2 is still that trace, not the next one.
+    view._on_mouse_moved(vb.mapViewToScene(QPointF(x0 + 2.8, 10.0)))
+    assert traces[-1] == x0 + 2
+    assert view._v_line.value() == x0 + 2.5
+    assert view.trace_strip._lanes[0].cursor.value() == x0 + 2.5
+
+
+def test_amplitude_is_the_sample_drawn_under_the_cursor(qapp, canvas) -> None:  # noqa: ANN001
+    view, group, pool = canvas
+    _settle(qapp, pool)
+    i = group.active_index
+    arr, rect = view._last_arrays[i], view._last_rects[i]
+    x0, t0 = int(rect.x()), rect.y()
+    # Sample 3 is drawn over [t0 + 3·DT, t0 + 4·DT): its lower half is still sample 3.
+    for frac in (0.0, 0.4, 0.6, 0.99):
+        assert view._amplitude_at(x0 + 2, t0 + (3 + frac) * DT) == arr[2, 3]
+    assert view._amplitude_at(x0 + 2, t0 + 4 * DT) == arr[2, 4]

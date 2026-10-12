@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- **The crosshair and trace axis point at trace centres.** The strip's
+  points, overlay points and the picked trace sat on the middle of each
+  trace, but the crosshair line, the strip cursor and the Trace # ticks sat
+  on the border between two traces, and hovering the right half of a trace
+  reported the next one. All of them now use the trace's centre. Likewise
+  in time: the amplitude readout is the sample drawn under the cursor —
+  the lower half of a sample no longer reads the next one.
 - **Opening a multi-vector wiz dataset shows which vector you're on.**
   Double-clicking (or dragging, or opening) a dataset with several vectors
   now adds its default vector, named e.g. `vec3 · TRACE` like its siblings,

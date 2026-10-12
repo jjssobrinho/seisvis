@@ -145,6 +145,12 @@ are in ms. The authoritative spec is `docs/SPEC.md` in the wiz repo.
   An attribute-plot tab has no time axis: its axes are header fields
   (see Attribute Plots).
 - **Trace axis** (Display Canvas, seismic tabs): 0-indexed, left-to-right.
+  Display column *c* spans `[c, c + 1)`; the trace is at its centre
+  `c + 0.5` — axis ticks / labels (`ui/widgets/trace_axis.TraceAxisItem`),
+  crosshair and strip cursor lines, picked trace, overlay and strip points.
+  The mouse is over column `floor(x)` (`trace_axis.column_at`), never
+  `round(x)`. Likewise sample *s* is drawn over `[t0 + s·dt, t0 + (s+1)·dt)`:
+  the amplitude readout takes `floor((t − t0) / dt)`.
 - Sample interval stored as `float` ms (segyio gives µs).
 - Amplitudes: `float32` throughout.
 - Type hints everywhere. `ruff check` and `ruff format` before

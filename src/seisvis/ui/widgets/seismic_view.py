@@ -45,6 +45,7 @@ from seisvis.ui.widgets.scale_bar import ScaleBar
 from seisvis.ui.widgets.selection_overlay import SelectionOverlay, selection_from_points
 from seisvis.ui.widgets.time_overlay_layer import TimeOverlayLayer
 from seisvis.ui.widgets.toggle_bar import ToggleBar
+from seisvis.ui.widgets.trace_axis import TraceAxisItem, column_at, column_centre
 from seisvis.ui.widgets.trace_image_item import TraceImageItem
 from seisvis.ui.widgets.trace_strip_view import LEFT_AXIS_WIDTH, TraceStripView
 from seisvis.utils import qsettings
@@ -331,7 +332,11 @@ class SeismicView(QWidget):
         root.addWidget(info_row)
 
         # Central plot with our custom ViewBox so left-click always rubber-bands.
-        self.plot_widget = pg.PlotWidget(parent=self, viewBox=_SeismicViewBox())
+        self.plot_widget = pg.PlotWidget(
+            parent=self,
+            viewBox=_SeismicViewBox(),
+            axisItems={"bottom": TraceAxisItem(orientation="bottom")},
+        )
         self.plot_item = self.plot_widget.getPlotItem()
         self.plot_item.setLabel("left", "Time (ms)")
         self.plot_item.setLabel("bottom", "Trace #")
@@ -1679,9 +1684,9 @@ class SeismicView(QWidget):
             self.cursor_readout.emit(None, None, None)
             return
         data_pt = vb.mapSceneToView(scene_pos)
-        trace = int(round(data_pt.x()))
+        trace = column_at(data_pt.x())
         t_ms = float(data_pt.y())
-        self._v_line.setPos(trace)
+        self._v_line.setPos(column_centre(trace))
         self._h_line.setPos(t_ms)
         self._v_line.setVisible(self._crosshair_enabled)
         self._h_line.setVisible(self._crosshair_enabled)
@@ -1928,7 +1933,7 @@ class SeismicView(QWidget):
             self._last_cursor = None
             self.cursor_readout.emit(None, None, None)
             return
-        self._v_line.setPos(int(x))
+        self._v_line.setPos(column_centre(int(x)))
         self._emit_status_for_cursor(int(x), None, None)
 
     def _build_group_x_positions(
@@ -2028,8 +2033,10 @@ class SeismicView(QWidget):
         except IndexError:
             return None
         dt_ms = dt_of(member.dataset)
-        col = int(round((t_ms - rect.y()) / dt_ms))
-        row = int(round(trace - rect.x()))
+        # The cell under the cursor: sample s is drawn from t0 + s·dt down to
+        # the next sample, trace c from c to c + 1 — floor, not round.
+        col = math.floor((t_ms - rect.y()) / dt_ms)
+        row = column_at(trace - rect.x())
         if not (0 <= row < arr.shape[0] and 0 <= col < arr.shape[1]):
             return None
         return float(arr[row, col])
