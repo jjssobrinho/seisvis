@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 _SHORTCUTS: list[tuple[str, str]] = [
-    ("Ctrl+O", "Open SEG-Y file(s)"),
+    ("Ctrl+O", "Open data file(s)"),
     ("Ctrl+N", "New session"),
     ("Ctrl+Shift+O", "Open session"),
     ("Ctrl+S", "Save session"),
@@ -25,7 +25,8 @@ _SHORTCUTS: list[tuple[str, str]] = [
     ("Shift+F", "Open / focus FFT tab for the active group"),
     ("Shift+K", "Open / focus f-k tab for the active group"),
     ("F11", "Toggle full display mode"),
-    ("Esc", "Leave full display mode"),
+    ("Esc", "Remove the picked trace; leave full display mode"),
+    ("Double-click", "Draw the trace under the cursor as a red wiggle (canvas)"),
     ("Delete / Backspace", "Clear the canvas selection (canvas focus)"),
     ("1 … 9", "Switch to member 1–9 (canvas focus)"),
     ("Space", "Toggle auto-flicker on/off (canvas focus)"),

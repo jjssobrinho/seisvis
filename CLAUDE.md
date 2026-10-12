@@ -1,6 +1,6 @@
 # Seismic Visualizer — Agent Notes
 
-Read this at session start, then read `MILESTONE.md`.
+Read this at session start, then read `MILESTONES.md`.
 Flag any user prompt that conflicts with what's here before acting.
 
 ---
@@ -84,6 +84,8 @@ data. Current capabilities:
 | v5.6  | v0.5.0 Release                                | `v56-done`       |
 
 ### v0.6.0 roadmap
+
+Released as part of v0.7.0 (no separate `v0.6.0` tag).
 
 | #     | Name                                          | Tag              |
 |-------|-----------------------------------------------|------------------|
@@ -1309,7 +1311,7 @@ traces.
 
 ## Workflow per Milestone
 
-1. Read `CLAUDE.md`, `MILESTONE.md`, check `git tag -l`.
+1. Read `CLAUDE.md`, `MILESTONES.md`, check `git tag -l`.
 2. Produce a short plan (classes, signals, tests). **Wait for user
    confirmation.**
 3. Implement.

@@ -1,12 +1,15 @@
 # SeisVis
 
-Desktop viewer for 2D/3D SEG-Y reflection seismic data.
+Desktop viewer for 2D/3D reflection seismic data: SEG-Y, Seismic Unix
+(`.su`) and [wiz](#wiz-datasets) datasets.
 
 ![Screenshot placeholder](docs/screenshot.png)
 
 ## Features
 
 - Lazy SEG-Y loading — O(1) open regardless of file size
+- Wiz datasets — memmapped, headers read by attribute name, opened on the first gather of their stored sort order; each vector (raw, processed, difference) a catalog row of its own
+- Header indexes cached between launches, so a large file re-sorts instantly the second time
 - File chooser, drag-and-drop, or a full-path dialog with a live check light per line
 - Multi-member toggle groups in tabbed viewports
 - Lazy A−B difference datasets
@@ -14,6 +17,11 @@ Desktop viewer for 2D/3D SEG-Y reflection seismic data.
 - Info-track labels and a crosshair readout you choose the header fields for, with per-file display-name renames
 - Zoom restricted to the currently loaded traces (no re-fetch on pan/zoom)
 - Per-member processing: eight colormaps, clip, gain, bandpass, AGC — plus a fixed colour scale when members have to be compared on one
+- Smooth, Blocky or Wavelet (wiggle) display; double-click a trace to draw it as a red wiggle over the image
+- A time window in the toolbar to fetch only the part of the trace you are looking at
+- Time-attribute overlays — header times such as the water bottom or `delrt` drawn as curves over the traces
+- A trace-attribute strip above the canvas — QC fields (rms, offset, ratios) plotted in lanes on the same trace axis
+- Attribute plots — header field against header field (receivers coloured by shot, stacking charts), time slices of 3D surveys, and 2D-line regularity statistics
 - Rectangle selection feeding live FFT and f-k transforms in a separate window per group
 - Image export of canvas members, FFT and f-k plots, with or without axes
 - Depth-domain data in a Model Window of its own — metres on both axes
@@ -28,6 +36,10 @@ Desktop viewer for 2D/3D SEG-Y reflection seismic data.
 ```bash
 uv sync
 ```
+
+[wiz](#wiz-datasets) is an editable path dependency: `uv sync` expects
+its repository next to this one, at `../wiz` (see `[tool.uv.sources]` in
+`pyproject.toml`).
 
 ## Run
 
@@ -105,6 +117,38 @@ loading") rather than being loaded around: a mistyped path should not
 disappear quietly while the others succeed. The dialog widens with the
 longest path it holds, because a path you cannot read whole is a path
 you cannot check.
+
+## Wiz datasets
+
+A wiz dataset is a directory, `name.wiz`, holding a `meta.json`, one file
+per header attribute and one per sample vector. Open it like any file:
+*File → Load wiz dataset…* picks the folder, and the file chooser, drag
+and drop and the path dialog all accept either the folder or its
+`meta.json`.
+
+- **Headers by name.** Attributes appear under their own names (`fldr`,
+  `offset`, `wb_twt`, …), with their real types: float attributes show
+  decimals in the readout and colour attribute plots, and are offered as
+  sort keys only when every value is a whole number (others are listed
+  greyed out, "not whole numbers"). Shot, Channel, CMP and Offset are the
+  default display names of `fldr`, `tracf`, `cdp` and `offset`.
+- **Stored order.** A dataset whose `meta.json` declares `sorted_by` opens
+  committed on its first gather — `sorted_by: ["fldr", "tracf"]` opens on
+  the first shot. Without it, it opens in file order like a SEG-Y.
+- **Start time.** A dataset's `t0` is honoured: one recorded from 100 ms
+  draws from 100 ms, and lines up in absolute time with others in its
+  group.
+- **Vectors.** A dataset with several vectors (`TRACE`, `RAW`, `FILT`, …)
+  shows a point before its name; click it to list the vectors as rows of
+  their own. Double-click or drag a vector to open it; right-click it to
+  difference it against a sibling. Opening the dataset row itself opens its
+  default vector, named e.g. `line · TRACE`.
+- **Live changes.** Adding or removing attributes or vectors on disk (e.g.
+  `wiz attr add`) updates the field lists within a second; rewriting the
+  samples marks the dataset as changed, ready to reload.
+- **Sidecar.** Renames are saved in `name.wiz.sv` beside the folder —
+  never inside it, and never in `name.sv`, which belongs to a same-named
+  SEG-Y or SU file.
 
 ## Row types
 
@@ -228,6 +272,64 @@ Either choice of framing is available in all three places:
 - **Plot with axes, labels and ticks** — the framed plot as displayed.
 - **Image only (no axes, no labels)** — the data alone, for overlaying
   or composing the result elsewhere.
+
+## Display modes
+
+Three buttons beside the colormap choose how traces are drawn, per member:
+
+- **Smooth** — the image interpolated between samples and traces.
+- **Blocky** — one flat cell per sample and trace.
+- **Wavelet** — black wiggles on white, thinned to stay legible when
+  zoomed out.
+
+In Smooth or Blocky, **double-click** a trace to draw it as a red wiggle
+over the image; double-click elsewhere to move it, `Esc` to remove it.
+The underlying samples are never changed — the crosshair, transforms and
+exports read the original data.
+
+## Time overlays
+
+Header fields holding times in ms — a water-bottom pick, `delrt`, mute
+times — can be drawn over the traces as curves. Open the **Overlays** tab
+of the toolbar and press `+`; the *Field* list offers the wiz attributes
+with `ms` units, and *Other field…* any populated field (the only route
+for SEG-Y and SU). Each overlay has a colour, a line style, a shift in ms
+and a Show switch, and belongs to the member being edited.
+
+Curves follow the sort, zoom and pan. Under a committed sort they break
+between gathers; in natural file order they run on. A trace with no value
+(NaN) leaves a gap, and a single trace between gaps shows as a dot.
+
+## Trace strip
+
+The **Strip** button in a canvas's toggle bar opens a strip of lanes above
+the traces, one per header field — `rms_in`, `rms_out`, `offset`, a QC
+ratio. Right-click it to add a field; right-click a lane for its colour, a
+fixed or automatic y range, a log y axis, its position and removal. Drag
+the splitter to size the strip.
+
+The lanes share the canvas's trace axis exactly: each point sits over its
+trace, zoom and pan carry them along, and they break between gathers like
+overlays. Hovering the canvas or a lane adds the lanes' values for that
+trace to the crosshair readout. Each canvas has its own strip, saved in
+sessions.
+
+## Attribute plots
+
+Right-click a dataset → *Open attribute plot…* opens a tab that plots
+header fields instead of trace images, one point per trace:
+
+- **Header attribute** — X against Y, optionally coloured by a third
+  field: receivers coloured by shot, a stacking chart, channel against
+  offset.
+- **Time slice** — inline × crossline coloured by the amplitude at one
+  time, drawn one cell per bin, for a 3D survey.
+
+Either can plot the traces the command bar selects or all traces of the
+file. The Attributes tab of the toolbar edits layers, colour, symbol and
+size; it can draw every trace of the file as a grey background, and
+report how regular a 2D line's shots and receivers are, ringing the
+points that are off grid, missing, duplicated or off line.
 
 ## Crosshair readout
 
@@ -373,12 +475,14 @@ session is **not** reopened on startup — use *Open Recent Session*.
 
 **What is saved:**
 
-- every loaded file, and the A − B differences computed between them;
+- every loaded file (and which wiz vectors are open), and the A − B
+  differences computed between them;
 - each toggle group: name, members, which member is active, the
   reference and the edit target, each member's colormap, clip, gain,
-  bandpass and AGC, the sort (committed or not), the command-bar window
-  and zoom, the fixed colour scale, crosshair fields, and the
-  auto-flicker rate and which members it cycles through;
+  bandpass, AGC, display mode and time overlays, the sort (committed or
+  not), the command-bar window, time window and zoom, the fixed colour
+  scale, crosshair fields, the trace strip, the auto-flicker rate and
+  which members it cycles through, and attribute-plot settings;
 - each Model Window tab: members, colormap and levels per layer kind,
   and overlay settings;
 - which tab was active.
@@ -440,7 +544,7 @@ were. `Esc` is only bound while the mode is active.
 
 | Shortcut          | Action                                           |
 |-------------------|--------------------------------------------------|
-| `Ctrl+O`          | Open SEG-Y file(s)                               |
+| `Ctrl+O`          | Open data file(s)                                |
 | `Ctrl+N`          | New session                                      |
 | `Ctrl+Shift+O`    | Open session                                     |
 | `Ctrl+S`          | Save session                                     |
@@ -452,7 +556,8 @@ were. `Esc` is only bound while the mode is active.
 | `Shift+F`         | Open / focus FFT tab for the active group        |
 | `Shift+K`         | Open / focus f-k tab for the active group        |
 | `F11`             | Toggle full display mode                         |
-| `Esc`             | Leave full display mode                          |
+| `Esc`             | Remove the picked trace; leave full display mode |
+| Double-click      | Draw the trace under the cursor as a red wiggle  |
 | `Delete` / `Backspace` | Clear the canvas selection                  |
 | `1` … `9`         | Switch to member 1–9 (canvas or model focus)     |
 | `Space`           | Toggle auto-flicker on/off (canvas focus)        |
@@ -467,4 +572,4 @@ Full list available in **Help → Keyboard Shortcuts…**.
 
 ## Stack
 
-Python 3.11+, PySide6, pyqtgraph, segyio, numpy, scipy.
+Python 3.11+, PySide6, pyqtgraph, segyio, wiz, numpy, scipy.

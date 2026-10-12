@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [v0.7.0] Wiz datasets, vectors, overlays and the trace strip
+
+Wiz datasets join SEG-Y and SU as a third format — memmapped, their
+headers read by attribute name, opening on the first gather of their
+stored order — and a dataset's vectors (raw, processed, the difference)
+appear as rows of their own, ready to flicker or difference. On the
+canvas, header fields that hold times are drawn as curves over the traces,
+and QC values (rms, offset, ratios) plot in a strip of lanes above them,
+on the same trace axis.
+
 ### Fixed
 
 - **The crosshair and trace axis point at trace centres.** The strip's
@@ -120,6 +130,15 @@ typed columns rather than 240-byte blocks.
   decimal point). Sort keys stay integers: a float field whose values are
   all whole numbers can be a key, and any other float field is shown
   greyed out in the key list, with a tooltip saying why.
+
+## [v0.6.0] Sessions, attribute plots and display modes
+
+Not released separately: this work shipped in v0.7.0, and there is no
+v0.6.0 tag. The workspace can be saved as a session and reopened; header
+scans are faster and remembered between launches; attribute plots chart
+header fields against each other, and time slices map amplitudes over a
+survey; traces draw smooth, blocky or as wiggles; and the Appearance tab
+gains a time window.
 
 ### Fixed: Window wider than the screen, full display
 
