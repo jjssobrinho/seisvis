@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **A stacked wiz section opens whole.** A dataset whose stored order's
+  first key has one trace per gather (`sorted_by: ["cdp"]` on a stack)
+  opens on a Range over the whole key instead of its first gather, which
+  was a single trace.
+
 ## [v0.7.0] Wiz datasets, vectors, overlays and the trace strip
 
 Wiz datasets join SEG-Y and SU as a third format — memmapped, their

@@ -259,6 +259,33 @@ def test_a_new_group_opens_on_the_first_gather_of_sorted_by(tmp_path: Path) -> N
         ds.close()
 
 
+def test_a_stack_opens_on_the_whole_key_range(tmp_path: Path) -> None:
+    """One trace per gather (a stacked section): a Range over the key's domain."""
+    stack = load_wiz(make_wiz(tmp_path / "stack.wiz", sorted_by=["-cdp"]))
+    shots = load_wiz(make_wiz(tmp_path / "shots.wiz", sorted_by=["fldr", "tracf"]))
+    try:
+        configs = []
+        for ds in (stack, shots):
+            ds.populate_surange()
+            key = ds.stored_order[0].lstrip("-")
+            configs.append(
+                stored_order_sort_config(
+                    ds.stored_order,
+                    ds.header_fields_available,
+                    values=ds.group_index.field_array(key),
+                )
+            )
+        cdp, fldr = configs
+        assert cdp is not None and cdp.committed and cdp.primary.type == "range"
+        assert (cdp.primary.field, cdp.primary.direction) == ("cdp", "desc")
+        assert (cdp.primary.range_.range_min, cdp.primary.range_.range_max) == (100, 100 + N - 1)
+        assert fldr is not None and fldr.primary.type == "value"  # several traces per shot
+        assert fldr.primary.value.first == 0
+    finally:
+        stack.close()
+        shots.close()
+
+
 def test_no_stored_order_or_a_fractional_first_key_keeps_the_default(tmp_path: Path) -> None:
     plain = load_wiz(make_wiz(tmp_path / "plain.wiz"))
     frac = load_wiz(make_wiz(tmp_path / "frac.wiz", sorted_by=["wb_twt"]))

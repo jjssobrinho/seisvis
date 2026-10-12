@@ -134,7 +134,10 @@ and drop and the path dialog all accept either the folder or its
   default display names of `fldr`, `tracf`, `cdp` and `offset`.
 - **Stored order.** A dataset whose `meta.json` declares `sorted_by` opens
   committed on its first gather — `sorted_by: ["fldr", "tracf"]` opens on
-  the first shot. Without it, it opens in file order like a SEG-Y.
+  the first shot. When every gather of that key is a single trace — a
+  stacked section, `sorted_by: ["cdp"]` — it opens on a Range over the
+  whole key instead, so the full section shows. Without `sorted_by`, it
+  opens in file order like a SEG-Y.
 - **Start time.** A dataset's `t0` is honoured: one recorded from 100 ms
   draws from 100 ms, and lines up in absolute time with others in its
   group.

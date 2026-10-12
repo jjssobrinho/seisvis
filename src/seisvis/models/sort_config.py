@@ -18,6 +18,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
+import numpy as np
+
 # Sentinel primary-key field meaning "natural trace range — no field
 # lookup needed." Kept as a plain string so SortConfig stays a frozen
 # pure-data record (no enum round-tripping).
@@ -529,14 +531,18 @@ def stored_order_sort_config(
     *,
     count: int = 1,
     skip: int = 1,
+    values: np.ndarray | None = None,
 ) -> SortConfig | None:
     """A committed gather on the first key of a dataset's stored order.
 
     *stored_order* is a wiz ``sorted_by`` (``"-key"`` = descending). The
     group opens on the first gather (Value, First 0) rather than in natural
     file order — the one exception to "a new group starts on TRACE_RANGE,
-    uncommitted". None when there is no stored order or its first key is
-    not offered as a sort key (absent, or not whole numbers).
+    uncommitted". When *values* (the key's per-trace values) show one trace
+    per gather — a stacked section sorted by cdp — it opens on a Range over
+    the key's whole domain instead, so the section shows at once. None when
+    there is no stored order or its first key is not offered as a sort key
+    (absent, or not whole numbers).
     """
     if not stored_order:
         return None
@@ -546,9 +552,15 @@ def stored_order_sort_config(
         return None
     if sort_key_ineligibility(field, fields_available, non_integral) is not None:
         return None
+    direction: Direction = "desc" if key.startswith("-") else "asc"
+    if values is not None and values.size and np.unique(values).size == values.size:
+        primary = RowSelection.range_default(
+            field, direction, domain=(int(values.min()), int(values.max()))
+        )
+        return SortConfig(primary=primary, secondary=None, committed=True)
     primary = RowSelection.value_default(
         field,
-        "desc" if key.startswith("-") else "asc",
+        direction,
         first=0,
         count=max(1, int(count)),
         skip=max(1, int(skip)),

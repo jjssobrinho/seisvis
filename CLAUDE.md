@@ -497,8 +497,10 @@ TRACE_RANGE is the default primary key for every file type — with one
 exception: a dataset that records its stored order (a wiz `sorted_by`)
 opens on its first gather, **committed**: primary = the first key
 (`-key` → desc), Value, First 0, Count/Skip from the user defaults
-(`sort_config.stored_order_sort_config`). Not when that key isn't an
-offered sort key (absent, or not whole numbers).
+(`sort_config.stored_order_sort_config`). When every value of that key
+is unique (one trace per gather — a stacked section) it opens on a
+committed Range over the key's full domain instead. Not when that key
+isn't an offered sort key (absent, or not whole numbers).
 
 ### Compatibility (loose, per-row)
 

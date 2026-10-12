@@ -1582,14 +1582,17 @@ class MainWindow(QMainWindow):
                 )
         self.project.add_toggle_group(group)
         # A dataset that records its stored order (wiz sorted_by) opens on
-        # its first gather, committed, instead of in natural file order.
+        # its first gather, committed, instead of in natural file order — or
+        # on the whole key range when each gather is one trace (a stack).
         gi = getattr(dataset, "group_index", None)
+        order = getattr(dataset, "stored_order", ())
         stored = stored_order_sort_config(
-            getattr(dataset, "stored_order", ()),
+            order,
             getattr(dataset, "header_fields_available", None),
             gi.non_integral_fields if gi is not None else (),
             count=self._default_groups_per_view,
             skip=self._default_group_skip,
+            values=gi.field_array(order[0].lstrip("-")) if gi is not None and order else None,
         )
         if stored is not None:
             group.update_sort_config(stored)
