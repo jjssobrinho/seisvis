@@ -489,13 +489,17 @@ class MainWindow(QMainWindow):
             config = group.shared_state.sort_config
             if config.committed:
                 self._ensure_sort_fields_scanned(group, config)
-        self._alignment.dataset_reloaded(dataset.id)
-        self.display_panel.reload_views_for(dataset.id)
+        # A dataset with several vectors sits in groups and diffs as its
+        # vectors ("name · TRACE"), which read the reloaded file as well.
+        reloaded = {dataset.id} | {v.id for v in self.project.vectors_of(dataset.id)}
+        for ds_id in reloaded:
+            self._alignment.dataset_reloaded(ds_id)
+        self.display_panel.reload_views_for(reloaded)
         for derived in self.project.datasets:
             if (
                 isinstance(derived, DerivedDataset)
                 and not derived.parents_missing
-                and dataset in (derived.parent_a, derived.parent_b)
+                and {derived.parent_a.id, derived.parent_b.id} & reloaded
             ):
                 self._refresh_diff(derived)
         self.statusBar().showMessage(f"Reloaded {dataset.name} from disk", 4000)

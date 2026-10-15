@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 
 from PySide6.QtCore import QEvent, QObject, Qt, QThreadPool, Signal
 from PySide6.QtGui import QContextMenuEvent, QMouseEvent
@@ -193,10 +194,11 @@ class DisplayPanel(QTabWidget):
     def view_for(self, group_id: str) -> CanvasView | None:
         return self._views.get(group_id)
 
-    def reload_views_for(self, dataset_id: str) -> None:
-        """Re-render every group that holds the dataset with *dataset_id*."""
+    def reload_views_for(self, dataset_ids: str | Iterable[str]) -> None:
+        """Re-render every group that holds a dataset with one of *dataset_ids*."""
+        ids = {dataset_ids} if isinstance(dataset_ids, str) else set(dataset_ids)
         for view in self._views.values():
-            if any(m.dataset.id == dataset_id for m in view.group.members):
+            if any(m.dataset.id in ids for m in view.group.members):
                 view.reload_after_dataset_change()
 
     def _sync_escape_shortcuts(self, full_display: bool) -> None:

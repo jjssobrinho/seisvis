@@ -9,6 +9,13 @@
   opens on a Range over the whole key instead of its first gather, which
   was a single trace.
 
+### Fixed
+
+- **Reload from disk redraws a dataset's vectors.** A wiz dataset with
+  several vectors sits in a group as its vectors ("name · TRACE"), which a
+  reload neither redrew nor re-paired, nor did it refresh diffs between
+  them: the old image stayed until the member was toggled away and back.
+
 ## [v0.7.0] Wiz datasets, vectors, overlays and the trace strip
 
 Wiz datasets join SEG-Y and SU as a third format — memmapped, their
