@@ -820,6 +820,9 @@ class SeismicView(QWidget):
         # even if nothing was fetched during an earlier incompatible
         # activation.
         self._request_slice(self.group.active_index)
+        # The cursor hasn't moved, but it now sits over another member's
+        # samples and headers: redraw the readout for them.
+        self._reemit_readout()
 
     def _on_reference_index_changed(self, _index: int) -> None:
         # Compatibility flips for every non-reference member when the
@@ -1537,6 +1540,7 @@ class SeismicView(QWidget):
         self._last_rects[member_index] = rect
         if member_index == self.group.active_index:
             self._refresh_scale_bar()
+            self._reemit_readout()
         if show_loading:
             self.loading_label.setVisible(True)
 
