@@ -21,6 +21,8 @@ from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
 from seisvis.models.project import Project  # noqa: E402
 from seisvis.services.quick_load import (  # noqa: E402
     check_path,
+    clipboard_path_lines,
+    loadable_paths,
     normalize_path_text,
     resolve_path_text,
     split_path_lines,
@@ -463,4 +465,50 @@ def test_empty_space_with_no_selection_offers_quick_load(gui_app) -> None:  # no
     menu = panel.build_context_menu_at(QModelIndex())
     assert menu is not None
     assert _menu_texts(menu) == ["Load datasets by path…"]
+    panel.deleteLater()
+
+
+# --- middle-click paste ---
+
+
+def test_clipboard_urls_win_over_their_text(segy_2d: Path) -> None:
+    assert clipboard_path_lines([str(segy_2d)], f"file://{segy_2d}") == [str(segy_2d)]
+
+
+def test_clipboard_text_drops_file_manager_markers(segy_2d: Path, su_line: Path) -> None:
+    text = f"x-special/nautilus-clipboard\ncopy\nfile://{segy_2d}\n{su_line}\n"
+    assert clipboard_path_lines([], text) == [str(segy_2d), str(su_line)]
+
+
+def test_loadable_paths_splits_ok_from_failed(segy_2d: Path, tmp_path: Path) -> None:
+    missing = tmp_path / "gone.segy"
+    ok, failed = loadable_paths([str(segy_2d), str(missing), str(segy_2d), ""])
+    assert ok == [segy_2d]
+    assert [c.state for c in failed] == ["not_found"]
+
+
+def test_middle_click_loads_copied_paths(gui_app, segy_2d: Path, su_line: Path) -> None:  # noqa: ARG001
+    from PySide6.QtCore import QMimeData, QUrl
+
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(segy_2d)), QUrl.fromLocalFile(str(su_line))])
+    QApplication.clipboard().setMimeData(mime)
+    panel = CatalogPanel(Project())
+    emitted: list[list[Path]] = []
+    panel.quick_load_requested.connect(emitted.append)
+    panel.load_from_clipboard()
+    assert emitted == [[segy_2d, su_line]]
+    panel.deleteLater()
+
+
+def test_middle_click_with_nothing_loadable_says_so(gui_app) -> None:  # noqa: ARG001
+    QApplication.clipboard().setText("hello")
+    panel = CatalogPanel(Project())
+    emitted: list[list[Path]] = []
+    messages: list[str] = []
+    panel.quick_load_requested.connect(emitted.append)
+    panel.status_message.connect(messages.append)
+    panel.load_from_clipboard()
+    assert emitted == []
+    assert messages == ["Not loaded: hello (not found)"]
     panel.deleteLater()

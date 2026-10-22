@@ -9,6 +9,7 @@ of a text path, a recent-paths menu) agree on what "ok" means.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -121,11 +122,54 @@ def check_path(text: str) -> PathCheck:
     return PathCheck("ok", path)
 
 
+# Lines a file manager puts ahead of the file URIs in a plain-text copy
+# (Nautilus: ``x-special/nautilus-clipboard`` then ``copy`` / ``cut``).
+_CLIPBOARD_MARKERS = frozenset({"copy", "cut"})
+
+
+def clipboard_path_lines(urls: Iterable[str], text: str) -> list[str]:
+    """Candidate paths in a clipboard's content, in order, without repeats.
+
+    *urls* are the local files a ``text/uri-list`` carries (what a file
+    manager's Copy offers); *text* is the plain text, one path per line (what
+    a terminal or editor copy offers). The URLs win when there are any — the
+    text then repeats them. A file manager's marker lines are not paths.
+    """
+    lines = [normalize_path_text(u) for u in urls]
+    lines = [line for line in lines if line]
+    if not lines:
+        lines = [
+            line
+            for line in split_path_lines(text)
+            if line.lower() not in _CLIPBOARD_MARKERS and not line.startswith("x-special/")
+        ]
+    return list(dict.fromkeys(lines))
+
+
+def loadable_paths(lines: Iterable[str]) -> tuple[list[Path], list[PathCheck]]:
+    """Split *lines* into the paths that would load and the checks that failed.
+
+    Two lines naming the same file load it once.
+    """
+    ok: list[Path] = []
+    failed: list[PathCheck] = []
+    for line in lines:
+        check = check_path(line)
+        if check.ok and check.path is not None:
+            if check.path not in ok:
+                ok.append(check.path)
+        elif check.state != "empty":
+            failed.append(check)
+    return ok, failed
+
+
 __all__ = [
     "STATE_LABELS",
     "PathCheck",
     "PathState",
     "check_path",
+    "clipboard_path_lines",
+    "loadable_paths",
     "normalize_path_text",
     "resolve_path_text",
     "split_path_lines",

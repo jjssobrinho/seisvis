@@ -345,6 +345,9 @@ class MainWindow(QMainWindow):
         self.catalog_panel.add_to_active_group_requested.connect(self._on_add_to_active_group)
         self.catalog_panel.reload_requested.connect(self._on_reload_dataset)
         self.catalog_panel.quick_load_requested.connect(self._on_quick_load)
+        self.catalog_panel.status_message.connect(
+            lambda text: self.statusBar().showMessage(text, 6000)
+        )
         self.catalog_panel.domain_changed.connect(self._on_domain_changed)
         self.catalog_panel.add_to_active_model_requested.connect(self._on_add_to_active_model)
         self.catalog_panel.diff_requested.connect(
@@ -943,10 +946,11 @@ class MainWindow(QMainWindow):
         self._submit_load(path)
 
     def _on_quick_load(self, paths: list[Path]) -> None:
-        """Load the paths typed into the catalog's quick-load dialog.
+        """Load the paths typed into the catalog's quick-load dialog or pasted
+        into the catalog with a middle-click.
 
-        The dialog has already checked that each file is there and loadable,
-        so this is the same submission the file chooser makes — including
+        Each file has already been checked to be there and loadable, so
+        this is the same submission the file chooser makes — including
         remembering the folder, so the next chooser opens beside them.
         """
         for raw in paths:

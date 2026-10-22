@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import cast
 
 from PySide6.QtCore import (
@@ -12,7 +13,7 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPalette, QPen
+from PySide6.QtGui import QBrush, QClipboard, QColor, QFont, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -29,6 +30,7 @@ from seisvis.models.dataset import Dataset
 from seisvis.models.derived_dataset import DerivedDataset
 from seisvis.models.project import Project
 from seisvis.models.vector_dataset import VectorDataset
+from seisvis.services.quick_load import PathCheck, clipboard_path_lines, loadable_paths
 from seisvis.utils.mime import DATASET_MIME_TYPE, encode_dataset_ids
 
 log = logging.getLogger(__name__)
@@ -520,7 +522,8 @@ class CatalogPanel(QWidget):
     add_to_active_group_requested = Signal(object)  # Dataset
     reload_requested = Signal(object)  # Dataset whose file changed on disk
     add_to_active_model_requested = Signal(object)  # depth Dataset
-    quick_load_requested = Signal(object)  # list[Path] typed into the quick-load dialog
+    quick_load_requested = Signal(object)  # list[Path] typed into the quick-load dialog / pasted
+    status_message = Signal(str)  # one-line note for the status bar
     domain_changed = Signal(object)  # Dataset whose vertical domain flipped
     sv_write_failed = Signal(str)  # .sv filename that could not be written
     # (a, b) datasets for an A − B diff; a is the dataset clicked first.
@@ -665,6 +668,38 @@ class CatalogPanel(QWidget):
             paths = dlg.paths()
             if paths:
                 self.quick_load_requested.emit(paths)
+
+    def load_from_clipboard(self) -> None:
+        """Load the dataset paths copied to the clipboard (middle-click).
+
+        Files copied in a file manager arrive as URLs, paths copied from a
+        terminal as text, one per line. The clipboard is read first; when it
+        names nothing loadable, the X11 / Wayland primary selection (text
+        merely highlighted) is tried.
+        """
+        clipboard = QApplication.clipboard()
+        modes = [QClipboard.Mode.Clipboard]
+        if clipboard.supportsSelection():
+            modes.append(QClipboard.Mode.Selection)
+        paths: list[Path] = []
+        failed: list[PathCheck] = []
+        for mode in modes:
+            mime = clipboard.mimeData(mode)
+            if mime is None:
+                continue
+            urls = [u.toLocalFile() for u in mime.urls() if u.isLocalFile()]
+            lines = clipboard_path_lines(urls, mime.text() if mime.hasText() else "")
+            paths, failed = loadable_paths(lines)
+            if paths:
+                break
+        if paths:
+            self.quick_load_requested.emit(paths)
+        if failed:
+            names = ", ".join(f"{c.path.name if c.path else '?'} ({c.label})" for c in failed[:3])
+            more = f" and {len(failed) - 3} more" if len(failed) > 3 else ""
+            self.status_message.emit(f"Not loaded: {names}{more}")
+        elif not paths:
+            self.status_message.emit("The clipboard holds no dataset path to load")
 
     def build_context_menu(self, datasets: list[Dataset]) -> QMenu | None:
         """Assemble the context menu for *datasets*, or None when there is none.
@@ -884,6 +919,12 @@ class CatalogPanel(QWidget):
             QEvent.Type.MouseButtonRelease,
             QEvent.Type.MouseButtonDblClick,
         )
+        if kind in mouse and event.button() == Qt.MouseButton.MiddleButton:
+            # Middle-click pastes: the copied dataset paths load. Press and
+            # double-click are consumed so the click never selects a row.
+            if kind == QEvent.Type.MouseButtonRelease:
+                self.load_from_clipboard()
+            return True
         if kind in mouse and event.button() == Qt.MouseButton.LeftButton:
             pos = event.position().toPoint()
             index = self._view.indexAt(pos)
